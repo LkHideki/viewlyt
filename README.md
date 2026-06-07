@@ -1,161 +1,163 @@
 # ytcomments
 
-Scrape the comments of a YouTube video into `out/<title-slug>-<video_id>.txt`
-(plain text, no HTML tags) using **Selenium** + headless **Google Chrome**,
-managed with [`uv`](https://github.com/astral-sh/uv).
+Coleta os comentários de um vídeo do YouTube em `out/<title-slug>-<video_id>.txt`
+(texto puro, sem tags HTML) usando **Selenium** + **Google Chrome** headless,
+gerenciado com [`uv`](https://github.com/astral-sh/uv).
 
-It opens the watch page and works in two phases (with `tqdm` progress bars):
+Abre a página do vídeo e trabalha em duas fases (com barras de progresso `tqdm`):
 
-1. **Load** — scrolls to the bottom repeatedly (up to **25** scroll steps) to
-   lazily load up to **100 top-level comments** (the project's primary asset),
-   or all of them if fewer.
-2. **Expand & harvest** — walks each thread once: scrolls it into view, clicks
-   **"Read more"** to un-truncate the text, expands **replies** with a trusted
-   click (up to **10 per comment** by default, configurable), and records each
-   comment/reply with its **author**, **like count** and **date**.
+1. **Carga** — rola até o fim repetidamente (até **25** passos de rolagem) para
+   carregar de forma preguiçosa até **100 comentários de primeiro nível** (o
+   principal ativo do projeto), ou todos, se forem menos.
+2. **Expansão & coleta** — percorre cada thread uma vez: rola até ele, clica em
+   **"Read more"** para destruncar o texto, expande as **respostas** com um clique
+   confiável (até **10 por comentário** por padrão, configurável) e registra cada
+   comentário/resposta com seu **autor**, **número de likes** e **data**.
 
-The HTML fragments are converted to plain text with a batched
-`ThreadPoolExecutor` (emoji/emote `alt` text and link text are kept), and the
-result is written grouped into blocks — a comment followed by its replies,
-blocks separated by a blank line.
+Os fragmentos de HTML são convertidos em texto puro com um `ThreadPoolExecutor`
+em lotes (o `alt` de emojis/emotes e o texto dos links são preservados), e o
+resultado é escrito agrupado em blocos — um comentário seguido de suas respostas,
+blocos separados por uma linha em branco.
 
-## Requirements
+## Requisitos
 
-- `uv` (installs/manages **Python 3.14** itself — see `.python-version`)
-- Google Chrome installed at `/usr/bin/google-chrome` (Selenium Manager
-  auto-downloads the matching ChromeDriver — nothing to install manually)
+- `uv` (instala/gerencia o próprio **Python 3.14** — veja `.python-version`)
+- Google Chrome instalado em `/usr/bin/google-chrome` (o Selenium Manager baixa
+  automaticamente o ChromeDriver compatível — nada para instalar manualmente)
 
-## Setup
+## Instalação
 
 ```bash
 uv sync
 ```
 
-## Usage
+## Uso
 
 ```bash
-# Default: headless. Writes out/<title-slug>-dQw4w9WgXcQ.txt
+# Padrão: headless. Escreve out/<title-slug>-dQw4w9WgXcQ.txt
 uv run ytcomments 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
-# Accepts youtu.be, /shorts/, /embed/ and bare ids too:
+# Aceita também youtu.be, /shorts/, /embed/ e o id puro:
 uv run ytcomments 'https://youtu.be/dQw4w9WgXcQ'
 
-# Visible browser (most reliable against the bot wall):
+# Navegador visível (mais confiável contra o bot wall):
 uv run ytcomments --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
-# Collect at most 50 comments and skip replies (much faster):
+# Coleta no máximo 50 comentários e ignora respostas (bem mais rápido):
 uv run ytcomments --limit 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
-# Keep up to 25 replies per comment:
+# Mantém até 25 respostas por comentário:
 uv run ytcomments --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
-# Write into a different directory:
+# Escreve em outro diretório:
 uv run ytcomments -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 ```
 
-### Options
+### Opções
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `url` | — | Video URL or bare 11-char id (positional) |
-| `--limit N` | `100` | Target top-level comments to collect (or all if fewer) |
-| `--max-viewports N` | `25` | Scroll budget (number of scroll-to-bottom steps) |
-| `--no-replies` | off | Don't expand/collect replies (faster) |
-| `--max-replies N` | `10` | Max replies to collect per comment (`0` disables) |
-| `--headed` | off | Run a visible browser instead of headless |
-| `--no-fallback` | off | Don't auto-retry headed when a block is detected |
-| `--user-data-dir DIR` | — | Persistent Chrome profile (use one already signed in to defeat the bot wall) |
-| `-o, --out-dir DIR` | `out` | Directory for `<title-slug>-<video_id>.txt` |
-| `-q, --quiet` | off | Only log warnings/errors |
+| Flag | Padrão | Descrição |
+|------|--------|-----------|
+| `url` | — | URL do vídeo ou id puro de 11 caracteres (posicional) |
+| `--limit N` | `100` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
+| `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
+| `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
+| `--max-replies N` | `10` | Máximo de respostas por comentário (`0` desativa) |
+| `--headed` | off | Usa um navegador visível em vez de headless |
+| `--no-fallback` | off | Não tenta de novo em modo visível ao detectar bloqueio |
+| `--user-data-dir DIR` | — | Perfil persistente do Chrome (use um já logado para furar o bot wall) |
+| `-o, --out-dir DIR` | `out` | Diretório para `<title-slug>-<video_id>.txt` |
+| `-q, --quiet` | off | Só loga avisos/erros |
 
-## Bypassing YouTube/Google blocks
+## Driblando bloqueios do YouTube/Google
 
-The scraper applies several layers so it works on a fresh machine:
+O coletor aplica várias camadas para funcionar numa máquina nova:
 
-1. **Consent cookies** — `SOCS`/`CONSENT` are pre-set before navigating, so the
-   "Before you continue to YouTube" interstitial is skipped on fresh profiles.
-   A locale-aware consent-button click (Accept all / Aceitar tudo) is kept as a
-   fallback.
-2. **Stealth Chrome** — realistic non-headless user agent, a real
-   `--window-size` (required or comments never lazy-load in headless),
-   `--disable-blink-features=AutomationControlled`, `excludeSwitches`, and a CDP
-   script that hides `navigator.webdriver` and patches plugins/languages.
-3. **Automatic headed fallback** — if a consent/bot wall is still detected in
-   headless mode, the run is retried automatically with a visible browser.
+1. **Cookies de consentimento** — `SOCS`/`CONSENT` são definidos antes de navegar,
+   então o aviso "Antes de continuar no YouTube" é pulado em perfis novos. Um
+   clique no botão de consentimento ciente do idioma (Accept all / Aceitar tudo)
+   fica como fallback.
+2. **Chrome stealth** — user agent realista (não-headless), um `--window-size` real
+   (obrigatório, senão os comentários nunca carregam em headless),
+   `--disable-blink-features=AutomationControlled`, `excludeSwitches` e um script
+   CDP que esconde `navigator.webdriver` e ajusta plugins/idiomas.
+3. **Fallback automático para modo visível** — se um bloqueio de consentimento/bot
+   ainda for detectado em headless, a execução é repetida automaticamente com um
+   navegador visível.
 
-If a flagged/datacenter IP still trips the *"Sign in to confirm you're not a
-bot"* wall, pass `--user-data-dir` pointing at a Chrome profile that has logged
-into YouTube once — that is the most reliable bypass.
+Se um IP sinalizado/de datacenter ainda cair no muro *"Faça login para confirmar
+que não é um robô"*, passe `--user-data-dir` apontando para um perfil do Chrome
+que já tenha feito login no YouTube — é o bypass mais confiável.
 
-## Output format
+## Formato de saída
 
-`out/<title-slug>-<video_id>.txt` groups each comment with its replies into a
-**block**, blocks separated by a blank line:
-
-```
-@user [842 likes, 2026-06-04]: message text here
-    ↳ (in reply to @user) @other [4 likes, 2026-06-03]: a reply to that comment
-    ↳ (in reply to @user) @third [0 likes, 2026-06-03]: another reply
-
-@nextuser [42 likes, 2026-06-01]: the next top-level comment
-
-@third_user [7 likes, 2026-05-30]: a comment with no replies
-```
-
-- The message is flattened to a single line (internal line breaks become spaces).
-- Custom emotes/emoji are kept as their `alt` text (e.g. `:smile:` or the emoji char).
-- Replies are indented as `    ↳ (in reply to @parent) @author …` so the parent
-  is always explicit, and a blank line separates each top-level block.
-- The like count is YouTube's own (e.g. `842`, `1.2K`); `0` when hidden/none.
-- The date is **approximate**: YouTube only exposes a relative time
-  ("2 days ago"), which is converted to `yyyy-mm-dd` relative to the run date
-  (months≈30d, years≈365d). Authors that don't resolve render as `unknown`.
-- The filename slug is the video title, NFKD-normalised with accents stripped
-  (so Portuguese titles become ASCII), lowercased and hyphenated.
-
-## Layout
+`out/<title-slug>-<video_id>.txt` agrupa cada comentário com suas respostas num
+**bloco**, blocos separados por uma linha em branco:
 
 ```
-pyproject.toml            uv project + console-script entry point
+@user [842 likes, 2026-06-04]: texto do comentário aqui
+    ↳ (in reply to @user) @other [4 likes, 2026-06-03]: uma resposta a esse comentário
+    ↳ (in reply to @user) @third [0 likes, 2026-06-03]: outra resposta
+
+@nextuser [42 likes, 2026-06-01]: o próximo comentário de primeiro nível
+
+@third_user [7 likes, 2026-05-30]: um comentário sem respostas
+```
+
+- A mensagem é achatada em uma única linha (quebras internas viram espaços).
+- Emotes/emojis personalizados são mantidos pelo seu texto `alt` (ex.: `:smile:` ou o caractere do emoji).
+- As respostas são indentadas como `    ↳ (in reply to @parent) @author …`, deixando
+  o pai sempre explícito, e uma linha em branco separa cada bloco de primeiro nível.
+- O número de likes é o do próprio YouTube (ex.: `842`, `1.2K`); `0` quando oculto/inexistente.
+- A data é **aproximada**: o YouTube só expõe um tempo relativo ("2 days ago"), que é
+  convertido para `yyyy-mm-dd` em relação à data da execução (meses≈30d, anos≈365d).
+  Autores que não resolvem aparecem como `unknown`.
+- O slug do nome do arquivo é o título do vídeo, normalizado em NFKD com acentos
+  removidos (títulos em português viram ASCII), em minúsculas e com hífens.
+
+## Organização
+
+```
+pyproject.toml            projeto uv + entry point de console-script
 src/ytcomments/
-  cli.py                  argparse, orchestration, ThreadPool, formatting, output
-  driver.py               stealth Chrome WebDriver builder (10s page-load timeout)
-  scraper.py              URL parsing, consent bypass, two-phase load/expand/harvest
-  htmltext.py             HTML->text, relative-date, slug, flatten (pure, tested)
-tests/test_units.py       browser-free tests for the pure functions
+  cli.py                  argparse, orquestração, ThreadPool, formatação, saída
+  driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
+  scraper.py              parsing de URL, bypass de consentimento, carga/expansão/coleta em duas fases
+  htmltext.py             HTML→texto, data relativa, slug, flatten (puro, testado)
+tests/test_units.py       testes sem navegador para as funções puras
 ```
 
-## Concurrency
+## Concorrência
 
-The scrape is **I/O-bound on Selenium** (scrolling/clicking/network), which is
-single-threaded by necessity — a WebDriver instance is not thread-safe. The only
-parallelisable work is the pure `html_to_text` conversion, which is tiny relative
-to the Selenium phase.
+A coleta é **limitada por I/O do Selenium** (rolar/clicar/rede), que é
+single-thread por necessidade — uma instância de WebDriver não é thread-safe. O
+único trabalho paralelizável é a conversão pura `html_to_text`, que é minúscula
+perto da fase do Selenium.
 
-It uses a batched `ThreadPoolExecutor` for that step. This was a measured choice,
-not the default reflex — benchmarking `html_to_text` over realistic comment HTML:
+Para essa etapa usa-se um `ThreadPoolExecutor` em lotes. Foi uma escolha medida,
+não o reflexo padrão — medindo `html_to_text` sobre HTML realista de comentários:
 
-| approach | 300 fragments | 1600 fragments |
+| abordagem | 300 fragmentos | 1600 fragmentos |
 |---|---|---|
-| plain loop | ~60 ms | ~315 ms |
-| thread pool (batched) | ~99 ms | ~475 ms |
+| laço simples | ~60 ms | ~315 ms |
+| thread pool (em lotes) | ~99 ms | ~475 ms |
 | `InterpreterPoolExecutor` (PEP 734) | ~220 ms | ~340 ms |
 
-For many tiny, GIL-bound parses, subinterpreters/processes add more
-startup+pickling overhead than they save, so they are the wrong tool here. The
-thread pool is kept because (a) it honours the project's "use threads"
-requirement, (b) its overhead is negligible next to minutes of Selenium, and
-(c) on a **free-threaded** interpreter it parallelises for real:
+Para muitos parses minúsculos limitados pelo GIL, subinterpretadores/processos
+adicionam mais custo de inicialização+pickling do que economizam, então são a
+ferramenta errada aqui. O thread pool é mantido porque (a) atende ao requisito de
+"usar threads" do projeto, (b) seu overhead é irrisório perto dos minutos de
+Selenium e (c) num interpretador **free-threaded** ele paraleliza de verdade:
 
 ```bash
-uv python install 3.14t      # free-threaded CPython
+uv python install 3.14t      # CPython free-threaded
 uv run --python 3.14t ytcomments '<url>'
 ```
 
-## Notes / limitations
+## Notas / limitações
 
-- Top-level comments target `--limit` (100 by default); replies are capped at
-  `--max-replies` (10 by default) and expanded one level (YouTube reply threads
-  are flat).
-- Comment dates are approximated from YouTube's relative timestamps (see above).
-- A residential IP and a signed-in profile dramatically improve reliability.
+- Comentários de primeiro nível miram o `--limit` (100 por padrão); as respostas são
+  limitadas pelo `--max-replies` (10 por padrão) e expandidas em um nível (as threads
+  de resposta do YouTube são planas).
+- As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
+- Um IP residencial e um perfil logado melhoram muito a confiabilidade.
+```
