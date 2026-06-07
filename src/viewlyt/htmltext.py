@@ -104,6 +104,25 @@ def flatten_inline(text: str) -> str:
     return " ".join(text.split())
 
 
+def format_transcript(segments: list[tuple[str, str]]) -> list[str]:
+    """Format ``(timestamp, text)`` transcript segments as ``[ts] text`` lines.
+
+    Pure/testable. Rules: collapse each segment's whitespace to single spaces;
+    drop a segment only when its text is empty AFTER collapsing (so ``[Music]`` /
+    ``♪`` markers survive); emit the timestamp VERBATIM (``m:ss`` or ``h:mm:ss``
+    for long videos — never reformatted); and NEVER deduplicate (choruses and
+    repeated phrases are legitimate). Segments with no timestamp emit just text.
+    """
+    lines: list[str] = []
+    for ts, text in segments:
+        text = " ".join((text or "").split())
+        if not text:
+            continue
+        ts = (ts or "").strip()  # verbatim time field, only trim padding
+        lines.append(f"[{ts}] {text}" if ts else text)
+    return lines
+
+
 _REL_RE = re.compile(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", re.I)
 _UNIT_DAYS = {"second": 0, "minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30, "year": 365}
 
