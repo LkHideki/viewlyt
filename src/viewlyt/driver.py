@@ -89,9 +89,7 @@ def build_driver(
     driver = webdriver.Chrome(options=opts)
 
     try:
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS}
-        )
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
     except Exception as exc:  # pragma: no cover - CDP may be unavailable
         log.debug("could not install stealth script: %s", exc)
 

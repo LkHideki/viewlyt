@@ -55,10 +55,7 @@ def test_html_to_text() -> None:
     # plain text + entity decoding
     assert html_to_text("hello &amp; bye &lt;3") == "hello & bye <3"
     # emote image -> alt text
-    assert (
-        html_to_text('great <img alt=":fire:" src="x.png"> video')
-        == "great :fire: video"
-    )
+    assert html_to_text('great <img alt=":fire:" src="x.png"> video') == "great :fire: video"
     # <br> -> newline (preserved inside the block)
     assert html_to_text("line1<br>line2") == "line1\nline2"
     # anchor -> visible text, not href
@@ -67,10 +64,7 @@ def test_html_to_text() -> None:
         == "see my channel"
     )
     # nested spans (yt-attributed-string style) + trailing whitespace tidy
-    assert (
-        html_to_text("<span><span>nested </span>text  </span>")
-        == "nested text"
-    )
+    assert html_to_text("<span><span>nested </span>text  </span>") == "nested text"
     # self-closing img and br
     assert html_to_text("a<br/>b<img alt='X'/>") == "a\nbX"
     # empty / whitespace
@@ -129,10 +123,29 @@ def test_convert_batch() -> None:
 def test_format_comment_lines() -> None:
     today = date(2026, 6, 6)
     records = [
-        {"kind": "comment", "author": "@joao", "html": "Olá <b>mundo</b>", "likes": "842", "date_raw": "2 days ago"},
-        {"kind": "reply", "author": "@maria", "parent_author": "@joao", "html": "resposta<br>linha2", "likes": "", "date_raw": "1 day ago"},
+        {
+            "kind": "comment",
+            "author": "@joao",
+            "html": "Olá <b>mundo</b>",
+            "likes": "842",
+            "date_raw": "2 days ago",
+        },
+        {
+            "kind": "reply",
+            "author": "@maria",
+            "parent_author": "@joao",
+            "html": "resposta<br>linha2",
+            "likes": "",
+            "date_raw": "1 day ago",
+        },
         {"kind": "comment", "author": "", "html": "sem autor", "likes": "3", "date_raw": ""},
-        {"kind": "comment", "author": "@x", "html": "   ", "likes": "5", "date_raw": "now"},  # empty msg -> skipped
+        {
+            "kind": "comment",
+            "author": "@x",
+            "html": "   ",
+            "likes": "5",
+            "date_raw": "now",
+        },  # empty msg -> skipped
     ]
     lines = format_comment_lines(records, today=today, progress=False)
     assert lines == [
@@ -182,12 +195,12 @@ def test_url_inputs() -> None:
 def test_format_transcript() -> None:
     segs = [
         ("0:05", "hi there"),
-        ("1:02", "  multi\nline   text "),   # whitespace collapsed
-        ("1:02", "  multi\nline   text "),   # exact duplicate MUST be kept (no dedup)
-        ("1:10:33", "[Music]"),              # long-video h:mm:ss verbatim; marker kept
-        ("  3:07  ", "padded ts"),           # timestamp padding trimmed (verbatim otherwise)
-        ("2:00", "   "),                     # empty after collapse -> dropped
-        ("", "sem timestamp"),               # missing ts -> just text
+        ("1:02", "  multi\nline   text "),  # whitespace collapsed
+        ("1:02", "  multi\nline   text "),  # exact duplicate MUST be kept (no dedup)
+        ("1:10:33", "[Music]"),  # long-video h:mm:ss verbatim; marker kept
+        ("  3:07  ", "padded ts"),  # timestamp padding trimmed (verbatim otherwise)
+        ("2:00", "   "),  # empty after collapse -> dropped
+        ("", "sem timestamp"),  # missing ts -> just text
     ]
     out = format_transcript(segs)
     assert out == [

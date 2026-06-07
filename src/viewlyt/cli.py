@@ -150,10 +150,15 @@ def scrape_one(
     title = get_video_title(driver)
     records = (
         collect_comments(
-            driver, limit=limit, max_viewports=max_viewports,
-            expand_replies=expand_replies, max_replies=max_replies, progress=progress,
+            driver,
+            limit=limit,
+            max_viewports=max_viewports,
+            expand_replies=expand_replies,
+            max_replies=max_replies,
+            progress=progress,
         )
-        if with_comments else []
+        if with_comments
+        else []
     )
     # Transcript is the LAST page action so its panel/scroll can't perturb the
     # comment lazy-load; fetch_transcript never raises (returns [] on any issue).
@@ -169,10 +174,12 @@ def _convert_all(htmls: list[str], progress: bool = True) -> list[str]:
     if not htmls:
         return []
     size = 64
-    chunks = [htmls[i:i + size] for i in range(0, len(htmls), size)]
+    chunks = [htmls[i : i + size] for i in range(0, len(htmls), size)]
     results: list[list[str]] = [[] for _ in chunks]
     workers = min(8, (os.cpu_count() or 4))
-    with tqdm(total=len(htmls), desc="parsing comments", unit="cmt", leave=False, disable=not progress) as bar:
+    with tqdm(
+        total=len(htmls), desc="parsing comments", unit="cmt", leave=False, disable=not progress
+    ) as bar:
         with ThreadPoolExecutor(max_workers=workers) as ex:
             fut_to_idx = {ex.submit(convert_batch, ch): i for i, ch in enumerate(chunks)}
             for fut in as_completed(fut_to_idx):
@@ -182,7 +189,9 @@ def _convert_all(htmls: list[str], progress: bool = True) -> list[str]:
     return [text for batch in results for text in batch]
 
 
-def format_comment_lines(records: list[dict], today: date | None = None, progress: bool = True) -> list[str]:
+def format_comment_lines(
+    records: list[dict], today: date | None = None, progress: bool = True
+) -> list[str]:
     """Render records as text lines grouped into blocks (a top-level comment and
     its replies), with a blank line between blocks. Replies are indented and name
     their parent."""
@@ -195,7 +204,7 @@ def format_comment_lines(records: list[dict], today: date | None = None, progres
     blocks: list[list[str]] = []
     current: list[str] = []
     seen: set[str] = set()
-    for r, text in zip(records, texts):
+    for r, text in zip(records, texts, strict=True):
         message = flatten_inline(text)
         author = r.get("author") or "unknown"
         likes = r.get("likes") or "0"
@@ -205,7 +214,9 @@ def format_comment_lines(records: list[dict], today: date | None = None, progres
             if not message:
                 continue
             parent = r.get("parent_author") or "unknown"
-            line = f"{REPLY_INDENT}(in reply to {parent}) {author} [{likes} likes, {when}]: {message}"
+            line = (
+                f"{REPLY_INDENT}(in reply to {parent}) {author} [{likes} likes, {when}]: {message}"
+            )
             if line in seen:  # belt-and-suspenders against any repeated element
                 continue
             seen.add(line)
@@ -241,27 +252,46 @@ def _write(slug: str, video_id: str, lines: list[str], out_dir: str, suffix: str
 # --------------------------------------------------------------------------- #
 # Batch runner: bounded pool of reused browser instances
 # --------------------------------------------------------------------------- #
-def run_batch(targets: list[tuple[str, str]], *, jobs: int, headless: bool, fallback: bool,
-              user_data_dir: str | None, out_dir: str, limit: int, max_viewports: int,
-              expand_replies: bool, max_replies: int, with_comments: bool, with_transcript: bool,
-              inner_progress: bool, quiet: bool) -> list[dict]:
+def run_batch(
+    targets: list[tuple[str, str]],
+    *,
+    jobs: int,
+    headless: bool,
+    fallback: bool,
+    user_data_dir: str | None,
+    out_dir: str,
+    limit: int,
+    max_viewports: int,
+    expand_replies: bool,
+    max_replies: int,
+    with_comments: bool,
+    with_transcript: bool,
+    inner_progress: bool,
+    quiet: bool,
+) -> list[dict]:
     """Process every (video_id, url) using ``jobs`` worker threads, each owning a
     reused, primed driver. Failures are isolated per-video; a poisoned session is
     recycled. Returns a summary dict per target."""
-    q: "Queue[tuple[str, str]]" = Queue()
+    q: Queue[tuple[str, str]] = Queue()
     for t in targets:
         q.put(t)
 
     summaries: list[dict] = []
     s_lock = threading.Lock()
-    bar = tqdm(total=len(targets), desc="vídeos", unit="vídeo",
-               disable=(len(targets) == 1 or quiet))
+    bar = tqdm(
+        total=len(targets), desc="vídeos", unit="vídeo", disable=(len(targets) == 1 or quiet)
+    )
     bar_lock = threading.Lock()
 
-    scrape_kw = dict(limit=limit, max_viewports=max_viewports,
-                     expand_replies=expand_replies, max_replies=max_replies,
-                     progress=inner_progress, with_comments=with_comments,
-                     with_transcript=with_transcript)
+    scrape_kw = dict(
+        limit=limit,
+        max_viewports=max_viewports,
+        expand_replies=expand_replies,
+        max_replies=max_replies,
+        progress=inner_progress,
+        with_comments=with_comments,
+        with_transcript=with_transcript,
+    )
 
     def add(summary: dict) -> None:
         with s_lock:
@@ -285,8 +315,12 @@ def run_batch(targets: list[tuple[str, str]], *, jobs: int, headless: bool, fall
                         vid, title, records, transcript = scrape_one(driver, url, **scrape_kw)
                     except BlockedError as exc:
                         if local_headless and fallback:
-                            log.warning("[w%d] blocked (%s) on %s — switching this worker to headed",
-                                        worker_id, exc.kind, video_id)
+                            log.warning(
+                                "[w%d] blocked (%s) on %s — switching this worker to headed",
+                                worker_id,
+                                exc.kind,
+                                video_id,
+                            )
                             _safe_quit(driver)
                             local_headless = False
                             driver = build_primed_driver(local_headless, user_data_dir)
@@ -304,13 +338,25 @@ def run_batch(targets: list[tuple[str, str]], *, jobs: int, headless: bool, fall
                     if with_transcript and transcript:
                         tlines = format_transcript(transcript)
                         if tlines:  # don't create a 0-byte .transcript.txt
-                            transcript_file = str(_write(slug, vid, tlines, out_dir, suffix=".transcript"))
+                            transcript_file = str(
+                                _write(slug, vid, tlines, out_dir, suffix=".transcript")
+                            )
                             n_seg = len(tlines)
-                    add({"url": url, "video_id": vid, "title": title, "error": None,
-                         "with_comments": with_comments, "file": comment_file,
-                         "comments": n_top, "lines": n_lines,
-                         "with_transcript": with_transcript, "transcript_file": transcript_file,
-                         "segments": n_seg})
+                    add(
+                        {
+                            "url": url,
+                            "video_id": vid,
+                            "title": title,
+                            "error": None,
+                            "with_comments": with_comments,
+                            "file": comment_file,
+                            "comments": n_top,
+                            "lines": n_lines,
+                            "with_transcript": with_transcript,
+                            "transcript_file": transcript_file,
+                            "segments": n_seg,
+                        }
+                    )
                 except Exception as exc:  # isolate this video; recycle the session
                     add({"url": url, "video_id": video_id, "error": str(exc) or type(exc).__name__})
                     _safe_quit(driver)
@@ -349,32 +395,79 @@ def build_parser() -> argparse.ArgumentParser:
         description="Scrape YouTube comments (likes, dates, replies) into "
         "out/<title-slug>-<video_id>.txt. Accepts many URLs and/or .txt/.csv files.",
     )
-    p.add_argument("inputs", nargs="*",
-                   help="one or more video URLs/ids, and/or paths to .txt/.csv files listing them")
-    p.add_argument("-f", "--from-file", action="append", default=[], metavar="PATH",
-                   help="file (.txt one-per-line, or .csv any column) with video URLs/ids; repeatable")
-    p.add_argument("-j", "--jobs", type=int, default=None,
-                   help="number of concurrent browser instances (default: min(4, nº de vídeos))")
-    p.add_argument("--limit", type=int, default=100,
-                   help="target top-level comments per video, or all if fewer (default: 100)")
-    p.add_argument("--max-viewports", type=int, default=25,
-                   help="scroll budget per video (scroll-to-bottom steps, default: 25)")
-    p.add_argument("--no-replies", action="store_true", help="don't expand/collect replies (faster)")
-    p.add_argument("--max-replies", type=int, default=10,
-                   help="max replies per comment (default: 10; 0 disables)")
-    p.add_argument("--transcript", action="store_true",
-                   help="also fetch the video transcript -> out/<slug>-<id>.transcript.txt "
-                        "(skipped if the video has none, e.g. many music videos)")
-    p.add_argument("--transcript-only", action="store_true",
-                   help="fetch only the transcript and skip comments (much faster)")
-    p.add_argument("--headed", action="store_true",
-                   help="visible browser instead of headless (more reliable vs the bot wall)")
-    p.add_argument("--no-fallback", action="store_true",
-                   help="don't auto-retry headed when a block is detected")
-    p.add_argument("--user-data-dir", default=None,
-                   help="persistent Chrome profile dir (a signed-in profile defeats the bot wall)")
-    p.add_argument("-o", "--out-dir", default="out",
-                   help="directory for <title-slug>-<video_id>.txt (default: out)")
+    p.add_argument(
+        "inputs",
+        nargs="*",
+        help="one or more video URLs/ids, and/or paths to .txt/.csv files listing them",
+    )
+    p.add_argument(
+        "-f",
+        "--from-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="file (.txt one-per-line, or .csv any column) with video URLs/ids; repeatable",
+    )
+    p.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=None,
+        help="number of concurrent browser instances (default: min(4, nº de vídeos))",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="target top-level comments per video, or all if fewer (default: 100)",
+    )
+    p.add_argument(
+        "--max-viewports",
+        type=int,
+        default=25,
+        help="scroll budget per video (scroll-to-bottom steps, default: 25)",
+    )
+    p.add_argument(
+        "--no-replies", action="store_true", help="don't expand/collect replies (faster)"
+    )
+    p.add_argument(
+        "--max-replies",
+        type=int,
+        default=10,
+        help="max replies per comment (default: 10; 0 disables)",
+    )
+    p.add_argument(
+        "--transcript",
+        action="store_true",
+        help="also fetch the video transcript -> out/<slug>-<id>.transcript.txt "
+        "(skipped if the video has none, e.g. many music videos)",
+    )
+    p.add_argument(
+        "--transcript-only",
+        action="store_true",
+        help="fetch only the transcript and skip comments (much faster)",
+    )
+    p.add_argument(
+        "--headed",
+        action="store_true",
+        help="visible browser instead of headless (more reliable vs the bot wall)",
+    )
+    p.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="don't auto-retry headed when a block is detected",
+    )
+    p.add_argument(
+        "--user-data-dir",
+        default=None,
+        help="persistent Chrome profile dir (a signed-in profile defeats the bot wall)",
+    )
+    p.add_argument(
+        "-o",
+        "--out-dir",
+        default="out",
+        help="directory for <title-slug>-<video_id>.txt (default: out)",
+    )
     p.add_argument("-q", "--quiet", action="store_true", help="only log warnings/errors")
     return p
 
@@ -400,28 +493,42 @@ def main(argv: list[str] | None = None) -> int:
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
     jobs = max(1, min(jobs, len(targets)))
-    inner_progress = (len(targets) == 1 and not args.quiet)
+    inner_progress = len(targets) == 1 and not args.quiet
 
     log.info("%d video(s) to scrape with %d browser instance(s)", len(targets), jobs)
     summaries = run_batch(
-        targets, jobs=jobs, headless=not args.headed, fallback=not args.no_fallback,
-        user_data_dir=args.user_data_dir, out_dir=args.out_dir, limit=args.limit,
-        max_viewports=args.max_viewports, expand_replies=not args.no_replies,
-        max_replies=args.max_replies, with_comments=with_comments, with_transcript=with_transcript,
-        inner_progress=inner_progress, quiet=args.quiet,
+        targets,
+        jobs=jobs,
+        headless=not args.headed,
+        fallback=not args.no_fallback,
+        user_data_dir=args.user_data_dir,
+        out_dir=args.out_dir,
+        limit=args.limit,
+        max_viewports=args.max_viewports,
+        expand_replies=not args.no_replies,
+        max_replies=args.max_replies,
+        with_comments=with_comments,
+        with_transcript=with_transcript,
+        inner_progress=inner_progress,
+        quiet=args.quiet,
     )
 
     ok = [s for s in summaries if not s["error"]]
     failed = [s for s in summaries if s["error"]]
-    print(f"\nDone: {len(ok)}/{len(summaries)} video(s) scraped"
-          + (f", {len(failed)} failed" if failed else ""))
+    print(
+        f"\nDone: {len(ok)}/{len(summaries)} video(s) scraped"
+        + (f", {len(failed)} failed" if failed else "")
+    )
     for s in ok:
         parts = []
         if s.get("with_comments"):
             parts.append(f"{s['comments']} comments, {s['lines']} lines -> {s['file']}")
         if s.get("with_transcript"):
-            parts.append(f"transcript: {s['segments']} segments -> {s['transcript_file']}"
-                         if s.get("transcript_file") else "transcript: unavailable")
+            parts.append(
+                f"transcript: {s['segments']} segments -> {s['transcript_file']}"
+                if s.get("transcript_file")
+                else "transcript: unavailable"
+            )
         print(f"  ✓ {s['video_id']}  " + " | ".join(parts))
     for s in failed:
         print(f"  ✗ {s['video_id']}  {s['error']}", file=sys.stderr)

@@ -40,13 +40,13 @@ log = logging.getLogger("viewlyt")
 
 COMMENTS_CONTAINER = "ytd-comments#comments"
 COMMENT_THREAD = "ytd-comment-thread-renderer"
-TOP_COMMENT = "#comment"                # the top-level comment inside a thread
-COMMENT_TEXT = "#content-text"          # tag-agnostic (yt-attributed/formatted-string)
+TOP_COMMENT = "#comment"  # the top-level comment inside a thread
+COMMENT_TEXT = "#content-text"  # tag-agnostic (yt-attributed/formatted-string)
 COMMENT_AUTHOR = "#author-text"
-LIKES = "#vote-count-middle"            # like count (empty when zero)
+LIKES = "#vote-count-middle"  # like count (empty when zero)
 PUBLISHED_TIME = "#published-time-text"  # relative timestamp, e.g. "2 days ago"
-READ_MORE = "#more"                     # "Read more" text expander (not #more-replies)
-MORE_REPLIES = "#more-replies"          # "View N replies" toggle
+READ_MORE = "#more"  # "Read more" text expander (not #more-replies)
+MORE_REPLIES = "#more-replies"  # "View N replies" toggle
 REPLIES_RENDERER = "ytd-comment-replies-renderer"
 REPLY_ITEM = (
     "ytd-comment-replies-renderer ytd-comment-view-model, "
@@ -58,8 +58,7 @@ REPLY_CONTINUATION = "ytd-comment-replies-renderer ytd-continuation-item-rendere
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
 TRANSCRIPT_SECTION = "ytd-video-description-transcript-section-renderer"
 TRANSCRIPT_PANEL = (
-    'ytd-engagement-panel-section-list-renderer'
-    '[target-id="engagement-panel-searchable-transcript"]'
+    'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
 )
 TRANSCRIPT_SEGMENT = "ytd-transcript-segment-renderer"
 TRANSCRIPT_TS = ".segment-timestamp"
@@ -129,8 +128,11 @@ def safe_get(driver, url: str) -> None:
     try:
         driver.get(url)
     except TimeoutException:
-        log.warning("page load exceeded %ss for %s — stopping load and continuing",
-                    _DEFAULT_TIMEOUT_NOTE, url)
+        log.warning(
+            "page load exceeded %ss for %s — stopping load and continuing",
+            _DEFAULT_TIMEOUT_NOTE,
+            url,
+        )
         try:
             driver.execute_script("window.stop();")
         except WebDriverException:
@@ -157,14 +159,12 @@ def dismiss_consent_dialog(driver, timeout: float = 4.0) -> bool:
     """Best-effort click of a cookie-consent button if one is shown."""
     combined = " | ".join(CONSENT_XPATHS)
     try:
-        btn = WebDriverWait(driver, timeout).until(
-            EC.element_to_be_clickable((By.XPATH, combined))
-        )
+        btn = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, combined)))
         btn.click()
         log.info("dismissed consent dialog")
         time.sleep(1.0)
         return True
-    except (TimeoutException, WebDriverException):
+    except TimeoutException, WebDriverException:
         return False
 
 
@@ -222,14 +222,14 @@ def _text(el, css: str) -> str:
     try:
         node = el.find_element(By.CSS_SELECTOR, css)
         return " ".join((node.get_attribute("textContent") or "").split())
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         return ""
 
 
 def _inner_html(el, css: str) -> str:
     try:
         return el.find_element(By.CSS_SELECTOR, css).get_attribute("innerHTML") or ""
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         return ""
 
 
@@ -241,14 +241,14 @@ def _likes(comment_el) -> str:
 def _top_el(thread):
     try:
         return thread.find_element(By.CSS_SELECTOR, TOP_COMMENT)
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         return thread
 
 
 def _scroll_into_view(driver, el) -> None:
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
-    except (StaleElementReferenceException, WebDriverException):
+    except StaleElementReferenceException, WebDriverException:
         pass
 
 
@@ -259,11 +259,11 @@ def _safe_click(driver, el) -> bool:
     try:
         el.click()
         return True
-    except (ElementClickInterceptedException, StaleElementReferenceException, WebDriverException):
+    except ElementClickInterceptedException, StaleElementReferenceException, WebDriverException:
         try:
             driver.execute_script("arguments[0].click();", el)
             return True
-        except (StaleElementReferenceException, WebDriverException):
+        except StaleElementReferenceException, WebDriverException:
             return False
 
 
@@ -273,7 +273,7 @@ def _click_read_more(driver, comment_el) -> None:
         btn = comment_el.find_element(By.CSS_SELECTOR, READ_MORE)
         if btn.is_displayed():
             driver.execute_script("arguments[0].click();", btn)
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         pass
 
 
@@ -285,7 +285,7 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         return
     try:
         toggle = thread.find_element(By.CSS_SELECTOR, MORE_REPLIES)
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         return  # this comment has no replies
 
     if not _safe_click(driver, toggle):
@@ -294,19 +294,19 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         WebDriverWait(driver, 6).until(
             lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > 0
         )
-    except (TimeoutException, StaleElementReferenceException, WebDriverException):
+    except TimeoutException, StaleElementReferenceException, WebDriverException:
         return
 
     for _ in range(max_more_clicks):
         try:
             before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM))
-        except (StaleElementReferenceException, WebDriverException):
+        except StaleElementReferenceException, WebDriverException:
             break
         if before >= max_replies:
             break  # already loaded enough replies for this comment
         try:
             conts = thread.find_elements(By.CSS_SELECTOR, REPLY_CONTINUATION)
-        except (StaleElementReferenceException, WebDriverException):
+        except StaleElementReferenceException, WebDriverException:
             break
         cont = next((c for c in conts if _displayed(c)), None)
         if cont is None:
@@ -316,22 +316,24 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
             btns = cont.find_elements(By.CSS_SELECTOR, "button, tp-yt-paper-button")
             if btns:
                 target = btns[0]
-        except (StaleElementReferenceException, WebDriverException):
+        except StaleElementReferenceException, WebDriverException:
             pass
         if not _safe_click(driver, target):
             break
         try:
             WebDriverWait(driver, 5).until(
-                lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > before
+                lambda d, before=before: (
+                    len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > before
+                )
             )
-        except (TimeoutException, StaleElementReferenceException, WebDriverException):
+        except TimeoutException, StaleElementReferenceException, WebDriverException:
             break
 
 
 def _displayed(el) -> bool:
     try:
         return el.is_displayed()
-    except (StaleElementReferenceException, WebDriverException):
+    except StaleElementReferenceException, WebDriverException:
         return False
 
 
@@ -385,7 +387,9 @@ def collect_comments(
     # ---- Phase A: load top-level comments -------------------------------- #
     log.info("loading up to %d top-level comments (scroll budget %dx)", limit, max_viewports)
     stale = 0
-    with tqdm(total=limit, desc="loading comments", unit="cmt", leave=False, disable=not progress) as bar:
+    with tqdm(
+        total=limit, desc="loading comments", unit="cmt", leave=False, disable=not progress
+    ) as bar:
         for _ in range(max_viewports):
             before = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
             bar.n = min(before, limit)
@@ -395,7 +399,9 @@ def collect_comments(
             _scroll_for_more(driver)
             try:
                 WebDriverWait(driver, 10).until(
-                    lambda d: len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                    lambda d, before=before: (
+                        len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                    )
                 )
                 stale = 0
             except TimeoutException:
@@ -406,7 +412,9 @@ def collect_comments(
                 _scroll_for_more(driver)
                 try:
                     WebDriverWait(driver, 8).until(
-                        lambda d: len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                        lambda d, before=before: (
+                            len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                        )
                     )
                     stale = 0
                 except TimeoutException:
@@ -419,8 +427,11 @@ def collect_comments(
         bar.refresh()
 
     threads = driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)[:limit]
-    log.info("loaded %d top-level comments; harvesting%s",
-             len(threads), " + replies" if expand_replies and max_replies > 0 else "")
+    log.info(
+        "loaded %d top-level comments; harvesting%s",
+        len(threads),
+        " + replies" if expand_replies and max_replies > 0 else "",
+    )
 
     # ---- Phase B: expand + harvest, each thread exactly once ------------- #
     records: list[dict] = []
@@ -435,30 +446,40 @@ def collect_comments(
             continue  # truly empty comment body: skip it (and its replies)
         parent_author = _text(top, COMMENT_AUTHOR)
         records.append(
-            {"kind": "comment", "author": parent_author,
-             "html": html, "likes": _likes(top),
-             "date_raw": _text(top, PUBLISHED_TIME)}
+            {
+                "kind": "comment",
+                "author": parent_author,
+                "html": html,
+                "likes": _likes(top),
+                "date_raw": _text(top, PUBLISHED_TIME),
+            }
         )
 
         if expand_replies and max_replies > 0:
             _expand_replies(driver, th, max_replies)
             try:
                 reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
-            except (StaleElementReferenceException, WebDriverException):
+            except StaleElementReferenceException, WebDriverException:
                 reply_els = []
             for rep in reply_els:
                 r_html = _inner_html(rep, COMMENT_TEXT)
                 if not r_html.strip():
                     continue
                 records.append(
-                    {"kind": "reply", "author": _text(rep, COMMENT_AUTHOR),
-                     "parent_author": parent_author,
-                     "html": r_html, "likes": _likes(rep),
-                     "date_raw": _text(rep, PUBLISHED_TIME)}
+                    {
+                        "kind": "reply",
+                        "author": _text(rep, COMMENT_AUTHOR),
+                        "parent_author": parent_author,
+                        "html": r_html,
+                        "likes": _likes(rep),
+                        "date_raw": _text(rep, PUBLISHED_TIME),
+                    }
                 )
 
     n_top = sum(1 for r in records if r["kind"] == "comment")
-    log.info("collected %d records (%d comments + %d replies)", len(records), n_top, len(records) - n_top)
+    log.info(
+        "collected %d records (%d comments + %d replies)", len(records), n_top, len(records) - n_top
+    )
     return records
 
 
@@ -476,7 +497,7 @@ def _js_click(driver, el) -> bool:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
         driver.execute_script("arguments[0].click();", el)
         return True
-    except (StaleElementReferenceException, WebDriverException):
+    except StaleElementReferenceException, WebDriverException:
         return False
 
 
@@ -493,7 +514,7 @@ def _expand_description(driver) -> None:
                 _js_click(driver, e)
                 time.sleep(0.4)
                 break
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         pass
 
 
@@ -508,7 +529,7 @@ def _find_transcript_button(driver):
             for b in sec.find_elements(By.CSS_SELECTOR, "button"):
                 if _displayed(b):
                     return b
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
         pass
     try:
         return driver.execute_script(
@@ -584,15 +605,20 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
 
         _load_all_transcript_segments(driver)
 
-        raw = driver.execute_script(
-            "var out=[];var segs=document.querySelectorAll(arguments[0]);"
-            "for (var i=0;i<segs.length;i++){var s=segs[i];"
-            "var t=s.querySelector(arguments[1]);"
-            "var x=s.querySelector(arguments[2]);"
-            "out.push([t?t.textContent:'', x?x.textContent:'']);}"
-            "return out;",
-            TRANSCRIPT_SEGMENT, TRANSCRIPT_TS, TRANSCRIPT_SEG_TEXT,
-        ) or []
+        raw = (
+            driver.execute_script(
+                "var out=[];var segs=document.querySelectorAll(arguments[0]);"
+                "for (var i=0;i<segs.length;i++){var s=segs[i];"
+                "var t=s.querySelector(arguments[1]);"
+                "var x=s.querySelector(arguments[2]);"
+                "out.push([t?t.textContent:'', x?x.textContent:'']);}"
+                "return out;",
+                TRANSCRIPT_SEGMENT,
+                TRANSCRIPT_TS,
+                TRANSCRIPT_SEG_TEXT,
+            )
+            or []
+        )
 
         segments: list[tuple[str, str]] = []
         for ts, txt in raw:
@@ -602,7 +628,12 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
             segments.append((" ".join((ts or "").split()), txt))
         log.info("transcript: %d segments", len(segments))
         return segments
-    except (TimeoutException, StaleElementReferenceException, NoSuchElementException, WebDriverException) as exc:
+    except (
+        TimeoutException,
+        StaleElementReferenceException,
+        NoSuchElementException,
+        WebDriverException,
+    ) as exc:
         log.warning("transcript fetch failed: %s", exc)
         return []
     except Exception as exc:  # pragma: no cover - never break the video over a transcript
