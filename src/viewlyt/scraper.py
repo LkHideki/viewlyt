@@ -164,7 +164,7 @@ def dismiss_consent_dialog(driver, timeout: float = 4.0) -> bool:
         log.info("dismissed consent dialog")
         time.sleep(1.0)
         return True
-    except TimeoutException, WebDriverException:
+    except (TimeoutException, WebDriverException):
         return False
 
 
@@ -222,14 +222,14 @@ def _text(el, css: str) -> str:
     try:
         node = el.find_element(By.CSS_SELECTOR, css)
         return " ".join((node.get_attribute("textContent") or "").split())
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         return ""
 
 
 def _inner_html(el, css: str) -> str:
     try:
         return el.find_element(By.CSS_SELECTOR, css).get_attribute("innerHTML") or ""
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         return ""
 
 
@@ -241,14 +241,14 @@ def _likes(comment_el) -> str:
 def _top_el(thread):
     try:
         return thread.find_element(By.CSS_SELECTOR, TOP_COMMENT)
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         return thread
 
 
 def _scroll_into_view(driver, el) -> None:
     try:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
-    except StaleElementReferenceException, WebDriverException:
+    except (StaleElementReferenceException, WebDriverException):
         pass
 
 
@@ -259,11 +259,11 @@ def _safe_click(driver, el) -> bool:
     try:
         el.click()
         return True
-    except ElementClickInterceptedException, StaleElementReferenceException, WebDriverException:
+    except (ElementClickInterceptedException, StaleElementReferenceException, WebDriverException):
         try:
             driver.execute_script("arguments[0].click();", el)
             return True
-        except StaleElementReferenceException, WebDriverException:
+        except (StaleElementReferenceException, WebDriverException):
             return False
 
 
@@ -273,7 +273,7 @@ def _click_read_more(driver, comment_el) -> None:
         btn = comment_el.find_element(By.CSS_SELECTOR, READ_MORE)
         if btn.is_displayed():
             driver.execute_script("arguments[0].click();", btn)
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
 
 
@@ -285,7 +285,7 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         return
     try:
         toggle = thread.find_element(By.CSS_SELECTOR, MORE_REPLIES)
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         return  # this comment has no replies
 
     if not _safe_click(driver, toggle):
@@ -294,19 +294,19 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         WebDriverWait(driver, 6).until(
             lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > 0
         )
-    except TimeoutException, StaleElementReferenceException, WebDriverException:
+    except (TimeoutException, StaleElementReferenceException, WebDriverException):
         return
 
     for _ in range(max_more_clicks):
         try:
             before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM))
-        except StaleElementReferenceException, WebDriverException:
+        except (StaleElementReferenceException, WebDriverException):
             break
         if before >= max_replies:
             break  # already loaded enough replies for this comment
         try:
             conts = thread.find_elements(By.CSS_SELECTOR, REPLY_CONTINUATION)
-        except StaleElementReferenceException, WebDriverException:
+        except (StaleElementReferenceException, WebDriverException):
             break
         cont = next((c for c in conts if _displayed(c)), None)
         if cont is None:
@@ -316,7 +316,7 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
             btns = cont.find_elements(By.CSS_SELECTOR, "button, tp-yt-paper-button")
             if btns:
                 target = btns[0]
-        except StaleElementReferenceException, WebDriverException:
+        except (StaleElementReferenceException, WebDriverException):
             pass
         if not _safe_click(driver, target):
             break
@@ -326,14 +326,14 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
                     len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > before
                 )
             )
-        except TimeoutException, StaleElementReferenceException, WebDriverException:
+        except (TimeoutException, StaleElementReferenceException, WebDriverException):
             break
 
 
 def _displayed(el) -> bool:
     try:
         return el.is_displayed()
-    except StaleElementReferenceException, WebDriverException:
+    except (StaleElementReferenceException, WebDriverException):
         return False
 
 
@@ -459,7 +459,7 @@ def collect_comments(
             _expand_replies(driver, th, max_replies)
             try:
                 reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
-            except StaleElementReferenceException, WebDriverException:
+            except (StaleElementReferenceException, WebDriverException):
                 reply_els = []
             for rep in reply_els:
                 r_html = _inner_html(rep, COMMENT_TEXT)
@@ -497,7 +497,7 @@ def _js_click(driver, el) -> bool:
         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
         driver.execute_script("arguments[0].click();", el)
         return True
-    except StaleElementReferenceException, WebDriverException:
+    except (StaleElementReferenceException, WebDriverException):
         return False
 
 
@@ -514,7 +514,7 @@ def _expand_description(driver) -> None:
                 _js_click(driver, e)
                 time.sleep(0.4)
                 break
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
 
 
@@ -529,7 +529,7 @@ def _find_transcript_button(driver):
             for b in sec.find_elements(By.CSS_SELECTOR, "button"):
                 if _displayed(b):
                     return b
-    except NoSuchElementException, StaleElementReferenceException, WebDriverException:
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
     try:
         return driver.execute_script(
