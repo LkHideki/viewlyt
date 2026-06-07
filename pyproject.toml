@@ -3,11 +3,43 @@ name = "viewlyt"
 version = "0.1.0"
 description = "Scrape a YouTube video's comments (likes, dates, replies) and transcript into text files, using Selenium."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Lucas Hideki", email = "lucas.hideki.07@gmail.com" },
+]
+keywords = [
+    "youtube",
+    "comments",
+    "transcript",
+    "scraper",
+    "selenium",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Topic :: Utilities",
+]
 dependencies = [
     "selenium>=4.21",
     "tqdm>=4.66",
 ]
+
+[project.urls]
+Homepage = "https://github.com/LkHideki/viewlyt"
+Repository = "https://github.com/LkHideki/viewlyt"
+Issues = "https://github.com/LkHideki/viewlyt/issues"
 
 [project.scripts]
 viewlyt = "viewlyt.cli:main"
