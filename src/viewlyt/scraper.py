@@ -125,8 +125,28 @@ TRANSCRIPT_PANEL = (
 # selector must therefore stay an EXACT class-token match — never a substring/startswith
 # on "ytwTranscriptSegmentViewModelTimestamp" — or it would also grab that A11y label.
 TRANSCRIPT_SEGMENT = "transcript-segment-view-model, ytd-transcript-segment-renderer"
+# Exact-token class selectors (CSS `.token` is exact-token by spec, so it can never
+# match the sibling ...TimestampA11yLabel). NEVER weaken these to substring matches.
 TRANSCRIPT_TS = ".ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp"
 TRANSCRIPT_SEG_TEXT = "span.ytAttributedStringHost, yt-formatted-string.segment-text, .segment-text"
+# Broader panel-host match (modern + legacy + bare renderers) to confirm the panel
+# opened even when the click target was a menu item or a direct engagement-panel open.
+TRANSCRIPT_PANEL_ANY = (
+    'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"], '
+    "ytd-transcript-renderer, ytd-transcript-search-panel-renderer"
+)
+# Scrollable host of the (often virtualized) segment list — scrolling THIS, not the
+# last segment node, is what keeps a virtualized list yielding new rows.
+TRANSCRIPT_SCROLLER = (
+    "ytd-transcript-segment-list-renderer #segments-container, "
+    "#segments-container, "
+    "ytd-engagement-panel-section-list-renderer #content"
+)
+# The "...more"/overflow action menu that, on some layouts, hosts "Show transcript".
+OVERFLOW_MENU_BUTTON = (
+    'ytd-watch-metadata button[aria-label="More actions"], '
+    'button[aria-label="More actions"], button[aria-label="Mais ações"]'
+)
 
 # Locale-dependent "before you continue" consent buttons (best-effort fallback;
 # the cookie priming below usually skips the interstitial entirely).
@@ -654,12 +674,31 @@ def _expand_description(driver) -> None:
         pass
 
 
+def _scan_transcript_control(driver):
+    """JS scan for a VISIBLE control whose aria-label/text matches /transcri/,
+    excluding a "Hide/Ocultar" toggle (the panel may linger from a previous video
+    on a reused driver). Covers buttons, links, and menu items; ``offsetParent``
+    rules out hidden/lingering controls. Returns the element or None."""
+    try:
+        return driver.execute_script(
+            "var bs=document.querySelectorAll('button, a, yt-button-shape, "
+            "ytd-button-renderer, tp-yt-paper-button, ytd-menu-service-item-renderer, "
+            "tp-yt-paper-item');"
+            "for (var i=0;i<bs.length;i++){var b=bs[i];"
+            "var s=((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();"
+            "if(/transcri/.test(s) && !/hide|ocultar/.test(s) && b.offsetParent!==null) return b;}"
+            "return null;"
+        )
+    except WebDriverException:
+        return None
+
+
 def _find_transcript_button(driver):
     """Return the "Show transcript" button element, or None.
 
-    Prefers the description transcript section; falls back to any visible button
-    whose aria-label/text matches /transcri/ — excluding a "Hide/Ocultar" toggle
-    (the panel may linger from a previous video on a reused driver)."""
+    Tries, in order: (1) the description transcript section button; (2) any visible
+    /transcri/ control anywhere; (3) the "...more" action overflow menu, which on
+    some layouts hosts the entry — opened, then rescanned."""
     try:
         for sec in driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SECTION):
             for b in sec.find_elements(By.CSS_SELECTOR, "button"):
@@ -667,16 +706,53 @@ def _find_transcript_button(driver):
                     return b
     except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
+
+    btn = _scan_transcript_control(driver)
+    if btn is not None:
+        return btn
+
+    # Open the "...more" overflow menu (cheap) and rescan — the transcript entry
+    # lives inside it on some layouts.
     try:
-        return driver.execute_script(
-            "var bs=document.querySelectorAll('button');"
-            "for (var i=0;i<bs.length;i++){var b=bs[i];"
-            "var s=((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();"
-            "if(/transcri/.test(s) && !/hide|ocultar/.test(s)) return b;}"
-            "return null;"
+        for m in driver.find_elements(By.CSS_SELECTOR, OVERFLOW_MENU_BUTTON):
+            if _displayed(m):
+                _js_click(driver, m)
+                time.sleep(0.4)
+                break
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        pass
+    return _scan_transcript_control(driver)
+
+
+def _open_transcript_panel_direct(driver) -> bool:
+    """Best-effort: ask the page to open the searchable-transcript engagement panel
+    directly, for videos where no clickable "Show transcript" control is reachable.
+
+    Returns whether the attempt was dispatched (never raises); the caller still
+    verifies via the panel/segment wait, so a no-op simply degrades to []."""
+    try:
+        driver.execute_script(
+            "try{var app=document.querySelector('ytd-app');"
+            "if(app&&app.fire){app.fire('yt-action',{actionName:"
+            "'yt-open-engagement-panel-action',args:[{openEngagementPanelAction:"
+            "{panelIdentifier:'engagement-panel-searchable-transcript'}}],"
+            "optionalAction:false,returnValue:[]});}}catch(e){}"
         )
+        return True
     except WebDriverException:
-        return None
+        return False
+
+
+def _wait_for_segments(driver, timeout: float) -> int:
+    """Wait for at least one transcript segment to appear; return the count (0 on
+    timeout / error). Never raises."""
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+        )
+        return len(driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+    except (TimeoutException, StaleElementReferenceException, WebDriverException):
+        return 0
 
 
 def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
@@ -698,8 +774,14 @@ def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
         prev = n
         try:
             driver.execute_script(
-                "var s=document.querySelectorAll(arguments[0]);"
-                "if (s.length) s[s.length - 1].scrollIntoView({block: 'end'});",
+                # Prefer scrolling the (virtualized) panel container — that is what
+                # advances virtualization; fall back to bringing the last segment
+                # into view for the legacy / non-virtualized panel.
+                "var sc=document.querySelector(arguments[0]);"
+                "if(sc && sc.scrollHeight>sc.clientHeight){sc.scrollTop=sc.scrollHeight;return;}"
+                "var s=document.querySelectorAll(arguments[1]);"
+                "if(s.length) s[s.length-1].scrollIntoView({block:'end'});",
+                TRANSCRIPT_SCROLLER,
                 TRANSCRIPT_SEGMENT,
             )
         except WebDriverException:
@@ -723,19 +805,35 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
         driver.execute_script("window.scrollTo(0, 600);")
         _expand_description(driver)
 
+        # Open the panel. A real button gets the full timeout and one retry (a
+        # reused driver's first click can no-op while a prior panel tears down);
+        # the speculative direct-open (no button at all — usually a genuinely
+        # transcript-less video) gets a short budget so music videos stay fast.
         btn = _find_transcript_button(driver)
-        if btn is None:
-            log.info("no transcript button — transcript unavailable for this video")
-            return []
-        if not _js_click(driver, btn):
-            log.warning("found the transcript button but could not click it")
-            return []
+        if btn is not None:
+            if not _js_click(driver, btn):
+                log.warning("found the transcript button but could not click it")
+                return []
+            seg_timeout, retry = timeout, True
+        else:
+            if not _open_transcript_panel_direct(driver):
+                log.info("no transcript control — transcript unavailable for this video")
+                return []
+            seg_timeout, retry = min(timeout, 3.0), False
 
+        # Panel host usually appears before the segments hydrate; don't block long.
         try:
-            WebDriverWait(driver, timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+            WebDriverWait(driver, min(seg_timeout, 4.0)).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
             )
         except TimeoutException:
+            pass
+
+        n_seg = _wait_for_segments(driver, seg_timeout)
+        if n_seg == 0 and retry:
+            _js_click(driver, btn)
+            n_seg = _wait_for_segments(driver, seg_timeout)
+        if n_seg == 0:
             log.info("transcript panel opened but no segments — transcript unavailable")
             return []
 
@@ -747,7 +845,11 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
                 "for (var i=0;i<segs.length;i++){var s=segs[i];"
                 "var t=s.querySelector(arguments[1]);"
                 "var x=s.querySelector(arguments[2]);"
-                "out.push([t?t.textContent:'', x?x.textContent:'']);}"
+                "var tt=t?t.textContent:'';"
+                # Text fallback: when neither text host matches, use the segment's
+                # own text minus the timestamp so a layout change still yields text.
+                "var xt=x?x.textContent:(s.textContent||'').replace(tt,'');"
+                "out.push([tt, xt]);}"
                 "return out;",
                 TRANSCRIPT_SEGMENT,
                 TRANSCRIPT_TS,
