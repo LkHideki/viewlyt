@@ -8,13 +8,47 @@ manual ``chromedriver`` to install and no ``webdriver-manager`` dependency.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
 log = logging.getLogger("viewlyt")
 
-CHROME_BINARY = "/usr/bin/google-chrome"
+# Override the browser location with this env var (useful on macOS/Windows or for
+# Chromium/Brave). When unset, we probe the common Linux path and then PATH, and
+# finally fall back to letting Selenium Manager auto-detect the browser.
+CHROME_BINARY_ENV = "VIEWLYT_CHROME_BINARY"
+_DEFAULT_LINUX_CHROME = "/usr/bin/google-chrome"
+_CHROME_NAMES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+)
+
+
+def _resolve_chrome_binary() -> str | None:
+    """Locate the Chrome/Chromium binary, or ``None`` to let Selenium auto-detect.
+
+    Priority: ``$VIEWLYT_CHROME_BINARY`` → the common Linux path (if it exists) →
+    any chrome/chromium on ``PATH``. Returning ``None`` lets Selenium Manager find
+    the browser itself (the standard locations on macOS/Windows), so a plain
+    ``pip install viewlyt`` works cross-platform without a hardcoded path.
+    """
+    env = os.environ.get(CHROME_BINARY_ENV)
+    if env:
+        return env
+    if os.path.exists(_DEFAULT_LINUX_CHROME):
+        return _DEFAULT_LINUX_CHROME
+    for name in _CHROME_NAMES:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
 
 # Must match the installed Chrome major version and must NOT contain
 # "HeadlessChrome" (a dead giveaway to bot detection).
@@ -55,7 +89,12 @@ def build_driver(
     lazy-load.
     """
     opts = Options()
-    opts.binary_location = CHROME_BINARY
+    binary = _resolve_chrome_binary()
+    if binary:
+        opts.binary_location = binary
+        log.debug("using Chrome binary: %s", binary)
+    else:
+        log.debug("no Chrome binary found on PATH; letting Selenium auto-detect")
 
     if headless:
         opts.add_argument("--headless=new")
