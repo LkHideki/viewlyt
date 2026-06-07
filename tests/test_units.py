@@ -48,15 +48,20 @@ class _FakeNode:
 
 
 class _FakeElement:
-    """Maps a CSS selector -> _FakeNode; raises NoSuchElement for anything else."""
+    """Maps a CSS selector -> _FakeNode (find_element) and -> [elements] (find_elements);
+    raises NoSuchElement for an unmapped find_element."""
 
-    def __init__(self, mapping: dict) -> None:
+    def __init__(self, mapping: dict, elements: dict | None = None) -> None:
         self._mapping = mapping
+        self._elements = elements or {}
 
     def find_element(self, _by, css):  # signature matches Selenium (by, value)
         if css in self._mapping:
             return self._mapping[css]
         raise NoSuchElementException(css)
+
+    def find_elements(self, _by, css):
+        return self._elements.get(css, [])
 
 
 class _StubDriver:
@@ -420,6 +425,46 @@ def test_comments_disabled() -> None:
     print("ok: comments_disabled")
 
 
+def test_harvest_thread_fallback() -> None:
+    # The per-element fallback (used when the batched JS read errors) must assemble
+    # the same record shape: comment fields + an ordered replies list.
+    from viewlyt.scraper import REPLY_ITEM, _harvest_thread_fallback
+
+    drv = _StubDriver()  # execute_script no-ops the scroll / read-more click
+    reply = _FakeElement(
+        {
+            "#content-text": _FakeNode(html="<b>oi</b>"),
+            "#author-text": _FakeNode(text="@maria"),
+            "#vote-count-middle": _FakeNode(text="3"),
+            "#published-time-text": _FakeNode(text="1 day ago"),
+        }
+    )
+    th = _FakeElement(
+        {
+            "#content-text": _FakeNode(html="texto"),
+            "#author-text": _FakeNode(text="@joao"),
+            "#vote-count-middle": _FakeNode(text="10"),
+            "#published-time-text": _FakeNode(text="2 days ago"),
+        },
+        elements={REPLY_ITEM: [reply]},
+    )
+    rec = _harvest_thread_fallback(drv, th, max_replies=5)
+    assert rec["author"] == "@joao" and rec["html"] == "texto" and rec["likes"] == "10"
+    assert rec["date"] == "2 days ago" and len(rec["replies"]) == 1
+    assert rec["replies"][0] == {
+        "author": "@maria",
+        "html": "<b>oi</b>",
+        "likes": "3",
+        "date": "1 day ago",
+    }
+    # max_replies=0 -> no replies harvested even if present
+    assert _harvest_thread_fallback(drv, th, max_replies=0)["replies"] == []
+    # empty top comment -> None (skipped by the caller)
+    empty = _FakeElement({"#content-text": _FakeNode(html="   ")})
+    assert _harvest_thread_fallback(drv, empty, max_replies=5) is None
+    print("ok: harvest_thread_fallback")
+
+
 def test_transcript_timestamp_exact_token() -> None:
     # Guard: the transcript timestamp selector must be an EXACT class token so it
     # can never grab the sibling ...TimestampA11yLabel ("30 minutes, 40 seconds").
@@ -559,6 +604,7 @@ if __name__ == "__main__":
     test_likes_fallback()
     test_top_el_fallback()
     test_comments_disabled()
+    test_harvest_thread_fallback()
     test_transcript_timestamp_exact_token()
     test_format_transcript()
     test_url_inputs()

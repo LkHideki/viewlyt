@@ -483,6 +483,105 @@ def _scroll_for_more(driver) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Single-round-trip harvest of one thread
+# --------------------------------------------------------------------------- #
+# Reads the top comment + every reply (author / html / likes / date) for ONE thread
+# in a single in-page pass, mirroring _first_text/_first_inner_html/_likes/_top_el:
+# ordered selector fallbacks, whitespace-collapsed textContent, raw innerHTML, and a
+# '0' likes default. This replaces ~13 + 8·(replies) Selenium round-trips per thread
+# with one. The top comment's "Read more" is clicked only when visible (offsetParent)
+# so an already-expanded comment is never re-collapsed. Returns null for a genuinely
+# empty top comment (the caller skips it); reply slicing matches the Python path
+# (first `max_replies` reply elements, then drop the empty ones). The JS `/\s+/`
+# collapse matches Python's str.split() for all realistic author/date/likes text
+# (they differ only on rare control separators like U+001C-1F, never seen here);
+# `html` is raw innerHTML in both paths, so the comment body is byte-identical.
+_HARVEST_JS = r"""
+var th=arguments[0], TOPS=arguments[1], TXT=arguments[2], AUTH=arguments[3],
+    LIKES=arguments[4], TIME=arguments[5], REPLY=arguments[6], REPLY_FB=arguments[7],
+    MORE=arguments[8], MAXR=arguments[9];
+function ft(el,sels){for(var i=0;i<sels.length;i++){var n=el.querySelector(sels[i]);
+  if(n){var t=(n.textContent||'').replace(/\s+/g,' ').trim();if(t)return t;}}return '';}
+function fh(el,sels){for(var i=0;i<sels.length;i++){var n=el.querySelector(sels[i]);
+  if(n){var h=n.innerHTML||'';if(h.trim())return h;}}return '';}
+function topEl(th){for(var i=0;i<TOPS.length;i++){var n=th.querySelector(TOPS[i]);if(n)return n;}return th;}
+var t=topEl(th);
+try{var mb=t.querySelector(MORE);if(mb&&mb.offsetParent!==null)mb.click();}catch(e){}
+var html=fh(t,TXT);
+if(!html.trim())return null;
+var rec={author:ft(t,AUTH),html:html,likes:(ft(t,LIKES)||'0'),date:ft(t,TIME),replies:[]};
+if(MAXR>0){
+  var reps=th.querySelectorAll(REPLY);
+  if(!reps.length)reps=th.querySelectorAll(REPLY_FB);
+  var lim=Math.min(reps.length,MAXR);
+  for(var i=0;i<lim;i++){var rp=reps[i];var rh=fh(rp,TXT);
+    if(!rh.trim())continue;
+    rec.replies.push({author:ft(rp,AUTH),html:rh,likes:(ft(rp,LIKES)||'0'),date:ft(rp,TIME)});}
+}
+return rec;
+"""
+
+
+def _harvest_thread(driver, th, max_replies: int):
+    """Harvest one thread in a single ``execute_script`` round-trip.
+
+    Returns the comment record (with a ``replies`` list of records) or ``None`` for an
+    empty top comment. Lets ``WebDriverException`` propagate so the caller can fall
+    back to the per-element path."""
+    return driver.execute_script(
+        _HARVEST_JS,
+        th,
+        list(TOP_COMMENT_SELECTORS),
+        list(COMMENT_TEXT_SELECTORS),
+        list(COMMENT_AUTHOR_SELECTORS),
+        list(LIKES_SELECTORS),
+        list(PUBLISHED_TIME_SELECTORS),
+        REPLY_ITEM,
+        REPLY_ITEM_FALLBACK,
+        READ_MORE,
+        max_replies,
+    )
+
+
+def _harvest_thread_fallback(driver, th, max_replies: int):
+    """Per-element harvest (the proven, chatty path) — used only when the batched JS
+    read errors. Returns the same record shape as :func:`_harvest_thread`."""
+    top = _top_el(th)
+    _scroll_into_view(driver, top)
+    _click_read_more(driver, top)
+    html = _first_inner_html(top, COMMENT_TEXT_SELECTORS)
+    if not html.strip():
+        return None
+    rec = {
+        "author": _first_text(top, COMMENT_AUTHOR_SELECTORS),
+        "html": html,
+        "likes": _likes(top),
+        "date": _first_text(top, PUBLISHED_TIME_SELECTORS),
+        "replies": [],
+    }
+    if max_replies > 0:
+        try:
+            reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
+            if not reply_els:
+                reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM_FALLBACK)[:max_replies]
+        except (StaleElementReferenceException, WebDriverException):
+            reply_els = []
+        for rep in reply_els:
+            r_html = _first_inner_html(rep, COMMENT_TEXT_SELECTORS)
+            if not r_html.strip():
+                continue
+            rec["replies"].append(
+                {
+                    "author": _first_text(rep, COMMENT_AUTHOR_SELECTORS),
+                    "html": r_html,
+                    "likes": _likes(rep),
+                    "date": _first_text(rep, PUBLISHED_TIME_SELECTORS),
+                }
+            )
+    return rec
+
+
+# --------------------------------------------------------------------------- #
 # Two-phase collection
 # --------------------------------------------------------------------------- #
 def collect_comments(
@@ -579,56 +678,45 @@ def collect_comments(
         " + replies" if expand_replies and max_replies > 0 else "",
     )
 
-    # ---- Phase B: expand + harvest, each thread exactly once ------------- #
+    # ---- Phase B: expand replies (trusted clicks), then harvest each thread in a
+    # single in-page round-trip — falling back to the per-element path on any JS
+    # error. Interleaved per thread (expand -> read) so a long, virtualizing list
+    # can't recycle an early thread's replies before we read them. --------------- #
     records: list[dict] = []
-    desc = "harvesting (+replies)" if expand_replies and max_replies > 0 else "harvesting"
+    eff_max_replies = max_replies if expand_replies else 0
+    desc = "harvesting (+replies)" if eff_max_replies > 0 else "harvesting"
     for th in tqdm(threads, desc=desc, unit="thread", leave=False, disable=not progress):
-        # A single thread going stale mid-harvest must not abort the whole run;
-        # the inner field reads each swallow their own errors, this catches the
-        # rarer case of `th`/`top` itself going stale between reads.
+        # A single thread going stale mid-harvest must not abort the whole run.
         try:
-            top = _top_el(th)
-            _scroll_into_view(driver, top)
-            _click_read_more(driver, top)
-
-            html = _first_inner_html(top, COMMENT_TEXT_SELECTORS)
-            if not html.strip():
+            if eff_max_replies > 0:
+                _expand_replies(driver, th, eff_max_replies)
+            try:
+                rec = _harvest_thread(driver, th, eff_max_replies)
+            except (StaleElementReferenceException, WebDriverException):
+                rec = _harvest_thread_fallback(driver, th, eff_max_replies)
+            if not rec:
                 continue  # truly empty comment body: skip it (and its replies)
-            parent_author = _first_text(top, COMMENT_AUTHOR_SELECTORS)
+            parent_author = rec.get("author") or ""
             records.append(
                 {
                     "kind": "comment",
                     "author": parent_author,
-                    "html": html,
-                    "likes": _likes(top),
-                    "date_raw": _first_text(top, PUBLISHED_TIME_SELECTORS),
+                    "html": rec.get("html") or "",
+                    "likes": rec.get("likes") or "0",
+                    "date_raw": rec.get("date") or "",
                 }
             )
-
-            if expand_replies and max_replies > 0:
-                _expand_replies(driver, th, max_replies)
-                try:
-                    reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
-                    if not reply_els:  # primary selector found nothing — try the fallback
-                        reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM_FALLBACK)[
-                            :max_replies
-                        ]
-                except (StaleElementReferenceException, WebDriverException):
-                    reply_els = []
-                for rep in reply_els:
-                    r_html = _first_inner_html(rep, COMMENT_TEXT_SELECTORS)
-                    if not r_html.strip():
-                        continue
-                    records.append(
-                        {
-                            "kind": "reply",
-                            "author": _first_text(rep, COMMENT_AUTHOR_SELECTORS),
-                            "parent_author": parent_author,
-                            "html": r_html,
-                            "likes": _likes(rep),
-                            "date_raw": _first_text(rep, PUBLISHED_TIME_SELECTORS),
-                        }
-                    )
+            for rp in rec.get("replies") or []:
+                records.append(
+                    {
+                        "kind": "reply",
+                        "author": rp.get("author") or "",
+                        "parent_author": parent_author,
+                        "html": rp.get("html") or "",
+                        "likes": rp.get("likes") or "0",
+                        "date_raw": rp.get("date") or "",
+                    }
+                )
         except (StaleElementReferenceException, WebDriverException):
             continue
 
