@@ -104,6 +104,101 @@ def flatten_inline(text: str) -> str:
     return " ".join(text.split())
 
 
+# Authors we treat as "not a real, identifiable person": never merge or dedup
+# two of these together (two anonymous comments are not the same author).
+_ANON_AUTHORS = {"", "unknown"}
+
+
+def _comment_key(author: str, html: str) -> tuple[str, str]:
+    """Normalized identity of a top-level comment for merge/dedup comparison.
+
+    Compares on the *rendered* plain text, not raw HTML: ``<b>x</b>`` and ``x``
+    render identically and should count as the same message, while markup noise
+    must not split an otherwise-identical comment. The text is run through the
+    same html_to_text + flatten_inline pipeline used for output, then lowercased
+    so case-only differences collapse. The author is matched verbatim (handles
+    are case-sensitive identifiers; we only special-case the anonymous set).
+    """
+    text = flatten_inline(html_to_text(html or "")).lower()
+    return (author or "", text)
+
+
+def group_consecutive_comments(records: list[dict]) -> list[dict]:
+    """Merge consecutive same-author top-level comments and drop exact dups.
+
+    Pure / stdlib-only (lives here so it stays Selenium-free and unit-testable).
+
+    Input is the flat, ordered record list the scraper produces: each top-level
+    comment ``{kind:'comment', author, html, likes, date_raw}`` is immediately
+    followed by its replies ``{kind:'reply', author, parent_author, html, ...}``.
+    The function regroups each comment with its trailing replies into a block and:
+
+    * **Merges** a block into the previous one when BOTH top-level authors are
+      equal and are real (non-empty, not ``"unknown"``). The merged comment keeps
+      the FIRST comment's ``likes`` and ``date_raw``; the HTML fragments are joined
+      with ``<br>`` (so html_to_text yields a newline that flatten_inline turns
+      into a single space); and ALL replies from every merged comment are kept,
+      in order.
+    * **Drops** a block whose top-level comment is an EXACT duplicate (same author
+      AND same rendered text) of one already kept — comparison is top-level only,
+      so replies never affect the duplicate decision; a dropped comment's replies
+      go with it.
+
+    Returns a NEW flat record list in the same shape, so ``format_comment_lines``
+    works unchanged when fed the result. Records are not mutated in place.
+    """
+    if not records:
+        return []
+
+    # 1) Split the flat list into blocks: a 'comment' starts a block; every
+    #    following 'reply' (until the next 'comment') belongs to it. Any leading
+    #    replies with no parent comment are passed through untouched.
+    blocks: list[dict] = []  # {"comment": dict, "replies": list[dict]}
+    leading: list[dict] = []
+    for r in records:
+        if r.get("kind") == "comment":
+            blocks.append({"comment": dict(r), "replies": []})
+        elif blocks:
+            blocks[-1]["replies"].append(dict(r))
+        else:
+            leading.append(dict(r))  # orphan reply before any comment
+
+    # 2) Walk blocks, merging consecutive same-(real)-author and dropping dups.
+    kept: list[dict] = []  # same block shape as above
+    seen_keys: set[tuple[str, str]] = set()
+    for blk in blocks:
+        c = blk["comment"]
+        author = c.get("author") or ""
+        is_real = author.lower() not in _ANON_AUTHORS
+        key = _comment_key(author, c.get("html", ""))
+
+        if is_real and key in seen_keys:
+            continue  # exact duplicate top-level comment -> drop block (+replies)
+
+        prev = kept[-1]["comment"] if kept else None
+        if (
+            is_real
+            and prev is not None
+            and (prev.get("author") or "") == author
+            and (prev.get("author") or "").lower() not in _ANON_AUTHORS
+        ):
+            # Consecutive same real author: merge into the previous block.
+            prev["html"] = f"{prev.get('html', '')}<br>{c.get('html', '')}"
+            kept[-1]["replies"].extend(blk["replies"])
+        else:
+            kept.append({"comment": c, "replies": list(blk["replies"])})
+
+        if is_real:
+            seen_keys.add(key)
+
+    # 3) Flatten back to the input shape: comment then its replies, in order.
+    out: list[dict] = list(leading)
+    for blk in kept:
+        out.append(blk["comment"])
+        out.extend(blk["replies"])
+    return out
+
+
 def format_transcript(segments: list[tuple[str, str]]) -> list[str]:
     """Format ``(timestamp, text)`` transcript segments as ``[ts] text`` lines.
 

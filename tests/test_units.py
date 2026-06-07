@@ -15,6 +15,7 @@ from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
     format_transcript,
+    group_consecutive_comments,
     html_to_text,
     parse_relative_date,
     slugify,
@@ -22,6 +23,24 @@ from viewlyt.htmltext import (  # noqa: E402
 from viewlyt.scraper import extract_video_id  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
+TODAY = date(2026, 6, 6)
+
+
+def _c(author: str, html: str, likes: str = "0", date_raw: str = "just now") -> dict:
+    """Build a top-level comment record."""
+    return {"kind": "comment", "author": author, "html": html, "likes": likes, "date_raw": date_raw}
+
+
+def _r(author: str, parent: str, html: str, likes: str = "0", date_raw: str = "just now") -> dict:
+    """Build a reply record."""
+    return {
+        "kind": "reply",
+        "author": author,
+        "parent_author": parent,
+        "html": html,
+        "likes": likes,
+        "date_raw": date_raw,
+    }
 
 
 def test_extract_video_id() -> None:
@@ -157,6 +176,129 @@ def test_format_comment_lines() -> None:
     print("ok: format_comment_lines")
 
 
+def test_merge_two_consecutive_same_author() -> None:
+    # Two consecutive comments by the same author merge into one block; the FIRST
+    # comment's likes+date are kept and the texts are concatenated (br -> space).
+    recs = [
+        _c("@joao", "primeira", likes="10", date_raw="2 days ago"),
+        _c("@joao", "segunda", likes="99", date_raw="just now"),
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@joao [10 likes, 2026-06-04]: primeira segunda"
+    ]
+    print("ok: merge_two_consecutive_same_author")
+
+
+def test_merge_same_author_not_consecutive() -> None:
+    # Same author, but interrupted by another author -> NOT merged.
+    recs = [
+        _c("@joao", "um", likes="1"),
+        _c("@maria", "dois", likes="2"),
+        _c("@joao", "tres", likes="3"),
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@joao [1 likes, 2026-06-06]: um",
+        "",
+        "@maria [2 likes, 2026-06-06]: dois",
+        "",
+        "@joao [3 likes, 2026-06-06]: tres",
+    ]
+    print("ok: merge_same_author_not_consecutive")
+
+
+def test_merge_different_authors() -> None:
+    recs = [_c("@a", "x", likes="1"), _c("@b", "y", likes="2")]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@a [1 likes, 2026-06-06]: x",
+        "",
+        "@b [2 likes, 2026-06-06]: y",
+    ]
+    print("ok: merge_different_authors")
+
+
+def test_merge_anonymous_authors_not_merged() -> None:
+    # '' and 'unknown' both render as "unknown" but must NEVER merge/dedup together
+    # (two anonymous comments are not "the same author").
+    recs = [
+        _c("", "primeiro anon", likes="1"),
+        _c("", "segundo anon", likes="2"),
+        _c("unknown", "terceiro", likes="3"),
+        _c("unknown", "quarto", likes="4"),
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "unknown [1 likes, 2026-06-06]: primeiro anon",
+        "",
+        "unknown [2 likes, 2026-06-06]: segundo anon",
+        "",
+        "unknown [3 likes, 2026-06-06]: terceiro",
+        "",
+        "unknown [4 likes, 2026-06-06]: quarto",
+    ]
+    print("ok: merge_anonymous_authors_not_merged")
+
+
+def test_merge_exact_duplicate_dropped() -> None:
+    # Exact-duplicate top-level comment (markup/whitespace/case-insensitive on the
+    # rendered text) is dropped even when not adjacent; the between-comment survives.
+    recs = [
+        _c("@a", "<b>same</b> text", likes="5"),
+        _c("@b", "between", likes="1"),
+        _c("@a", "same text", likes="999", date_raw="2 days ago"),
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@a [5 likes, 2026-06-06]: same text",
+        "",
+        "@b [1 likes, 2026-06-06]: between",
+    ]
+    print("ok: merge_exact_duplicate_dropped")
+
+
+def test_merge_replies_concatenated_across_merge() -> None:
+    # Merging two same-author comments keeps ALL replies, in order, under the block.
+    recs = [
+        _c("@joao", "parte1", likes="7"),
+        _r("@maria", "@joao", "resposta A"),
+        _c("@joao", "parte2", likes="0"),
+        _r("@pedro", "@joao", "resposta B"),
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@joao [7 likes, 2026-06-06]: parte1 parte2",
+        "    ↳ (in reply to @joao) @maria [0 likes, 2026-06-06]: resposta A",
+        "    ↳ (in reply to @joao) @pedro [0 likes, 2026-06-06]: resposta B",
+    ]
+    print("ok: merge_replies_concatenated_across_merge")
+
+
+def test_merge_disabled_old_behavior() -> None:
+    # merge_comments=False reproduces the old verbatim behavior (no merge/dedup).
+    recs = [_c("@joao", "um", likes="1"), _c("@joao", "dois", likes="2")]
+    assert format_comment_lines(recs, today=TODAY, progress=False, merge_comments=False) == [
+        "@joao [1 likes, 2026-06-06]: um",
+        "",
+        "@joao [2 likes, 2026-06-06]: dois",
+    ]
+    print("ok: merge_disabled_old_behavior")
+
+
+def test_group_consecutive_comments_shape() -> None:
+    # Direct test of the pure transform: 3x @a collapse to one comment carrying
+    # both replies; @b stays separate; input dicts are not mutated.
+    recs = [
+        _c("@a", "a1"),
+        _r("@x", "@a", "r1"),
+        _c("@a", "a2"),
+        _r("@y", "@a", "r2"),
+        _c("@a", "a3"),
+        _c("@b", "b1"),
+    ]
+    out = group_consecutive_comments(recs)
+    assert [r["kind"] for r in out] == ["comment", "reply", "reply", "comment"]
+    assert out[0]["html"] == "a1<br>a2<br>a3"
+    assert out[3]["author"] == "@b"
+    assert recs[0]["html"] == "a1"  # input not mutated
+    print("ok: group_consecutive_comments_shape")
+
+
 def test_url_inputs() -> None:
     with tempfile.TemporaryDirectory() as d:
         txt = Path(d) / "urls.txt"
@@ -267,6 +409,14 @@ if __name__ == "__main__":
     test_parse_relative_date()
     test_convert_batch()
     test_format_comment_lines()
+    test_merge_two_consecutive_same_author()
+    test_merge_same_author_not_consecutive()
+    test_merge_different_authors()
+    test_merge_anonymous_authors_not_merged()
+    test_merge_exact_duplicate_dropped()
+    test_merge_replies_concatenated_across_merge()
+    test_merge_disabled_old_behavior()
+    test_group_consecutive_comments_shape()
     test_format_transcript()
     test_url_inputs()
     test_resolve_chrome_binary()

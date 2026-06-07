@@ -36,6 +36,7 @@ from .htmltext import (
     convert_batch,
     flatten_inline,
     format_transcript,
+    group_consecutive_comments,
     parse_relative_date,
     slugify,
 )
@@ -206,14 +207,26 @@ def _convert_all(htmls: list[str], progress: bool = True) -> list[str]:
 
 
 def format_comment_lines(
-    records: list[dict], today: date | None = None, progress: bool = True
+    records: list[dict],
+    today: date | None = None,
+    progress: bool = True,
+    merge_comments: bool = True,
 ) -> list[str]:
     """Render records as text lines grouped into blocks (a top-level comment and
     its replies), with a blank line between blocks. Replies are indented and name
-    their parent."""
+    their parent.
+
+    When ``merge_comments`` is true (the default) consecutive top-level comments
+    by the same real author are merged into one block and exact-duplicate
+    top-level comments are dropped, via
+    :func:`viewlyt.htmltext.group_consecutive_comments`. Pass ``False`` to keep
+    the raw record stream verbatim (old behavior)."""
     if not records:
         return []
     today = today or date.today()
+
+    if merge_comments:
+        records = group_consecutive_comments(records)
 
     texts = _convert_all([r.get("html", "") for r in records], progress=progress)
 
