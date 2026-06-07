@@ -1,283 +1,287 @@
 # viewlyt
 
-Coleta os comentários de um ou vários vídeos do YouTube em
-`out/<title-slug>-<video_id>.txt` (texto puro, sem tags HTML) usando **Selenium**
-+ **Google Chrome** headless, gerenciado com [`uv`](https://github.com/astral-sh/uv).
+Collects the comments of one or several YouTube videos into
+`out/<title-slug>-<video_id>.txt` (plain text, no HTML tags) using **Selenium**
++ **Google Chrome** headless, managed with [`uv`](https://github.com/astral-sh/uv).
 
-Abre a página do vídeo e trabalha em duas fases (com barras de progresso `tqdm`):
+It opens the video page and works in two phases (with `tqdm` progress bars):
 
-1. **Carga** — rola até o fim repetidamente (até **25** passos de rolagem) para
-   carregar de forma preguiçosa até **100 comentários de primeiro nível** (o
-   principal ativo do projeto), ou todos, se forem menos.
-2. **Expansão & coleta** — percorre cada thread uma vez: rola até ele, clica em
-   **"Read more"** para destruncar o texto, expande as **respostas** com um clique
-   confiável (até **10 por comentário** por padrão, configurável) e registra cada
-   comentário/resposta com seu **autor**, **número de likes** e **data**.
+1. **Loading** — repeatedly scrolls to the end (up to **25** scroll steps) to
+   lazily load up to **150 top-level comments** (the project's main asset), or
+   all of them if there are fewer.
+2. **Expansion & collection** — walks each thread once: scrolls to it, clicks
+   **"Read more"** to untruncate the text, expands the **replies** with a
+   reliable click (up to **5 per comment** by default, configurable), and
+   records each comment/reply with its **author**, **like count**, and **date**.
 
-Os fragmentos de HTML são convertidos em texto puro com um `ThreadPoolExecutor`
-em lotes (o `alt` de emojis/emotes e o texto dos links são preservados), e o
-resultado é escrito agrupado em blocos — um comentário seguido de suas respostas,
-blocos separados por uma linha em branco.
+The HTML fragments are converted to plain text with a `ThreadPoolExecutor` in
+batches (the `alt` of emojis/emotes and the link text are preserved), and the
+result is written grouped into blocks — a comment followed by its replies,
+blocks separated by a blank line.
 
-Opcionalmente, com `-t`/`--transcript`, também coleta a **transcrição completa**
-do vídeo (abre o painel pelo botão de transcrição na descrição) em
-`out/<title-slug>-<video_id>.transcript.txt`. Use `-c -t` para comentários **e**
-transcrição, ou `-t` sozinho para só a transcrição.
+Optionally, with `-t`/`--transcript`, it also collects the **full transcript**
+of the video (opening the panel via the transcript button in the description)
+into `out/<title-slug>-<video_id>.transcript.txt`. Use `-c -t` for comments
+**and** transcript, or `-t` alone for the transcript only.
 
-> **Mudança de comportamento:** `-t`/`--transcript` sozinho agora coleta SÓ a
-> transcrição (antes, `--transcript` também mantinha os comentários). Para os dois,
+> **Behavior change:** `-t`/`--transcript` alone now collects ONLY the
+> transcript (previously, `--transcript` also kept the comments). For both,
 > use `-c -t`.
 
-## Requisitos
+## Requirements
 
-- `uv` (instala/gerencia o Python; requer **Python ≥ 3.11**, e o `.python-version`
-  fixa o **3.14** para desenvolvimento)
-- Google Chrome (ou Chromium) instalado. O binário é localizado automaticamente:
-  `$VIEWLYT_CHROME_BINARY` → `/usr/bin/google-chrome` → qualquer `chrome`/`chromium`
-  no `PATH` → autodetecção do Selenium (locais padrão de macOS/Windows). Defina
-  `VIEWLYT_CHROME_BINARY` para apontar um binário específico (ex.: Brave, ou um
-  caminho fora do `PATH`). O Selenium Manager baixa o ChromeDriver compatível
-  sozinho — nada para instalar manualmente.
+- `uv` (installs/manages Python; requires **Python ≥ 3.11**, and the
+  `.python-version` pins **3.14** for development)
+- Google Chrome (or Chromium) installed. The binary is located automatically:
+  `$VIEWLYT_CHROME_BINARY` → `/usr/bin/google-chrome` → any `chrome`/`chromium`
+  on the `PATH` → Selenium autodetection (default macOS/Windows locations). Set
+  `VIEWLYT_CHROME_BINARY` to point to a specific binary (e.g. Brave, or a path
+  outside the `PATH`). Selenium Manager downloads the compatible ChromeDriver
+  on its own — nothing to install manually.
 
-## Instalação
+## Installation
 
 ```bash
 uv sync
 ```
 
-## Uso
+## Usage
 
 ```bash
-# Padrão: headless. Escreve out/<title-slug>-dQw4w9WgXcQ.txt
+# Default: headless. Writes out/<title-slug>-dQw4w9WgXcQ.txt
 uv run viewlyt 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
-# Aceita também youtu.be, /shorts/, /embed/ e o id puro:
+# Also accepts youtu.be, /shorts/, /embed/ and the bare id:
 uv run viewlyt 'https://youtu.be/dQw4w9WgXcQ'
 
-# Navegador visível (mais confiável contra o bot wall):
+# Visible browser (more reliable against the bot wall):
 uv run viewlyt --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
-# Coleta no máximo 50 comentários e ignora respostas (bem mais rápido):
+# Collects at most 50 comments and skips replies (much faster):
 uv run viewlyt --limit 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
-# Mantém até 25 respostas por comentário:
+# Keeps up to 25 replies per comment:
 uv run viewlyt --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
-# Escreve em outro diretório:
+# Writes to another directory:
 uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 
-# Comentários + transcrição completa do vídeo (seletores -c e -t juntos):
+# Comments + full video transcript (the -c and -t selectors together):
 uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 
-# Só a transcrição (pula os comentários — bem mais rápido):
+# Transcript only (skips the comments — much faster):
 uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-only
 
-# Não fundir comentários consecutivos do mesmo autor (a fusão é o padrão):
+# Don't merge consecutive comments from the same author (merging is the default):
 uv run viewlyt --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
 
-# Vários vídeos de uma vez (pool de instâncias reutilizadas):
+# Several videos at once (pool of reused instances):
 uv run viewlyt '<url1>' '<url2>' '<url3>'
 
-# A partir de um arquivo .txt (uma URL por linha) ou .csv (qualquer coluna):
+# From a .txt file (one URL per line) or .csv (any column):
 uv run viewlyt --from-file urls.txt
-uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
+uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 ```
 
-### Opções
+### Options
 
-| Flag | Padrão | Descrição |
+| Flag | Default | Description |
 |------|--------|-----------|
-| `inputs…` | — | uma ou mais URLs/ids e/ou caminhos de `.txt`/`.csv` (posicional) |
-| `-V, --version` | — | mostra a versão e sai |
-| `-f, --from-file PATH` | — | arquivo com URLs/ids (`.txt` uma por linha, `.csv` qualquer coluna); repetível |
-| `-j, --jobs N` | `min(4, nº vídeos)` | nº de navegadores concorrentes (instâncias reutilizadas) |
-| `--limit N` | `150` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
-| `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
-| `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
-| `--max-replies N` | `5` | Máximo de respostas por comentário (`0` desativa) |
-| `--no-merge-comments` | off | Não funde comentários de primeiro nível consecutivos do mesmo autor (a fusão é o padrão; `--prevent-comment-group` é alias) |
-| `-c, --comments` | off | Coleta comentários (é o padrão quando nenhum seletor é dado; combine com `-t` para ambos) |
-| `-t, --transcript` | off | Coleta a transcrição → `out/<title-slug>-<video_id>.transcript.txt`. Sem `-c`, coleta SÓ a transcrição; com `-c`, ambos. **Muda** o sentido antigo de `--transcript` (que também mantinha os comentários). |
-| `--transcript-only` | off | Coleta só a transcrição (alias de `-t` sem `-c`) |
-| `--headed` | off | Usa um navegador visível em vez de headless |
-| `--no-fallback` | off | Não tenta de novo em modo visível ao detectar bloqueio |
-| `--user-data-dir DIR` | — | Perfil persistente do Chrome (use um já logado para furar o bot wall) |
-| `-o, --out-dir DIR` | `out` | Diretório para `<title-slug>-<video_id>.txt` |
-| `-q, --quiet` | off | Só loga avisos/erros |
+| `inputs…` | — | one or more URLs/ids and/or `.txt`/`.csv` paths (positional) |
+| `-V, --version` | — | shows the version and exits |
+| `-f, --from-file PATH` | — | file with URLs/ids (`.txt` one per line, `.csv` any column); repeatable |
+| `-j, --jobs N` | `min(4, # videos)` | number of concurrent browsers (reused instances) |
+| `--limit N` | `150` | Target number of top-level comments to collect (or all, if fewer) |
+| `--max-viewports N` | `25` | Scroll budget (number of scroll-to-end steps) |
+| `--no-replies` | off | Does not expand/collect replies (faster) |
+| `--max-replies N` | `5` | Maximum replies per comment (`0` disables it) |
+| `--no-merge-comments` | off | Does not merge consecutive top-level comments from the same author (merging is the default; `--prevent-comment-group` is an alias) |
+| `-c, --comments` | off | Collects comments (the default when no selector is given; combine with `-t` for both) |
+| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.txt`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
+| `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
+| `--headed` | off | Uses a visible browser instead of headless |
+| `--no-fallback` | off | Does not retry in visible mode when a block is detected |
+| `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
+| `-o, --out-dir DIR` | `out` | Directory for `<title-slug>-<video_id>.txt` |
+| `-q, --quiet` | off | Only logs warnings/errors |
 
-## Vários vídeos (modo batch)
+## Several videos (batch mode)
 
-Você pode passar várias URLs e/ou arquivos. As URLs são deduplicadas por id de
-vídeo e processadas por um **pool limitado de instâncias do Chrome reutilizadas**:
-cada worker mantém **um** navegador e processa vários vídeos em sequência (amortiza
-o custo de abrir o Chrome), com até `--jobs` navegadores em paralelo (padrão
-`min(4, nº de vídeos)`). Como o trabalho é I/O-bound, isso acelera bastante.
+You can pass multiple URLs and/or files. The URLs are deduplicated by video id
+and processed by a **limited pool of reused Chrome instances**: each worker
+keeps **one** browser and processes several videos in sequence (amortizing the
+cost of launching Chrome), with up to `--jobs` browsers in parallel (default
+`min(4, # videos)`). Since the work is I/O-bound, this speeds things up
+considerably.
 
-- Falhas são isoladas por vídeo (um vídeo com erro não derruba o lote); uma sessão
-  problemática é recriada automaticamente.
-- Com **um** vídeo aparecem as barras detalhadas por fase; com **vários**, aparece
-  uma barra geral de "vídeos" e um resumo final por vídeo.
-- Cada vídeo gera o seu próprio `out/<title-slug>-<video_id>.txt`.
+- Failures are isolated per video (one failing video doesn't bring down the
+  batch); a problematic session is recreated automatically.
+- With **one** video, the detailed per-phase bars appear; with **several**, a
+  general "videos" bar appears plus a final per-video summary.
+- Each video produces its own `out/<title-slug>-<video_id>.txt`.
 
-> Cada instância do Chrome consome memória (~300–500 MB). Ajuste `--jobs` conforme a RAM disponível.
+> Each Chrome instance consumes memory (~300–500 MB). Adjust `--jobs` according to the available RAM.
 
-## Transcrição
+## Transcript
 
-Com `-t`/`--transcript` (ou `--transcript-only`), o coletor expande a descrição,
-clica no botão **"Show transcript"** e lê o painel de transcrição, gravando
-`out/<title-slug>-<video_id>.transcript.txt` com **um segmento por linha**:
-
-```
-[0:00] Você provavelmente usa o Cloud errado.
-[0:02] Ele não foi feito só para te responder,
-```
-
-- O timestamp é o do próprio YouTube, **verbatim** (`m:ss` ou `h:mm:ss` em vídeos
-  longos) — nunca reformatado.
-- **Sem deduplicação**: refrões e marcadores como `[Music]` se repetem de propósito.
-- É **opt-in** (mantém a coleta de comentários rápida por padrão). `-t`/`--transcript-only`
-  (sem `-c`) pula os comentários e é bem mais rápido.
-- Vídeos **sem transcrição** (muitos clipes musicais) são ignorados graciosamente —
-  o resumo final mostra `transcript: unavailable` e nenhum arquivo é criado.
-- Para texto corrido sem timestamps: `sed 's/^\[[^]]*\] //' arquivo.transcript.txt`.
-
-## Driblando bloqueios do YouTube/Google
-
-O coletor aplica várias camadas para funcionar numa máquina nova:
-
-1. **Cookies de consentimento** — `SOCS`/`CONSENT` são definidos antes de navegar,
-   então o aviso "Antes de continuar no YouTube" é pulado em perfis novos. Um
-   clique no botão de consentimento ciente do idioma (Accept all / Aceitar tudo)
-   fica como fallback.
-2. **Chrome stealth** — user agent realista (não-headless), um `--window-size` real
-   (obrigatório, senão os comentários nunca carregam em headless),
-   `--disable-blink-features=AutomationControlled`, `excludeSwitches` e um script
-   CDP que esconde `navigator.webdriver` e ajusta plugins/idiomas.
-3. **Fallback automático para modo visível** — se um bloqueio de consentimento/bot
-   ainda for detectado em headless, a execução é repetida automaticamente com um
-   navegador visível.
-
-Se um IP sinalizado/de datacenter ainda cair no muro *"Faça login para confirmar
-que não é um robô"*, passe `--user-data-dir` apontando para um perfil do Chrome
-que já tenha feito login no YouTube — é o bypass mais confiável.
-
-## Formato de saída
-
-`out/<title-slug>-<video_id>.txt` agrupa cada comentário com suas respostas num
-**bloco**, blocos separados por uma linha em branco:
+With `-t`/`--transcript` (or `--transcript-only`), the collector expands the
+description, clicks the **"Show transcript"** button and reads the transcript
+panel, writing `out/<title-slug>-<video_id>.transcript.txt` with **one segment
+per line**:
 
 ```
-@user [842 likes, 2026-06-04]: texto do comentário aqui
-    ↳ (in reply to @user) @other [4 likes, 2026-06-03]: uma resposta a esse comentário
-    ↳ (in reply to @user) @third [0 likes, 2026-06-03]: outra resposta
-
-@nextuser [42 likes, 2026-06-01]: o próximo comentário de primeiro nível
-
-@third_user [7 likes, 2026-05-30]: um comentário sem respostas
+[0:00] You're probably using the Cloud wrong.
+[0:02] It wasn't made just to answer you,
 ```
 
-- A mensagem é achatada em uma única linha (quebras internas viram espaços).
-- Emotes/emojis personalizados são mantidos pelo seu texto `alt` (ex.: `:smile:` ou o caractere do emoji).
-- As respostas são indentadas como `    ↳ (in reply to @parent) @author …`, deixando
-  o pai sempre explícito, e uma linha em branco separa cada bloco de primeiro nível.
-- O número de likes é o do próprio YouTube (ex.: `842`, `1.2K`); `0` quando oculto/inexistente.
-- A data é **aproximada**: o YouTube só expõe um tempo relativo ("2 days ago"), que é
-  convertido para `yyyy-mm-dd` em relação à data da execução (meses≈30d, anos≈365d).
-  Autores que não resolvem aparecem como `unknown`.
-- O slug do nome do arquivo é o título do vídeo, normalizado em NFKD com acentos
-  removidos (títulos em português viram ASCII), em minúsculas e com hífens.
-- **Fusão (padrão):** comentários de primeiro nível **consecutivos do mesmo autor**
-  (real — nunca `unknown`/vazio) são unidos em um só bloco (likes/data do primeiro,
-  textos concatenados na ordem, todas as respostas mantidas) e **duplicatas exatas**
-  (mesmo autor + mesmo texto) são descartadas. Desative com `--no-merge-comments`
-  (alias `--prevent-comment-group`).
+- The timestamp is YouTube's own, **verbatim** (`m:ss` or `h:mm:ss` on long
+  videos) — never reformatted.
+- **No deduplication**: refrains and markers like `[Music]` repeat on purpose.
+- It is **opt-in** (keeps comment collection fast by default). `-t`/`--transcript-only`
+  (without `-c`) skips the comments and is much faster.
+- Videos **without a transcript** (many music clips) are skipped gracefully —
+  the final summary shows `transcript: unavailable` and no file is created.
+- For running text without timestamps: `sed 's/^\[[^]]*\] //' file.transcript.txt`.
 
-## Organização
+## Getting past YouTube/Google blocks
+
+The collector applies several layers to work on a fresh machine:
+
+1. **Consent cookies** — `SOCS`/`CONSENT` are set before navigating, so the
+   "Before you continue to YouTube" notice is skipped on fresh profiles. A
+   language-aware click on the consent button (Accept all / Aceitar tudo)
+   remains as a fallback.
+2. **Chrome stealth** — a realistic (non-headless) user agent, a real
+   `--window-size` (mandatory, otherwise the comments never load in headless),
+   `--disable-blink-features=AutomationControlled`, `excludeSwitches`, and a CDP
+   script that hides `navigator.webdriver` and adjusts plugins/languages.
+3. **Automatic fallback to visible mode** — if a consent/bot block is still
+   detected in headless, the run is automatically retried with a visible
+   browser.
+
+If a flagged/datacenter IP still hits the *"Sign in to confirm you're not a
+robot"* wall, pass `--user-data-dir` pointing to a Chrome profile that has
+already logged in to YouTube — it's the most reliable bypass.
+
+## Output format
+
+`out/<title-slug>-<video_id>.txt` groups each comment with its replies into a
+**block**, blocks separated by a blank line:
 
 ```
-pyproject.toml            projeto uv + entry point de console-script
+@user [842 likes, 2026-06-04]: comment text here
+    ↳ (in reply to @user) @other [4 likes, 2026-06-03]: a reply to that comment
+    ↳ (in reply to @user) @third [0 likes, 2026-06-03]: another reply
+
+@nextuser [42 likes, 2026-06-01]: the next top-level comment
+
+@third_user [7 likes, 2026-05-30]: a comment with no replies
+```
+
+- The message is flattened into a single line (internal breaks become spaces).
+- Custom emotes/emojis are preserved by their `alt` text (e.g. `:smile:` or the emoji character).
+- Replies are indented as `    ↳ (in reply to @parent) @author …`, always making
+  the parent explicit, and a blank line separates each top-level block.
+- The like count is YouTube's own (e.g. `842`, `1.2K`); `0` when hidden/nonexistent.
+- The date is **approximate**: YouTube only exposes a relative time ("2 days ago"), which is
+  converted to `yyyy-mm-dd` relative to the run date (months≈30d, years≈365d).
+  Authors that don't resolve appear as `unknown`.
+- The filename slug is the video title, NFKD-normalized with accents removed
+  (Portuguese titles become ASCII), lowercased and hyphenated.
+- **Merging (default):** **consecutive top-level comments from the same author**
+  (a real one — never `unknown`/empty) are merged into a single block (likes/date
+  from the first, texts concatenated in order, all replies kept) and **exact
+  duplicates** (same author + same text) are discarded. Disable it with
+  `--no-merge-comments` (alias `--prevent-comment-group`).
+
+## Layout
+
+```
+pyproject.toml            uv project + console-script entry point
 src/viewlyt/
-  __init__.py             API pública (scrape_video, helpers) + __version__
-  api.py                  scrape_video / ScrapeResult / Comment (uso como biblioteca)
-  cli.py                  argparse, coleta de URLs/arquivos, pool de instâncias, formatação, saída
-  driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
-  scraper.py              parsing de URL, bypass de consentimento, coleta em duas fases, transcrição
-  htmltext.py             HTML→texto, data relativa, slug, flatten, format_transcript (puro, testado)
-tests/test_units.py       testes sem navegador para as funções puras
+  __init__.py             public API (scrape_video, helpers) + __version__
+  api.py                  scrape_video / ScrapeResult / Comment (use as a library)
+  cli.py                  argparse, URL/file collection, instance pool, formatting, output
+  driver.py               Chrome WebDriver builder with stealth (10s timeout)
+  scraper.py              URL parsing, consent bypass, two-phase collection, transcript
+  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript (pure, tested)
+tests/test_units.py       browser-free tests for the pure functions
 ```
 
-## Uso como biblioteca
+## Use as a library
 
-Além da CLI, dá para usar o viewlyt como biblioteca:
+Besides the CLI, you can use viewlyt as a library:
 
 ```python
 from viewlyt import scrape_video
 
 r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True)
 print(r.title)
-for c in r.top_level:            # ou r.comments / r.replies
+for c in r.top_level:            # or r.comments / r.replies
     print(c.author, c.likes, c.date, c.text)
 print("\n".join(r.transcript_lines()))
 ```
 
-`scrape_video` cria e fecha o próprio Chrome e devolve um `ScrapeResult`
-(comentários como objetos `Comment` de texto puro + a transcrição como
-`[(timestamp, texto)]`). Levanta `viewlyt.BlockedError` se cair no bot wall
-(tente `headless=False` ou `user_data_dir=` de um perfil logado). Também ficam
-expostos os blocos de baixo nível (`build_driver`, `collect_comments`,
-`fetch_transcript`, `extract_video_id`) e os helpers puros (`html_to_text`,
-`format_transcript`, `parse_relative_date`, `slugify`). Para usar só os helpers
-puros **sem importar Selenium**, faça `from viewlyt.htmltext import html_to_text`.
+`scrape_video` creates and closes its own Chrome and returns a `ScrapeResult`
+(comments as plain-text `Comment` objects + the transcript as
+`[(timestamp, text)]`). It raises `viewlyt.BlockedError` if it hits the bot wall
+(try `headless=False` or `user_data_dir=` of a logged-in profile). The
+low-level building blocks (`build_driver`, `collect_comments`,
+`fetch_transcript`, `extract_video_id`) and the pure helpers (`html_to_text`,
+`format_transcript`, `parse_relative_date`, `slugify`) are also exposed. To use
+just the pure helpers **without importing Selenium**, do
+`from viewlyt.htmltext import html_to_text`.
 
-## Desenvolvimento
+## Development
 
 ```bash
-uv sync                       # instala deps + grupo 'dev' (ruff, pytest, pre-commit)
-uv run pytest                 # testes (sem navegador)
+uv sync                       # installs deps + the 'dev' group (ruff, pytest, pre-commit)
+uv run pytest                 # tests (no browser)
 uv run ruff check --fix       # lint
-uv run ruff format            # formatação
-uv run pre-commit install     # roda ruff + pytest a cada commit
+uv run ruff format            # formatting
+uv run pre-commit install     # runs ruff + pytest on every commit
 ```
 
-## Concorrência
+## Concurrency
 
-A coleta é **limitada por I/O do Selenium** (rolar/clicar/rede), que é
-single-thread por necessidade — uma instância de WebDriver não é thread-safe. O
-único trabalho paralelizável é a conversão pura `html_to_text`, que é minúscula
-perto da fase do Selenium.
+The collection is **bound by Selenium I/O** (scrolling/clicking/network), which
+is single-threaded by necessity — a WebDriver instance is not thread-safe. The
+only parallelizable work is the pure `html_to_text` conversion, which is tiny
+next to the Selenium phase.
 
-Para essa etapa usa-se um `ThreadPoolExecutor` em lotes. Foi uma escolha medida,
-não o reflexo padrão — medindo `html_to_text` sobre HTML realista de comentários:
+For that step a `ThreadPoolExecutor` in batches is used. It was a measured
+choice, not the default reflex — measuring `html_to_text` over realistic comment
+HTML:
 
-| abordagem | 300 fragmentos | 1600 fragmentos |
+| approach | 300 fragments | 1600 fragments |
 |---|---|---|
-| laço simples | ~60 ms | ~315 ms |
-| thread pool (em lotes) | ~99 ms | ~475 ms |
+| simple loop | ~60 ms | ~315 ms |
+| thread pool (batched) | ~99 ms | ~475 ms |
 | `InterpreterPoolExecutor` (PEP 734) | ~220 ms | ~340 ms |
 
-Para muitos parses minúsculos limitados pelo GIL, subinterpretadores/processos
-adicionam mais custo de inicialização+pickling do que economizam, então são a
-ferramenta errada aqui. O thread pool é mantido porque (a) atende ao requisito de
-"usar threads" do projeto, (b) seu overhead é irrisório perto dos minutos de
-Selenium e (c) num interpretador **free-threaded** ele paraleliza de verdade:
+For many tiny GIL-bound parses, subinterpreters/processes add more
+startup+pickling cost than they save, so they're the wrong tool here. The thread
+pool is kept because (a) it satisfies the project's "use threads" requirement,
+(b) its overhead is negligible next to the minutes of Selenium, and (c) on a
+**free-threaded** interpreter it actually parallelizes:
 
 ```bash
 uv python install 3.14t      # CPython free-threaded
 uv run --python 3.14t viewlyt '<url>'
 ```
 
-## Notas / limitações
+## Notes / limitations
 
-- Comentários de primeiro nível miram o `--limit` (150 por padrão); as respostas são
-  limitadas pelo `--max-replies` (5 por padrão) e expandidas em um nível (as threads
-  de resposta do YouTube são planas).
-- As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
-- Um IP residencial e um perfil logado melhoram muito a confiabilidade.
-- A saída é `.txt`, mas o texto vem de terceiros: ao **importar em uma planilha**
-  (Excel/Sheets), uma célula começando com `=`, `+`, `-` ou `@` pode ser
-  interpretada como fórmula (CSV/formula injection). Trate como dado não confiável
-  ou desative a interpretação de fórmulas ao importar.
+- Top-level comments aim for the `--limit` (150 by default); replies are
+  limited by `--max-replies` (5 by default) and expanded one level (YouTube's
+  reply threads are flat).
+- The comment dates are approximated from YouTube's relative times (see above).
+- A residential IP and a logged-in profile greatly improve reliability.
+- The output is `.txt`, but the text comes from third parties: when **importing
+  into a spreadsheet** (Excel/Sheets), a cell starting with `=`, `+`, `-` or `@`
+  may be interpreted as a formula (CSV/formula injection). Treat it as untrusted
+  data or disable formula interpretation when importing.
 
-## Licença
+## License
 
 [MIT](LICENSE) © Lucas Hideki
