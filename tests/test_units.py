@@ -420,6 +420,20 @@ def test_comments_disabled() -> None:
     print("ok: comments_disabled")
 
 
+def test_transcript_timestamp_exact_token() -> None:
+    # Guard: the transcript timestamp selector must be an EXACT class token so it
+    # can never grab the sibling ...TimestampA11yLabel ("30 minutes, 40 seconds").
+    import viewlyt.scraper as scraper_mod
+    from viewlyt.scraper import TRANSCRIPT_TS
+
+    assert "A11yLabel" not in TRANSCRIPT_TS
+    assert ".ytwTranscriptSegmentViewModelTimestamp," in TRANSCRIPT_TS  # standalone token
+    # No substring class matcher anywhere (it would also match the A11y label).
+    src = Path(scraper_mod.__file__).read_text(encoding="utf-8")
+    assert "[class*=" not in src
+    print("ok: transcript_timestamp_exact_token")
+
+
 def test_url_inputs() -> None:
     with tempfile.TemporaryDirectory() as d:
         txt = Path(d) / "urls.txt"
@@ -545,6 +559,7 @@ if __name__ == "__main__":
     test_likes_fallback()
     test_top_el_fallback()
     test_comments_disabled()
+    test_transcript_timestamp_exact_token()
     test_format_transcript()
     test_url_inputs()
     test_resolve_chrome_binary()
