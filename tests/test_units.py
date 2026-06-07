@@ -7,9 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import tempfile  # noqa: E402
 from datetime import date  # noqa: E402
 
-from ytcomments.cli import format_comment_lines  # noqa: E402
+from ytcomments.cli import format_comment_lines, gather_urls, read_urls_from_file  # noqa: E402
 from ytcomments.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
@@ -132,7 +133,7 @@ def test_format_comment_lines() -> None:
         {"kind": "comment", "author": "", "html": "sem autor", "likes": "3", "date_raw": ""},
         {"kind": "comment", "author": "@x", "html": "   ", "likes": "5", "date_raw": "now"},  # empty msg -> skipped
     ]
-    lines = format_comment_lines(records, today=today)
+    lines = format_comment_lines(records, today=today, progress=False)
     assert lines == [
         "@joao [842 likes, 2026-06-04]: Olá mundo",
         "    ↳ (in reply to @joao) @maria [0 likes, 2026-06-05]: resposta linha2",
@@ -140,6 +141,41 @@ def test_format_comment_lines() -> None:
         "unknown [3 likes, unknown]: sem autor",
     ], lines
     print("ok: format_comment_lines")
+
+
+def test_url_inputs() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        txt = Path(d) / "urls.txt"
+        txt.write_text(
+            "# comentário, ignorar\n"
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ\n"
+            "\n"
+            "https://youtu.be/TgMJUAo-tWA\n",
+            encoding="utf-8",
+        )
+        assert read_urls_from_file(str(txt)) == [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtu.be/TgMJUAo-tWA",
+        ]
+
+        csvf = Path(d) / "urls.csv"
+        csvf.write_text(
+            "title,url\n"
+            "Rick,https://youtu.be/dQw4w9WgXcQ\n"
+            "Shorts,https://www.youtube.com/shorts/TgMJUAo-tWA\n",
+            encoding="utf-8",
+        )
+        cells = read_urls_from_file(str(csvf))
+        assert "https://youtu.be/dQw4w9WgXcQ" in cells and "title" in cells
+
+        # gather: positional URLs + a file, deduped by video id, order preserved.
+        targets = gather_urls(
+            ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "not-a-url", str(txt)],
+            [str(csvf)],
+        )
+        ids = [vid for vid, _ in targets]
+        assert ids == ["dQw4w9WgXcQ", "TgMJUAo-tWA"], ids  # deduped, in first-seen order
+    print("ok: url_inputs")
 
 
 if __name__ == "__main__":
@@ -150,4 +186,5 @@ if __name__ == "__main__":
     test_parse_relative_date()
     test_convert_batch()
     test_format_comment_lines()
+    test_url_inputs()
     print("ALL TESTS PASSED")
