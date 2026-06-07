@@ -106,8 +106,9 @@ def scrape_video(
         prime_consent_cookies(driver)
         safe_get(driver, f"https://www.youtube.com/watch?v={video_id}")
         dismiss_consent_dialog(driver, timeout=2.0)
-        if detect_block(driver):
-            raise BlockedError(detect_block(driver) or "blocked")
+        block = detect_block(driver)
+        if block:
+            raise BlockedError(block)
         title = get_video_title(driver)
         records = (
             collect_comments(

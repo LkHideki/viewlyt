@@ -49,6 +49,10 @@ credentials.json
 # ---- Local Claude Code settings ----
 .claude/settings.local.json
 
+# ---- Personal, per-developer agent notes (not shared) ----
+CLAUDE.local.md
+AGENTS.local.md
+
 # ---- OS / editor ----
 .DS_Store
 Thumbs.db
