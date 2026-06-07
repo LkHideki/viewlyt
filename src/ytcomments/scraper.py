@@ -1,0 +1,441 @@
+"""Navigation, block-bypass, and the load/expand/harvest of YouTube comments.
+
+All Selenium WebDriver interaction lives here and runs on a single thread —
+WebDriver instances are NOT thread-safe. The CPU-light HTML->text conversion is
+what gets parallelised later (see :mod:`ytcomments.cli`).
+
+Harvesting is two-phase to keep loading and expansion from fighting each other:
+
+* **Phase A (load)** scrolls to the bottom repeatedly to lazy-load up to
+  ``limit`` top-level comment threads (capped by ``max_viewports`` scrolls).
+* **Phase B (expand + harvest)** walks each thread exactly once: scrolls it into
+  view, clicks "Read more" to un-truncate the text, expands replies with a
+  *trusted* click (a plain JS ``.click()`` does not trigger YouTube's reply
+  fetch), then records the comment and its replies with author + like count.
+
+Processing each thread once (rather than re-harvesting on every scroll) also
+removes the duplicate-line artifact that incremental harvesting produced.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import time
+from urllib.parse import parse_qs, urlparse
+
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from tqdm import tqdm
+
+log = logging.getLogger("ytcomments")
+
+COMMENTS_CONTAINER = "ytd-comments#comments"
+COMMENT_THREAD = "ytd-comment-thread-renderer"
+TOP_COMMENT = "#comment"                # the top-level comment inside a thread
+COMMENT_TEXT = "#content-text"          # tag-agnostic (yt-attributed/formatted-string)
+COMMENT_AUTHOR = "#author-text"
+LIKES = "#vote-count-middle"            # like count (empty when zero)
+PUBLISHED_TIME = "#published-time-text"  # relative timestamp, e.g. "2 days ago"
+READ_MORE = "#more"                     # "Read more" text expander (not #more-replies)
+MORE_REPLIES = "#more-replies"          # "View N replies" toggle
+REPLIES_RENDERER = "ytd-comment-replies-renderer"
+REPLY_ITEM = (
+    "ytd-comment-replies-renderer ytd-comment-view-model, "
+    "ytd-comment-replies-renderer ytd-comment-renderer"
+)
+REPLY_CONTINUATION = "ytd-comment-replies-renderer ytd-continuation-item-renderer"
+
+# Locale-dependent "before you continue" consent buttons (best-effort fallback;
+# the cookie priming below usually skips the interstitial entirely).
+CONSENT_XPATHS = [
+    "//button[@aria-label='Accept all']",
+    "//button[@aria-label='Aceitar tudo']",
+    "//button[contains(@class,'VfPpkd-LgbsSe') and ("
+    "@aria-label='Accept all' or @aria-label='Aceitar tudo' or "
+    "@aria-label='Reject all' or @aria-label='Rejeitar tudo')]",
+    "//*[self::button or self::a][contains(.,'Accept all') or contains(.,'Aceitar tudo')]",
+]
+
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_PATH_ID_RE = re.compile(r"/(?:shorts|embed|v|live)/([A-Za-z0-9_-]{11})")
+_ANY_ID_RE = re.compile(r"([A-Za-z0-9_-]{11})")
+
+_DEFAULT_TIMEOUT_NOTE = 10  # seconds; matches build_driver's page_load_timeout
+
+
+class BlockedError(RuntimeError):
+    """Raised when YouTube serves a consent wall or bot-check instead of the page."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+# --------------------------------------------------------------------------- #
+# URL / navigation helpers
+# --------------------------------------------------------------------------- #
+def extract_video_id(url: str) -> str:
+    """Extract the 11-char video id from any common YouTube URL form."""
+    url = (url or "").strip()
+    if _VIDEO_ID_RE.match(url):
+        return url
+
+    parsed = urlparse(url if "//" in url else "https://" + url)
+    host = (parsed.hostname or "").lower()
+
+    if host.endswith("youtu.be"):
+        candidate = parsed.path.lstrip("/").split("/")[0]
+        if _VIDEO_ID_RE.match(candidate):
+            return candidate
+
+    if "youtube" in host:
+        qs = parse_qs(parsed.query)
+        if "v" in qs and _VIDEO_ID_RE.match(qs["v"][0]):
+            return qs["v"][0]
+        m = _PATH_ID_RE.search(parsed.path)
+        if m:
+            return m.group(1)
+
+    m = _ANY_ID_RE.search(url)
+    if m:
+        return m.group(1)
+
+    raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
+
+
+def safe_get(driver, url: str) -> None:
+    """``driver.get`` with the page-load timeout caught: stop loading and carry
+    on with whatever DOM is present (the watch page never fully settles)."""
+    try:
+        driver.get(url)
+    except TimeoutException:
+        log.warning("page load exceeded %ss for %s — stopping load and continuing",
+                    _DEFAULT_TIMEOUT_NOTE, url)
+        try:
+            driver.execute_script("window.stop();")
+        except WebDriverException:
+            pass
+
+
+def prime_consent_cookies(driver) -> None:
+    """Pre-set consent cookies so the interstitial is skipped on fresh profiles."""
+    try:
+        safe_get(driver, "https://www.youtube.com/")
+        for cookie in (
+            {"name": "SOCS", "value": "CAI", "domain": ".youtube.com", "path": "/"},
+            {"name": "CONSENT", "value": "YES+", "domain": ".youtube.com", "path": "/"},
+        ):
+            try:
+                driver.add_cookie(cookie)
+            except WebDriverException as exc:
+                log.debug("add_cookie(%s) failed: %s", cookie["name"], exc)
+    except WebDriverException as exc:
+        log.warning("could not prime consent cookies: %s", exc)
+
+
+def dismiss_consent_dialog(driver, timeout: float = 4.0) -> bool:
+    """Best-effort click of a cookie-consent button if one is shown."""
+    combined = " | ".join(CONSENT_XPATHS)
+    try:
+        btn = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((By.XPATH, combined))
+        )
+        btn.click()
+        log.info("dismissed consent dialog")
+        time.sleep(1.0)
+        return True
+    except (TimeoutException, WebDriverException):
+        return False
+
+
+def get_video_title(driver) -> str:
+    """Return the video title (for the output filename slug).
+
+    Prefers the ``og:title`` meta tag (clean, present in <head> right after
+    DOMContentLoaded), falling back to ``document.title`` with the trailing
+    " - YouTube" suffix and any "(N)" notification-count prefix stripped.
+    """
+    try:
+        title = (
+            driver.execute_script(
+                "var m = document.querySelector('meta[property=\"og:title\"]');"
+                "return (m && m.content) ? m.content : (document.title || '');"
+            )
+            or ""
+        )
+    except WebDriverException:
+        title = ""
+    title = re.sub(r"\s*-\s*YouTube\s*$", "", title)
+    title = re.sub(r"^\(\d+\)\s*", "", title)
+    return title.strip()
+
+
+def detect_block(driver) -> str | None:
+    """Return 'consent'/'botwall' if YouTube blocked us, else None."""
+    try:
+        url = driver.current_url or ""
+    except WebDriverException:
+        url = ""
+    if "consent." in url:
+        return "consent"
+    try:
+        src = (driver.page_source or "").lower()
+    except WebDriverException:
+        return None
+    if "sign in to confirm" in src or "not a bot" in src:
+        return "botwall"
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Element helpers
+# --------------------------------------------------------------------------- #
+def _text(el, css: str) -> str:
+    try:
+        return el.find_element(By.CSS_SELECTOR, css).text.strip()
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        return ""
+
+
+def _inner_html(el, css: str) -> str:
+    try:
+        return el.find_element(By.CSS_SELECTOR, css).get_attribute("innerHTML") or ""
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        return ""
+
+
+def _likes(comment_el) -> str:
+    """Like count text (e.g. '842', '1.2K'); '0' when the count is empty/hidden."""
+    return _text(comment_el, LIKES) or "0"
+
+
+def _top_el(thread):
+    try:
+        return thread.find_element(By.CSS_SELECTOR, TOP_COMMENT)
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        return thread
+
+
+def _scroll_into_view(driver, el) -> None:
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+    except (StaleElementReferenceException, WebDriverException):
+        pass
+
+
+def _safe_click(driver, el) -> bool:
+    """Centre the element and click it with a trusted Selenium click (needed for
+    YouTube's reply toggles), falling back to a JS click if intercepted."""
+    _scroll_into_view(driver, el)
+    try:
+        el.click()
+        return True
+    except (ElementClickInterceptedException, StaleElementReferenceException, WebDriverException):
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except (StaleElementReferenceException, WebDriverException):
+            return False
+
+
+def _click_read_more(driver, comment_el) -> None:
+    """Expand a truncated comment ("Read more" / "...mais") if the button shows."""
+    try:
+        btn = comment_el.find_element(By.CSS_SELECTOR, READ_MORE)
+        if btn.is_displayed():
+            driver.execute_script("arguments[0].click();", btn)
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        pass
+
+
+def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20) -> None:
+    """Expand a thread's replies up to ``max_replies``: click "View N replies",
+    then keep clicking the "Show more replies" continuation until enough replies
+    are loaded or it is gone (also bounded by ``max_more_clicks``)."""
+    if max_replies <= 0:
+        return
+    try:
+        toggle = thread.find_element(By.CSS_SELECTOR, MORE_REPLIES)
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        return  # this comment has no replies
+
+    if not _safe_click(driver, toggle):
+        return
+    try:
+        WebDriverWait(driver, 6).until(
+            lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > 0
+        )
+    except (TimeoutException, StaleElementReferenceException, WebDriverException):
+        return
+
+    for _ in range(max_more_clicks):
+        try:
+            before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM))
+        except (StaleElementReferenceException, WebDriverException):
+            break
+        if before >= max_replies:
+            break  # already loaded enough replies for this comment
+        try:
+            conts = thread.find_elements(By.CSS_SELECTOR, REPLY_CONTINUATION)
+        except (StaleElementReferenceException, WebDriverException):
+            break
+        cont = next((c for c in conts if _displayed(c)), None)
+        if cont is None:
+            break
+        target = cont
+        try:
+            btns = cont.find_elements(By.CSS_SELECTOR, "button, tp-yt-paper-button")
+            if btns:
+                target = btns[0]
+        except (StaleElementReferenceException, WebDriverException):
+            pass
+        if not _safe_click(driver, target):
+            break
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > before
+            )
+        except (TimeoutException, StaleElementReferenceException, WebDriverException):
+            break
+
+
+def _displayed(el) -> bool:
+    try:
+        return el.is_displayed()
+    except (StaleElementReferenceException, WebDriverException):
+        return False
+
+
+def _scroll_for_more(driver) -> None:
+    """Trigger the next comment continuation. Bringing the LAST loaded thread's
+    bottom (where the loading spinner lives) to the viewport edge re-arms
+    YouTube's IntersectionObserver far more reliably than ``scrollTo(bottom)``
+    alone, then we still jump to the document bottom for good measure."""
+    driver.execute_script(
+        "var t=document.querySelectorAll(arguments[0]);"
+        "if(t.length){t[t.length-1].scrollIntoView({block:'end'});}"
+        "window.scrollTo(0, document.documentElement.scrollHeight);",
+        COMMENT_THREAD,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase collection
+# --------------------------------------------------------------------------- #
+def collect_comments(
+    driver,
+    limit: int = 100,
+    max_viewports: int = 25,
+    expand_replies: bool = True,
+    max_replies: int = 10,
+    first_thread_timeout: float = 20.0,
+) -> list[dict]:
+    """Load up to ``limit`` top-level comments and harvest them with replies.
+
+    Returns an ordered list of records, each comment immediately followed by its
+    replies::
+
+        {"kind": "comment"|"reply", "author": str, "html": str,
+         "likes": str, "date_raw": str, "parent_author": str}  # parent on replies
+    """
+    # Bring the comments section into view to trigger the first fetch.
+    driver.execute_script("window.scrollTo(0, 800);")
+    driver.execute_script(
+        "var c=document.querySelector(arguments[0]); if (c) { c.scrollIntoView(); }",
+        COMMENTS_CONTAINER,
+    )
+    try:
+        WebDriverWait(driver, first_thread_timeout).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_THREAD))
+        )
+    except TimeoutException:
+        log.warning("no comment threads appeared — comments disabled, empty, or blocked")
+        return []
+
+    # ---- Phase A: load top-level comments -------------------------------- #
+    log.info("loading up to %d top-level comments (scroll budget %dx)", limit, max_viewports)
+    stale = 0
+    with tqdm(total=limit, desc="loading comments", unit="cmt", leave=False) as bar:
+        for _ in range(max_viewports):
+            before = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
+            bar.n = min(before, limit)
+            bar.refresh()
+            if before >= limit:
+                break
+            _scroll_for_more(driver)
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                )
+                stale = 0
+            except TimeoutException:
+                # Re-arm the observer with an up-nudge, then retry once before
+                # counting this as a no-growth (stall) iteration.
+                driver.execute_script("window.scrollBy(0, -600);")
+                time.sleep(0.6)
+                _scroll_for_more(driver)
+                try:
+                    WebDriverWait(driver, 8).until(
+                        lambda d: len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
+                    )
+                    stale = 0
+                except TimeoutException:
+                    stale += 1
+                    if stale >= 3:  # 3 consecutive no-growth scrolls => end of list
+                        break
+            time.sleep(0.4)
+        loaded_now = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
+        bar.n = min(loaded_now, limit)
+        bar.refresh()
+
+    threads = driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)[:limit]
+    log.info("loaded %d top-level comments; harvesting%s",
+             len(threads), " + replies" if expand_replies and max_replies > 0 else "")
+
+    # ---- Phase B: expand + harvest, each thread exactly once ------------- #
+    records: list[dict] = []
+    desc = "harvesting (+replies)" if expand_replies and max_replies > 0 else "harvesting"
+    for th in tqdm(threads, desc=desc, unit="thread", leave=False):
+        top = _top_el(th)
+        _scroll_into_view(driver, top)
+        _click_read_more(driver, top)
+
+        html = _inner_html(top, COMMENT_TEXT)
+        if not html.strip():
+            continue  # truly empty comment body: skip it (and its replies)
+        parent_author = _text(top, COMMENT_AUTHOR)
+        records.append(
+            {"kind": "comment", "author": parent_author,
+             "html": html, "likes": _likes(top),
+             "date_raw": _text(top, PUBLISHED_TIME)}
+        )
+
+        if expand_replies and max_replies > 0:
+            _expand_replies(driver, th, max_replies)
+            try:
+                reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
+            except (StaleElementReferenceException, WebDriverException):
+                reply_els = []
+            for rep in reply_els:
+                r_html = _inner_html(rep, COMMENT_TEXT)
+                if not r_html.strip():
+                    continue
+                records.append(
+                    {"kind": "reply", "author": _text(rep, COMMENT_AUTHOR),
+                     "parent_author": parent_author,
+                     "html": r_html, "likes": _likes(rep),
+                     "date_raw": _text(rep, PUBLISHED_TIME)}
+                )
+
+    n_top = sum(1 for r in records if r["kind"] == "comment")
+    log.info("collected %d records (%d comments + %d replies)", len(records), n_top, len(records) - n_top)
+    return records
