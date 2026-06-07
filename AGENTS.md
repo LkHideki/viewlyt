@@ -18,14 +18,15 @@ uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
-uv run pytest                                       # testes (sem navegador)
+uv run pytest                                       # toda a suíte (sem navegador; e2e pulado)
+VIEWLYT_E2E=1 uv run pytest -m e2e                  # e2e real (Chrome + rede), opt-in
 uv run ruff check --fix                             # lint
 uv run ruff format                                  # formatação
 uv run pre-commit install                           # roda ruff + pytest a cada commit
 ```
 
 `uv sync` instala também o dependency-group `dev` (ruff, pytest, pre-commit).
-Os testes também rodam sem pytest via `uv run python tests/test_units.py`.
+As funções puras também rodam sem pytest via `uv run python tests/test_units.py`.
 
 ## Estrutura
 
@@ -37,7 +38,11 @@ Os testes também rodam sem pytest via `uv run python tests/test_units.py`.
 - `src/viewlyt/cli.py` — argparse, orquestração, pool de instâncias, conversão paralela, escrita do arquivo.
 - `src/viewlyt/api.py` — API de biblioteca (`scrape_video`/`ScrapeResult`/`Comment`); depende só de
   `driver`/`scraper`/`htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API pública.
-- `tests/test_units.py` — testes das funções puras.
+- `tests/test_units.py` — testes das funções puras (roda também standalone via `python`).
+- `tests/conftest.py` — fakes/helpers pytest-only (FakeDriver, builders de registros, `cli_run`, marca e2e).
+- `tests/test_integration.py` — integração sem navegador (monkeypatch do boundary Selenium em `cli`/`api`).
+- `tests/test_smoke.py` — smoke da CLI por subprocess (`--version`/`--help`/exit codes/entry point).
+- `tests/test_e2e.py` — e2e real (Chrome + rede), **opt-in** via `VIEWLYT_E2E=1` (pulado por padrão).
 - `out/` — entregáveis (no `.gitignore`).
 
 ## Convenções
