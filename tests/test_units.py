@@ -10,6 +10,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import tempfile  # noqa: E402
 from datetime import date  # noqa: E402
 
+from selenium.common.exceptions import (  # noqa: E402
+    NoSuchElementException,
+    WebDriverException,
+)
+
 from viewlyt.cli import (  # noqa: E402
     build_parser,
     format_comment_lines,
@@ -30,6 +35,41 @@ from viewlyt.scraper import extract_video_id  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
 TODAY = date(2026, 6, 6)
+
+
+class _FakeNode:
+    """Duck-typed element node: only the get_attribute() the helpers read."""
+
+    def __init__(self, text: str = "", html: str = "") -> None:
+        self._attrs = {"textContent": text, "innerHTML": html}
+
+    def get_attribute(self, name: str) -> str:
+        return self._attrs.get(name, "")
+
+
+class _FakeElement:
+    """Maps a CSS selector -> _FakeNode; raises NoSuchElement for anything else."""
+
+    def __init__(self, mapping: dict) -> None:
+        self._mapping = mapping
+
+    def find_element(self, _by, css):  # signature matches Selenium (by, value)
+        if css in self._mapping:
+            return self._mapping[css]
+        raise NoSuchElementException(css)
+
+
+class _StubDriver:
+    """Minimal driver exposing execute_script for _comments_disabled tests."""
+
+    def __init__(self, text: str = "", raise_exc: bool = False) -> None:
+        self._text = text
+        self._raise = raise_exc
+
+    def execute_script(self, _script, *_args):
+        if self._raise:
+            raise WebDriverException("boom")
+        return self._text
 
 
 def _c(author: str, html: str, likes: str = "0", date_raw: str = "just now") -> dict:
@@ -332,6 +372,54 @@ def test_flag_plumbing() -> None:
     print("ok: flag_plumbing")
 
 
+def test_first_text_and_inner_html() -> None:
+    from viewlyt.scraper import _first_inner_html, _first_text
+
+    el = _FakeElement(
+        {"b": _FakeNode(text="hit-b"), "c": _FakeNode(text="hit-c", html="<i>hc</i>")}
+    )
+    assert _first_text(el, ("a", "b", "c")) == "hit-b"  # first matching selector wins
+    assert _first_text(el, ("a", "z")) == ""  # none match -> ""
+    assert _first_inner_html(el, ("a", "c")) == "<i>hc</i>"
+    print("ok: first_text_and_inner_html")
+
+
+def test_first_inner_html_skips_blank() -> None:
+    from viewlyt.scraper import _first_inner_html
+
+    # a whitespace-only innerHTML must not shadow a later populated alternate
+    el = _FakeElement({"blank": _FakeNode(html="   "), "real": _FakeNode(html="<b>x</b>")})
+    assert _first_inner_html(el, ("blank", "real")) == "<b>x</b>"
+    print("ok: first_inner_html_skips_blank")
+
+
+def test_likes_fallback() -> None:
+    from viewlyt.scraper import LIKES_SELECTORS, _likes
+
+    assert _likes(_FakeElement({})) == "0"  # nothing matches -> "0"
+    assert LIKES_SELECTORS[1] == "#vote-count-left"  # documents the fallback order
+    assert _likes(_FakeElement({"#vote-count-left": _FakeNode(text="42")})) == "42"
+    print("ok: likes_fallback")
+
+
+def test_top_el_fallback() -> None:
+    from viewlyt.scraper import _top_el
+
+    thread = _FakeElement({})  # no TOP_COMMENT_SELECTORS match
+    assert _top_el(thread) is thread  # falls back to the thread element itself
+    print("ok: top_el_fallback")
+
+
+def test_comments_disabled() -> None:
+    from viewlyt.scraper import _comments_disabled
+
+    assert _comments_disabled(_StubDriver("Comments are turned off")) is True
+    assert _comments_disabled(_StubDriver("Os comentários estão desativados")) is True
+    assert _comments_disabled(_StubDriver("just some normal comments")) is False
+    assert _comments_disabled(_StubDriver(raise_exc=True)) is False  # never raises
+    print("ok: comments_disabled")
+
+
 def test_url_inputs() -> None:
     with tempfile.TemporaryDirectory() as d:
         txt = Path(d) / "urls.txt"
@@ -452,6 +540,11 @@ if __name__ == "__main__":
     test_group_consecutive_comments_shape()
     test_resolve_modes()
     test_flag_plumbing()
+    test_first_text_and_inner_html()
+    test_first_inner_html_skips_blank()
+    test_likes_fallback()
+    test_top_el_fallback()
+    test_comments_disabled()
     test_format_transcript()
     test_url_inputs()
     test_resolve_chrome_binary()
