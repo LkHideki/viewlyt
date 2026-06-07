@@ -493,8 +493,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-replies",
         type=int,
-        default=15,
-        help="max replies per comment (default: 15; 0 disables)",
+        default=5,
+        help="max replies per comment (default: 5; 0 disables)",
     )
     p.add_argument(
         "--no-merge-comments",

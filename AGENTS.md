@@ -11,7 +11,7 @@ uv sync                                             # cria o ambiente e instala 
 uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run viewlyt --limit 150 --max-replies 15 '<url>'
+uv run viewlyt --limit 150 --max-replies 5 '<url>'
 uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.txt
 uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
 uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)

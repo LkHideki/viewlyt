@@ -94,7 +94,7 @@ uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
 | `--limit N` | `150` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
 | `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
 | `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
-| `--max-replies N` | `15` | Máximo de respostas por comentário (`0` desativa) |
+| `--max-replies N` | `5` | Máximo de respostas por comentário (`0` desativa) |
 | `--no-merge-comments` | off | Não funde comentários de primeiro nível consecutivos do mesmo autor (a fusão é o padrão; `--prevent-comment-group` é alias) |
 | `-c, --comments` | off | Coleta comentários (é o padrão quando nenhum seletor é dado; combine com `-t` para ambos) |
 | `-t, --transcript` | off | Coleta a transcrição → `out/<title-slug>-<video_id>.transcript.txt`. Sem `-c`, coleta SÓ a transcrição; com `-c`, ambos. **Muda** o sentido antigo de `--transcript` (que também mantinha os comentários). |
@@ -269,7 +269,7 @@ uv run --python 3.14t viewlyt '<url>'
 ## Notas / limitações
 
 - Comentários de primeiro nível miram o `--limit` (150 por padrão); as respostas são
-  limitadas pelo `--max-replies` (15 por padrão) e expandidas em um nível (as threads
+  limitadas pelo `--max-replies` (5 por padrão) e expandidas em um nível (as threads
   de resposta do YouTube são planas).
 - As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
 - Um IP residencial e um perfil logado melhoram muito a confiabilidade.

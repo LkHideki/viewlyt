@@ -90,7 +90,7 @@ def scrape_video(
     limit: int = 150,
     max_viewports: int = 25,
     replies: bool = True,
-    max_replies: int = 15,
+    max_replies: int = 5,
     headless: bool = True,
     user_data_dir: str | None = None,
 ) -> ScrapeResult:

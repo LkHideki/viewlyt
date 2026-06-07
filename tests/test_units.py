@@ -373,7 +373,7 @@ def test_flag_plumbing() -> None:
     assert p.parse_args(["--transcript-only"]).transcript_only is True
     # new defaults are wired into the parser
     d = p.parse_args([])
-    assert d.limit == 150 and d.max_replies == 15
+    assert d.limit == 150 and d.max_replies == 5
     print("ok: flag_plumbing")
 
 
