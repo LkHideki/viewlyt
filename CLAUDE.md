@@ -15,8 +15,15 @@ uv run viewlyt --limit 100 --max-replies 10 '<url>'
 uv run viewlyt --transcript '<url>'              # comentários + transcrição -> *.transcript.txt
 uv run viewlyt --transcript-only '<url>'         # só a transcrição (pula comentários)
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
-uv run python tests/test_units.py                   # testes sem navegador (sem dependência de pytest)
+
+uv run pytest                                       # testes (sem navegador)
+uv run ruff check --fix                             # lint
+uv run ruff format                                  # formatação
+uv run pre-commit install                           # roda ruff + pytest a cada commit
 ```
+
+`uv sync` instala também o dependency-group `dev` (ruff, pytest, pre-commit).
+Os testes também rodam sem pytest via `uv run python tests/test_units.py`.
 
 ## Estrutura
 
@@ -25,7 +32,9 @@ uv run python tests/test_units.py                   # testes sem navegador (sem 
   dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
 - `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
 - `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases, transcrição.
-- `src/viewlyt/cli.py` — argparse, orquestração, conversão paralela, escrita do arquivo.
+- `src/viewlyt/cli.py` — argparse, orquestração, pool de instâncias, conversão paralela, escrita do arquivo.
+- `src/viewlyt/api.py` — API de biblioteca (`scrape_video`/`ScrapeResult`/`Comment`); depende só de
+  `driver`/`scraper`/`htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API pública.
 - `tests/test_units.py` — testes das funções puras.
 - `out/` — entregáveis (no `.gitignore`).
 
@@ -53,6 +62,8 @@ uv run python tests/test_units.py                   # testes sem navegador (sem 
 - **NÃO adicione trailers `Co-Authored-By` nem qualquer coautoria** nas mensagens de commit.
 - Faça commits em blocos pequenos e lógicos, com mensagens no estilo conventional
   (`feat(scraper): …`, `chore: …`, `docs: …`).
+- Antes de commitar, rode `uv run ruff format && uv run ruff check && uv run pytest`
+  (ou instale o `pre-commit`, que faz isso sozinho).
 - **Nunca commite** a saída coletada (`out/`, `*.txt` — contêm nomes de usuário/PII), segredos
   ou credenciais (`.env`, `*.pem`, `*.key`, …), `.venv/`, nem perfis de navegador de
   `--user-data-dir` (guardam cookies/sessões). O `.gitignore` já garante isso; se adicionar

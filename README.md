@@ -75,6 +75,7 @@ uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
 | Flag | Padrão | Descrição |
 |------|--------|-----------|
 | `inputs…` | — | uma ou mais URLs/ids e/ou caminhos de `.txt`/`.csv` (posicional) |
+| `-V, --version` | — | mostra a versão e sai |
 | `-f, --from-file PATH` | — | arquivo com URLs/ids (`.txt` uma por linha, `.csv` qualquer coluna); repetível |
 | `-j, --jobs N` | `min(4, nº vídeos)` | nº de navegadores concorrentes (instâncias reutilizadas) |
 | `--limit N` | `100` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
@@ -176,11 +177,46 @@ que já tenha feito login no YouTube — é o bypass mais confiável.
 ```
 pyproject.toml            projeto uv + entry point de console-script
 src/viewlyt/
+  __init__.py             API pública (scrape_video, helpers) + __version__
+  api.py                  scrape_video / ScrapeResult / Comment (uso como biblioteca)
   cli.py                  argparse, coleta de URLs/arquivos, pool de instâncias, formatação, saída
   driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
   scraper.py              parsing de URL, bypass de consentimento, coleta em duas fases, transcrição
   htmltext.py             HTML→texto, data relativa, slug, flatten, format_transcript (puro, testado)
 tests/test_units.py       testes sem navegador para as funções puras
+```
+
+## Uso como biblioteca
+
+Além da CLI, dá para usar o viewlyt como biblioteca:
+
+```python
+from viewlyt import scrape_video
+
+r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True)
+print(r.title)
+for c in r.top_level:            # ou r.comments / r.replies
+    print(c.author, c.likes, c.date, c.text)
+print("\n".join(r.transcript_lines()))
+```
+
+`scrape_video` cria e fecha o próprio Chrome e devolve um `ScrapeResult`
+(comentários como objetos `Comment` de texto puro + a transcrição como
+`[(timestamp, texto)]`). Levanta `viewlyt.BlockedError` se cair no bot wall
+(tente `headless=False` ou `user_data_dir=` de um perfil logado). Também ficam
+expostos os blocos de baixo nível (`build_driver`, `collect_comments`,
+`fetch_transcript`, `extract_video_id`) e os helpers puros (`html_to_text`,
+`format_transcript`, `parse_relative_date`, `slugify`). Para usar só os helpers
+puros **sem importar Selenium**, faça `from viewlyt.htmltext import html_to_text`.
+
+## Desenvolvimento
+
+```bash
+uv sync                       # instala deps + grupo 'dev' (ruff, pytest, pre-commit)
+uv run pytest                 # testes (sem navegador)
+uv run ruff check --fix       # lint
+uv run ruff format            # formatação
+uv run pre-commit install     # roda ruff + pytest a cada commit
 ```
 
 ## Concorrência
