@@ -1,8 +1,8 @@
 # ytcomments
 
-Coleta os comentários de um vídeo do YouTube em `out/<title-slug>-<video_id>.txt`
-(texto puro, sem tags HTML) usando **Selenium** + **Google Chrome** headless,
-gerenciado com [`uv`](https://github.com/astral-sh/uv).
+Coleta os comentários de um ou vários vídeos do YouTube em
+`out/<title-slug>-<video_id>.txt` (texto puro, sem tags HTML) usando **Selenium**
++ **Google Chrome** headless, gerenciado com [`uv`](https://github.com/astral-sh/uv).
 
 Abre a página do vídeo e trabalha em duas fases (com barras de progresso `tqdm`):
 
@@ -51,13 +51,22 @@ uv run ytcomments --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
 # Escreve em outro diretório:
 uv run ytcomments -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
+
+# Vários vídeos de uma vez (pool de instâncias reutilizadas):
+uv run ytcomments '<url1>' '<url2>' '<url3>'
+
+# A partir de um arquivo .txt (uma URL por linha) ou .csv (qualquer coluna):
+uv run ytcomments --from-file urls.txt
+uv run ytcomments videos.csv -j 4          # 4 navegadores em paralelo
 ```
 
 ### Opções
 
 | Flag | Padrão | Descrição |
 |------|--------|-----------|
-| `url` | — | URL do vídeo ou id puro de 11 caracteres (posicional) |
+| `inputs…` | — | uma ou mais URLs/ids e/ou caminhos de `.txt`/`.csv` (posicional) |
+| `-f, --from-file PATH` | — | arquivo com URLs/ids (`.txt` uma por linha, `.csv` qualquer coluna); repetível |
+| `-j, --jobs N` | `min(4, nº vídeos)` | nº de navegadores concorrentes (instâncias reutilizadas) |
 | `--limit N` | `100` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
 | `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
 | `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
@@ -67,6 +76,22 @@ uv run ytcomments -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 | `--user-data-dir DIR` | — | Perfil persistente do Chrome (use um já logado para furar o bot wall) |
 | `-o, --out-dir DIR` | `out` | Diretório para `<title-slug>-<video_id>.txt` |
 | `-q, --quiet` | off | Só loga avisos/erros |
+
+## Vários vídeos (modo batch)
+
+Você pode passar várias URLs e/ou arquivos. As URLs são deduplicadas por id de
+vídeo e processadas por um **pool limitado de instâncias do Chrome reutilizadas**:
+cada worker mantém **um** navegador e processa vários vídeos em sequência (amortiza
+o custo de abrir o Chrome), com até `--jobs` navegadores em paralelo (padrão
+`min(4, nº de vídeos)`). Como o trabalho é I/O-bound, isso acelera bastante.
+
+- Falhas são isoladas por vídeo (um vídeo com erro não derruba o lote); uma sessão
+  problemática é recriada automaticamente.
+- Com **um** vídeo aparecem as barras detalhadas por fase; com **vários**, aparece
+  uma barra geral de "vídeos" e um resumo final por vídeo.
+- Cada vídeo gera o seu próprio `out/<title-slug>-<video_id>.txt`.
+
+> Cada instância do Chrome consome memória (~300–500 MB). Ajuste `--jobs` conforme a RAM disponível.
 
 ## Driblando bloqueios do YouTube/Google
 
@@ -119,7 +144,7 @@ que já tenha feito login no YouTube — é o bypass mais confiável.
 ```
 pyproject.toml            projeto uv + entry point de console-script
 src/ytcomments/
-  cli.py                  argparse, orquestração, ThreadPool, formatação, saída
+  cli.py                  argparse, coleta de URLs/arquivos, pool de instâncias, formatação, saída
   driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
   scraper.py              parsing de URL, bypass de consentimento, carga/expansão/coleta em duas fases
   htmltext.py             HTML→texto, data relativa, slug, flatten (puro, testado)

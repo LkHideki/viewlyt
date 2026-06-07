@@ -9,6 +9,8 @@ gerenciado com `uv`. Veja @README.md para o uso completo.
 ```bash
 uv sync                                             # cria o ambiente e instala as deps (Python 3.14)
 uv run ytcomments '<url-do-youtube>'                # coleta (headless por padrão) -> out/
+uv run ytcomments '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
+uv run ytcomments --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
 uv run ytcomments --limit 100 --max-replies 10 '<url>'
 uv run ytcomments --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 uv run python tests/test_units.py                   # testes sem navegador (sem dependência de pytest)
@@ -28,8 +30,13 @@ uv run python tests/test_units.py                   # testes sem navegador (sem 
 ## Convenções
 
 - Python 3.14, gerenciado por `uv`; fixado em `.python-version`.
-- Todas as chamadas ao Selenium/WebDriver são single-thread (WebDriver não é thread-safe).
-  O único trabalho paralelizado é o `html_to_text`, via **`ThreadPoolExecutor` em lotes**.
+- Todas as chamadas ao Selenium/WebDriver são single-thread por driver (WebDriver não é
+  thread-safe). O paralelismo entre vídeos vem de um **pool de instâncias do Chrome**:
+  cada worker tem o **seu próprio** driver (reutilizado entre vídeos) e há até `--jobs`
+  workers. Nunca compartilhe um driver entre threads. Falhas são isoladas por vídeo e a
+  sessão é recriada se ficar inválida; com vários vídeos, desligue as barras `tqdm` internas
+  (`progress=False`) e mostre só a barra geral.
+- O único trabalho de CPU paralelizado é o `html_to_text`, via **`ThreadPoolExecutor` em lotes**.
   NÃO troque por `InterpreterPoolExecutor`/`ProcessPoolExecutor` — medido como mais lento
   para muitos parses minúsculos limitados pelo GIL; a etapa é irrisória perto do Selenium.
 - Extraia o texto do comentário do **innerHTML** de `#content-text` (nunca `element.text`,
