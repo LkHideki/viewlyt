@@ -12,6 +12,8 @@ uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão)
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
 uv run viewlyt --limit 100 --max-replies 10 '<url>'
+uv run viewlyt --transcript '<url>'              # comentários + transcrição -> *.transcript.txt
+uv run viewlyt --transcript-only '<url>'         # só a transcrição (pula comentários)
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 uv run python tests/test_units.py                   # testes sem navegador (sem dependência de pytest)
 ```
@@ -19,10 +21,10 @@ uv run python tests/test_units.py                   # testes sem navegador (sem 
 ## Estrutura
 
 - `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
-  data relativa, flatten, `convert_batch`). Mantenha sem dependências: roda dentro de
-  threads/subinterpretadores, então NUNCA pode importar Selenium.
+  data relativa, flatten, `convert_batch`, `format_transcript`). Mantenha sem dependências: roda
+  dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
 - `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
-- `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, carga + coleta em duas fases.
+- `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases, transcrição.
 - `src/viewlyt/cli.py` — argparse, orquestração, conversão paralela, escrita do arquivo.
 - `tests/test_units.py` — testes das funções puras.
 - `out/` — entregáveis (no `.gitignore`).

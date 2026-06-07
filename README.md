@@ -19,6 +19,10 @@ em lotes (o `alt` de emojis/emotes e o texto dos links são preservados), e o
 resultado é escrito agrupado em blocos — um comentário seguido de suas respostas,
 blocos separados por uma linha em branco.
 
+Opcionalmente, com `--transcript`, também coleta a **transcrição completa** do
+vídeo (abre o painel pelo botão de transcrição na descrição) em
+`out/<title-slug>-<video_id>.transcript.txt`.
+
 ## Requisitos
 
 - `uv` (instala/gerencia o próprio **Python 3.14** — veja `.python-version`)
@@ -52,6 +56,12 @@ uv run viewlyt --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 # Escreve em outro diretório:
 uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 
+# Comentários + transcrição completa do vídeo:
+uv run viewlyt --transcript 'https://youtu.be/dQw4w9WgXcQ'
+
+# Só a transcrição (pula os comentários — bem mais rápido):
+uv run viewlyt --transcript-only 'https://youtu.be/dQw4w9WgXcQ'
+
 # Vários vídeos de uma vez (pool de instâncias reutilizadas):
 uv run viewlyt '<url1>' '<url2>' '<url3>'
 
@@ -71,6 +81,8 @@ uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
 | `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
 | `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
 | `--max-replies N` | `10` | Máximo de respostas por comentário (`0` desativa) |
+| `--transcript` | off | Também coleta a transcrição → `out/<title-slug>-<video_id>.transcript.txt` |
+| `--transcript-only` | off | Coleta só a transcrição (pula os comentários) |
 | `--headed` | off | Usa um navegador visível em vez de headless |
 | `--no-fallback` | off | Não tenta de novo em modo visível ao detectar bloqueio |
 | `--user-data-dir DIR` | — | Perfil persistente do Chrome (use um já logado para furar o bot wall) |
@@ -92,6 +104,26 @@ o custo de abrir o Chrome), com até `--jobs` navegadores em paralelo (padrão
 - Cada vídeo gera o seu próprio `out/<title-slug>-<video_id>.txt`.
 
 > Cada instância do Chrome consome memória (~300–500 MB). Ajuste `--jobs` conforme a RAM disponível.
+
+## Transcrição
+
+Com `--transcript` (ou `--transcript-only`), o coletor expande a descrição, clica
+no botão **"Show transcript"** e lê o painel de transcrição, gravando
+`out/<title-slug>-<video_id>.transcript.txt` com **um segmento por linha**:
+
+```
+[0:00] Você provavelmente usa o Cloud errado.
+[0:02] Ele não foi feito só para te responder,
+```
+
+- O timestamp é o do próprio YouTube, **verbatim** (`m:ss` ou `h:mm:ss` em vídeos
+  longos) — nunca reformatado.
+- **Sem deduplicação**: refrões e marcadores como `[Music]` se repetem de propósito.
+- É **opt-in** (mantém a coleta de comentários rápida por padrão). `--transcript-only`
+  pula os comentários e é bem mais rápido.
+- Vídeos **sem transcrição** (muitos clipes musicais) são ignorados graciosamente —
+  o resumo final mostra `transcript: unavailable` e nenhum arquivo é criado.
+- Para texto corrido sem timestamps: `sed 's/^\[[^]]*\] //' arquivo.transcript.txt`.
 
 ## Driblando bloqueios do YouTube/Google
 
@@ -146,8 +178,8 @@ pyproject.toml            projeto uv + entry point de console-script
 src/viewlyt/
   cli.py                  argparse, coleta de URLs/arquivos, pool de instâncias, formatação, saída
   driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
-  scraper.py              parsing de URL, bypass de consentimento, carga/expansão/coleta em duas fases
-  htmltext.py             HTML→texto, data relativa, slug, flatten (puro, testado)
+  scraper.py              parsing de URL, bypass de consentimento, coleta em duas fases, transcrição
+  htmltext.py             HTML→texto, data relativa, slug, flatten, format_transcript (puro, testado)
 tests/test_units.py       testes sem navegador para as funções puras
 ```
 
