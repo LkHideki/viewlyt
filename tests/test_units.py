@@ -581,6 +581,113 @@ def test_format_transcript() -> None:
     print("ok: format_transcript")
 
 
+def test_html_to_text_img_fallbacks() -> None:
+    # <img> alt -> aria-label -> shared-tooltip-text fallback chain, and no-attr drop.
+    assert html_to_text('<img aria-label=":wave:">') == ":wave:"
+    assert html_to_text('<img shared-tooltip-text=":party:">') == ":party:"
+    assert html_to_text('<img alt="" aria-label=":fb:">') == ":fb:"  # empty alt -> aria-label
+    assert html_to_text("a<img>b") == "ab"  # no usable attr -> neighbours join
+    print("ok: html_to_text_img_fallbacks")
+
+
+def test_html_to_text_blocks_and_nested_anchor() -> None:
+    # <p>/<div> block boundaries -> newline; nested <a> flattens to visible text.
+    assert html_to_text("<p>one</p><p>two</p>") == "one\ntwo"
+    assert html_to_text("<div>one</div><div>two</div>") == "one\ntwo"
+    assert html_to_text("<a href=x>outer <a href=y>inner</a></a>") == "outer inner"
+    # malformed/unclosed tags don't raise — the lenient parser still yields the text
+    assert html_to_text("<b>unclosed <i> text") == "unclosed  text"
+    print("ok: html_to_text_blocks_and_nested_anchor")
+
+
+def test_parse_relative_date_edges() -> None:
+    t = TODAY
+    assert parse_relative_date("30 seconds ago", t) == "2026-06-06"  # sub-day -> same day
+    assert parse_relative_date("5 minutes ago", t) == "2026-06-06"
+    assert parse_relative_date("2 DAYS AGO", t) == "2026-06-04"  # case-insensitive
+    assert parse_relative_date("a week ago", t) == "2026-05-30"  # "a/an" -> 1
+    assert parse_relative_date("a moment ago", t) == "2026-06-06"  # "moment" branch
+    assert parse_relative_date("Edited 3 days ago", t) == "2026-06-03"  # embedded match
+    assert parse_relative_date("   ", t) == ""  # whitespace-only -> empty
+    print("ok: parse_relative_date_edges")
+
+
+def test_extract_video_id_more_forms() -> None:
+    assert extract_video_id("https://music.youtube.com/watch?v=" + ID) == ID
+    assert extract_video_id("https://WWW.YOUTUBE.COM/watch?v=" + ID) == ID  # host.lower()
+    assert extract_video_id("https://www.youtube.com/watch?app=desktop&v=" + ID) == ID
+    assert extract_video_id("https://www.youtube.com/watch?v=" + ID + "&feature=share") == ID
+    # _ANY_ID_RE last resort: an 11-char run on a non-YouTube host still parses
+    assert extract_video_id("https://example.com/path/" + ID + "/x") == ID
+    # KNOWN LIMITATION (locked by this test): an attribution_link's first 11-char run is
+    # the literal "attribution", grabbed before the percent-encoded v= — NOT the id.
+    assert (
+        extract_video_id("https://www.youtube.com/attribution_link?u=%2Fwatch%3Fv%3D" + ID)
+        == "attribution"
+    )
+    print("ok: extract_video_id_more_forms")
+
+
+def test_group_consecutive_orphan_and_dropped_replies() -> None:
+    # A leading orphan reply (no preceding comment) is passed through untouched.
+    out = group_consecutive_comments([_r("@x", "@gone", "orphan"), _c("@a", "c1")])
+    assert [r["kind"] for r in out] == ["reply", "comment"]
+    assert out[0]["html"] == "orphan"
+    # An exact (case-insensitive) duplicate is dropped, and its reply goes with it.
+    recs = [_c("@a", "dup"), _c("@b", "mid"), _c("@a", "DUP"), _r("@r", "@a", "reply-to-dup")]
+    out = group_consecutive_comments(recs)
+    assert [(r["kind"], r.get("html")) for r in out] == [("comment", "dup"), ("comment", "mid")]
+    print("ok: group_consecutive_orphan_and_dropped_replies")
+
+
+def test_group_consecutive_merge_then_dedup() -> None:
+    # Each merged sub-comment's key is remembered, so a later standalone comment matching
+    # the SECOND merged fragment ("beta") is dropped as a duplicate.
+    recs = [_c("@a", "alpha"), _c("@a", "beta"), _c("@b", "x"), _c("@a", "beta", likes="9")]
+    out = group_consecutive_comments(recs)
+    assert [(r["author"], r.get("html")) for r in out] == [("@a", "alpha<br>beta"), ("@b", "x")]
+    assert recs[1]["html"] == "beta"  # inputs not mutated
+    print("ok: group_consecutive_merge_then_dedup")
+
+
+def test_format_comment_lines_reply_without_parent() -> None:
+    # A reply with no parent_author key renders "(in reply to unknown)".
+    recs = [
+        _c("@a", "c", likes="1", date_raw=""),
+        {"kind": "reply", "author": "@r", "html": "rep", "likes": "0", "date_raw": ""},
+    ]
+    assert format_comment_lines(recs, today=TODAY, progress=False) == [
+        "@a [1 likes, unknown]: c",
+        "    ↳ (in reply to unknown) @r [0 likes, unknown]: rep",
+    ]
+    print("ok: format_comment_lines_reply_without_parent")
+
+
+def test_slugify_edges() -> None:
+    assert slugify("a_b__c") == "a-b-c"  # underscores are non-alnum -> single hyphen
+    assert slugify("café 2024 ☕ test") == "cafe-2024-test"  # accents folded, emoji dropped
+    assert slugify("!!!@@@###") == "video"  # nothing usable
+    capped = slugify("aaaa bbbb cccc", max_len=6)
+    assert capped == "aaaa-b" and not capped.endswith("-")  # mid-word cap, no trailing hyphen
+    print("ok: slugify_edges")
+
+
+def test_reply_selectors_and_off_markers() -> None:
+    from viewlyt.scraper import (
+        COMMENTS_OFF_MARKERS,
+        LIKES_SELECTORS,
+        REPLY_ITEM,
+        REPLY_ITEM_ANY,
+        REPLY_ITEM_FALLBACK,
+    )
+
+    assert REPLY_ITEM in REPLY_ITEM_ANY and REPLY_ITEM_FALLBACK in REPLY_ITEM_ANY
+    assert "comments are turned off" in COMMENTS_OFF_MARKERS
+    assert any("desativados" in m for m in COMMENTS_OFF_MARKERS)  # localized marker present
+    assert LIKES_SELECTORS[2] == "[id*=vote-count]"  # last-ditch fallback
+    print("ok: reply_selectors_and_off_markers")
+
+
 if __name__ == "__main__":
     test_extract_video_id()
     test_html_to_text()
@@ -607,6 +714,15 @@ if __name__ == "__main__":
     test_harvest_thread_fallback()
     test_transcript_timestamp_exact_token()
     test_format_transcript()
+    test_html_to_text_img_fallbacks()
+    test_html_to_text_blocks_and_nested_anchor()
+    test_parse_relative_date_edges()
+    test_extract_video_id_more_forms()
+    test_group_consecutive_orphan_and_dropped_replies()
+    test_group_consecutive_merge_then_dedup()
+    test_format_comment_lines_reply_without_parent()
+    test_slugify_edges()
+    test_reply_selectors_and_off_markers()
     test_url_inputs()
     test_resolve_chrome_binary()
     test_lazy_import_no_selenium()
