@@ -12,7 +12,7 @@ import logging
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-log = logging.getLogger("ytcomments")
+log = logging.getLogger("viewlyt")
 
 CHROME_BINARY = "/usr/bin/google-chrome"
 

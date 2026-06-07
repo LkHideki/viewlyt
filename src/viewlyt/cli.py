@@ -43,7 +43,7 @@ from .scraper import (
     safe_get,
 )
 
-log = logging.getLogger("ytcomments")
+log = logging.getLogger("viewlyt")
 
 REPLY_INDENT = "    ↳ "  # 4 spaces + ↳
 
@@ -315,7 +315,7 @@ def _safe_quit(driver) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="ytcomments",
+        prog="viewlyt",
         description="Scrape YouTube comments (likes, dates, replies) into "
         "out/<title-slug>-<video_id>.txt. Accepts many URLs and/or .txt/.csv files.",
     )

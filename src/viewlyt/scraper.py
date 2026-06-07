@@ -2,7 +2,7 @@
 
 All Selenium WebDriver interaction lives here and runs on a single thread —
 WebDriver instances are NOT thread-safe. The CPU-light HTML->text conversion is
-what gets parallelised later (see :mod:`ytcomments.cli`).
+what gets parallelised later (see :mod:`viewlyt.cli`).
 
 Harvesting is two-phase to keep loading and expansion from fighting each other:
 
@@ -36,7 +36,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
-log = logging.getLogger("ytcomments")
+log = logging.getLogger("viewlyt")
 
 COMMENTS_CONTAINER = "ytd-comments#comments"
 COMMENT_THREAD = "ytd-comment-thread-renderer"

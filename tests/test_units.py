@@ -10,15 +10,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import tempfile  # noqa: E402
 from datetime import date  # noqa: E402
 
-from ytcomments.cli import format_comment_lines, gather_urls, read_urls_from_file  # noqa: E402
-from ytcomments.htmltext import (  # noqa: E402
+from viewlyt.cli import format_comment_lines, gather_urls, read_urls_from_file  # noqa: E402
+from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
     html_to_text,
     parse_relative_date,
     slugify,
 )
-from ytcomments.scraper import extract_video_id  # noqa: E402
+from viewlyt.scraper import extract_video_id  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
 
