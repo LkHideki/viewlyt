@@ -54,6 +54,17 @@ REPLY_ITEM = (
 )
 REPLY_CONTINUATION = "ytd-comment-replies-renderer ytd-continuation-item-renderer"
 
+# Transcript (description -> "Show transcript" -> engagement panel)
+DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
+TRANSCRIPT_SECTION = "ytd-video-description-transcript-section-renderer"
+TRANSCRIPT_PANEL = (
+    'ytd-engagement-panel-section-list-renderer'
+    '[target-id="engagement-panel-searchable-transcript"]'
+)
+TRANSCRIPT_SEGMENT = "ytd-transcript-segment-renderer"
+TRANSCRIPT_TS = ".segment-timestamp"
+TRANSCRIPT_SEG_TEXT = "yt-formatted-string.segment-text, .segment-text"
+
 # Locale-dependent "before you continue" consent buttons (best-effort fallback;
 # the cookie priming below usually skips the interstitial entirely).
 CONSENT_XPATHS = [
@@ -449,3 +460,151 @@ def collect_comments(
     n_top = sum(1 for r in records if r["kind"] == "comment")
     log.info("collected %d records (%d comments + %d replies)", len(records), n_top, len(records) - n_top)
     return records
+
+
+# --------------------------------------------------------------------------- #
+# Transcript
+# --------------------------------------------------------------------------- #
+def _js_click(driver, el) -> bool:
+    """Scroll into view and dispatch a JS ``.click()``.
+
+    For the transcript controls a JS click is what actually opens the engagement
+    panel (verified by probe: it loads all segments), whereas a trusted Selenium
+    ``.click()`` can no-op here — the opposite of the reply toggles, so we do NOT
+    use ``_safe_click`` for the transcript flow."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+        driver.execute_script("arguments[0].click();", el)
+        return True
+    except (StaleElementReferenceException, WebDriverException):
+        return False
+
+
+def _expand_description(driver) -> None:
+    """Click the description "...more" expander if present and visible.
+
+    Idempotent: when the description is already expanded the #expand button is
+    hidden, so ``_displayed`` is False and we skip it (avoids collapsing it). The
+    transcript section lives inside the expanded description.
+    """
+    try:
+        for e in driver.find_elements(By.CSS_SELECTOR, DESC_EXPAND):
+            if _displayed(e):
+                _js_click(driver, e)
+                time.sleep(0.4)
+                break
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        pass
+
+
+def _find_transcript_button(driver):
+    """Return the "Show transcript" button element, or None.
+
+    Prefers the description transcript section; falls back to any visible button
+    whose aria-label/text matches /transcri/ — excluding a "Hide/Ocultar" toggle
+    (the panel may linger from a previous video on a reused driver)."""
+    try:
+        for sec in driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SECTION):
+            for b in sec.find_elements(By.CSS_SELECTOR, "button"):
+                if _displayed(b):
+                    return b
+    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+        pass
+    try:
+        return driver.execute_script(
+            "var bs=document.querySelectorAll('button');"
+            "for (var i=0;i<bs.length;i++){var b=bs[i];"
+            "var s=((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();"
+            "if(/transcri/.test(s) && !/hide|ocultar/.test(s)) return b;}"
+            "return null;"
+        )
+    except WebDriverException:
+        return None
+
+
+def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
+    """Defensive against virtualization: scroll the last segment into view until
+    the segment count stops growing. Returns the final count. (For the common
+    non-virtualized panel this stabilises immediately.)"""
+    prev, stale = -1, 0
+    for _ in range(max_rounds):
+        try:
+            n = len(driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+        except WebDriverException:
+            break
+        if n == prev:
+            stale += 1
+            if stale >= 2:
+                break
+        else:
+            stale = 0
+        prev = n
+        try:
+            driver.execute_script(
+                "var s=document.querySelectorAll(arguments[0]);"
+                "if (s.length) s[s.length - 1].scrollIntoView({block: 'end'});",
+                TRANSCRIPT_SEGMENT,
+            )
+        except WebDriverException:
+            break
+        time.sleep(0.3)
+    return prev if prev > 0 else 0
+
+
+def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> list[tuple[str, str]]:
+    """Open the transcript panel and return ``[(timestamp, text), ...]``.
+
+    Returns ``[]`` when the video has no transcript (no button, or the panel
+    opens empty — common for music videos) or on ANY error: this NEVER raises, so
+    a transcript failure can't discard already-harvested comments or recycle the
+    pooled driver. Reads via ``textContent`` (off-screen segments would be ""
+    under Selenium ``.text``) and extracts all segments in a single round-trip.
+    """
+    try:
+        if progress:
+            log.info("fetching transcript…")
+        driver.execute_script("window.scrollTo(0, 600);")
+        _expand_description(driver)
+
+        btn = _find_transcript_button(driver)
+        if btn is None:
+            log.info("no transcript button — transcript unavailable for this video")
+            return []
+        if not _js_click(driver, btn):
+            log.warning("found the transcript button but could not click it")
+            return []
+
+        try:
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+            )
+        except TimeoutException:
+            log.info("transcript panel opened but no segments — transcript unavailable")
+            return []
+
+        _load_all_transcript_segments(driver)
+
+        raw = driver.execute_script(
+            "var out=[];var segs=document.querySelectorAll(arguments[0]);"
+            "for (var i=0;i<segs.length;i++){var s=segs[i];"
+            "var t=s.querySelector(arguments[1]);"
+            "var x=s.querySelector(arguments[2]);"
+            "out.push([t?t.textContent:'', x?x.textContent:'']);}"
+            "return out;",
+            TRANSCRIPT_SEGMENT, TRANSCRIPT_TS, TRANSCRIPT_SEG_TEXT,
+        ) or []
+
+        segments: list[tuple[str, str]] = []
+        for ts, txt in raw:
+            txt = " ".join((txt or "").split())
+            if not txt:  # only drop truly empty text; "[Music]"/"♪" are real content
+                continue
+            segments.append((" ".join((ts or "").split()), txt))
+        log.info("transcript: %d segments", len(segments))
+        return segments
+    except (TimeoutException, StaleElementReferenceException, NoSuchElementException, WebDriverException) as exc:
+        log.warning("transcript fetch failed: %s", exc)
+        return []
+    except Exception as exc:  # pragma: no cover - never break the video over a transcript
+        log.warning("transcript fetch failed unexpectedly: %s", exc)
+        return []
