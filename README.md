@@ -25,7 +25,8 @@ vídeo (abre o painel pelo botão de transcrição na descrição) em
 
 ## Requisitos
 
-- `uv` (instala/gerencia o próprio **Python 3.14** — veja `.python-version`)
+- `uv` (instala/gerencia o Python; requer **Python ≥ 3.11**, e o `.python-version`
+  fixa o **3.14** para desenvolvimento)
 - Google Chrome instalado em `/usr/bin/google-chrome` (o Selenium Manager baixa
   automaticamente o ChromeDriver compatível — nada para instalar manualmente)
 
@@ -253,4 +254,7 @@ uv run --python 3.14t viewlyt '<url>'
   de resposta do YouTube são planas).
 - As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
 - Um IP residencial e um perfil logado melhoram muito a confiabilidade.
-```
+
+## Licença
+
+[MIT](LICENSE) © Lucas Hideki

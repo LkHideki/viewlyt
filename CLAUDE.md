@@ -7,7 +7,7 @@ gerenciado com `uv`. Veja @README.md para o uso completo.
 ## Comandos
 
 ```bash
-uv sync                                             # cria o ambiente e instala as deps (Python 3.14)
+uv sync                                             # cria o ambiente e instala as deps (Python >= 3.11; dev em 3.14)
 uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
@@ -40,7 +40,7 @@ Os testes também rodam sem pytest via `uv run python tests/test_units.py`.
 
 ## Convenções
 
-- Python 3.14, gerenciado por `uv`; fixado em `.python-version`.
+- Requer Python >= 3.11 (testado em 3.11–3.14); o desenvolvimento usa 3.14, fixado em `.python-version`.
 - Todas as chamadas ao Selenium/WebDriver são single-thread por driver (WebDriver não é
   thread-safe). O paralelismo entre vídeos vem de um **pool de instâncias do Chrome**:
   cada worker tem o **seu próprio** driver (reutilizado entre vídeos) e há até `--jobs`
