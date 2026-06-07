@@ -10,7 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import tempfile  # noqa: E402
 from datetime import date  # noqa: E402
 
-from viewlyt.cli import format_comment_lines, gather_urls, read_urls_from_file  # noqa: E402
+from viewlyt.cli import (  # noqa: E402
+    build_parser,
+    format_comment_lines,
+    gather_urls,
+    read_urls_from_file,
+    resolve_modes,
+)
 from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
@@ -299,6 +305,33 @@ def test_group_consecutive_comments_shape() -> None:
     print("ok: group_consecutive_comments_shape")
 
 
+def test_resolve_modes() -> None:
+    # (comments, transcript, transcript_only) -> (with_comments, with_transcript)
+    assert resolve_modes(False, False, False) == (True, False)  # no flags -> comments only
+    assert resolve_modes(True, False, False) == (True, False)  # -c -> comments only
+    assert resolve_modes(False, True, False) == (False, True)  # -t -> transcript only
+    assert resolve_modes(True, True, False) == (True, True)  # -c -t -> both
+    assert resolve_modes(False, False, True) == (False, True)  # --transcript-only
+    assert resolve_modes(True, False, True) == (False, True)  # --transcript-only wins over -c
+    print("ok: resolve_modes")
+
+
+def test_flag_plumbing() -> None:
+    p = build_parser()
+    # merge is ON by default; both spellings of the disable flag turn it off.
+    assert p.parse_args([]).merge_comments is True
+    assert p.parse_args(["--no-merge-comments"]).merge_comments is False
+    assert p.parse_args(["--prevent-comment-group"]).merge_comments is False
+    # selectors land on the expected dests
+    a = p.parse_args(["-c", "-t"])
+    assert a.comments is True and a.transcript is True
+    assert p.parse_args(["--transcript-only"]).transcript_only is True
+    # new defaults are wired into the parser
+    d = p.parse_args([])
+    assert d.limit == 150 and d.max_replies == 15
+    print("ok: flag_plumbing")
+
+
 def test_url_inputs() -> None:
     with tempfile.TemporaryDirectory() as d:
         txt = Path(d) / "urls.txt"
@@ -417,6 +450,8 @@ if __name__ == "__main__":
     test_merge_replies_concatenated_across_merge()
     test_merge_disabled_old_behavior()
     test_group_consecutive_comments_shape()
+    test_resolve_modes()
+    test_flag_plumbing()
     test_format_transcript()
     test_url_inputs()
     test_resolve_chrome_binary()

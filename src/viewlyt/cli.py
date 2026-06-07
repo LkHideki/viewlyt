@@ -59,11 +59,13 @@ REPLY_INDENT = "    ↳ "  # 4 spaces + ↳
 _EXAMPLES = """\
 exemplos:
   viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # comentários -> out/<slug>-<id>.txt
-  viewlyt --transcript '<url>'                    # comentários + transcrição
-  viewlyt --transcript-only '<url>'               # só a transcrição (mais rápido)
-  viewlyt --limit 50 --no-replies '<url>'         # coleta enxuta e rápida
-  viewlyt --from-file urls.txt -j 4               # vários vídeos (.txt/.csv), 4 navegadores
-  viewlyt --headed '<url>'                        # navegador visível (contra o bot wall)
+  viewlyt -c -t '<url>'                            # comentários + transcrição
+  viewlyt -t '<url>'                               # só a transcrição (mais rápido)
+  viewlyt --transcript-only '<url>'                # idem (alias de -t sem -c)
+  viewlyt --no-merge-comments '<url>'              # não funde comentários do mesmo autor
+  viewlyt --limit 50 --no-replies '<url>'          # coleta enxuta e rápida
+  viewlyt --from-file urls.txt -j 4                # vários vídeos (.txt/.csv), 4 navegadores
+  viewlyt --headed '<url>'                         # navegador visível (contra o bot wall)
 """
 
 
@@ -184,6 +186,25 @@ def scrape_one(
 
 
 # --------------------------------------------------------------------------- #
+# Mode resolution
+# --------------------------------------------------------------------------- #
+def resolve_modes(comments: bool, transcript: bool, transcript_only: bool) -> tuple[bool, bool]:
+    """Resolve ``(with_comments, with_transcript)`` from the independent selectors.
+
+    ``-c/--comments`` and ``-t/--transcript`` are independent toggles, with the
+    back-compat ``--transcript-only`` alias. The table is: no flags -> comments
+    only; ``-c`` -> comments only; ``-t`` -> transcript only; ``-c -t`` -> both;
+    ``--transcript-only`` -> transcript only (``-c`` is ignored in that case).
+    """
+    with_transcript = transcript or transcript_only
+    if transcript_only:
+        with_comments = False
+    else:
+        with_comments = comments or (not transcript)
+    return with_comments, with_transcript
+
+
+# --------------------------------------------------------------------------- #
 # Formatting / output
 # --------------------------------------------------------------------------- #
 def _convert_all(htmls: list[str], progress: bool = True) -> list[str]:
@@ -295,6 +316,7 @@ def run_batch(
     max_replies: int,
     with_comments: bool,
     with_transcript: bool,
+    merge_comments: bool,
     inner_progress: bool,
     quiet: bool,
 ) -> list[dict]:
@@ -359,9 +381,13 @@ def run_batch(
                     slug = slugify(title)
                     comment_file, n_top, n_lines = None, 0, 0
                     if with_comments:
-                        lines = format_comment_lines(records, progress=inner_progress)
+                        lines = format_comment_lines(
+                            records, progress=inner_progress, merge_comments=merge_comments
+                        )
                         comment_file = str(_write(slug, vid, lines, out_dir))
-                        n_top = sum(1 for r in records if r.get("kind") == "comment")
+                        # Count rendered top-level blocks (a non-blank line that isn't an
+                        # indented reply), so the summary matches the file after merging.
+                        n_top = sum(1 for ln in lines if ln and not ln.startswith(REPLY_INDENT))
                         n_lines = len(lines)
                     transcript_file, n_seg = None, 0
                     if with_transcript and transcript:
@@ -471,15 +497,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="max replies per comment (default: 15; 0 disables)",
     )
     p.add_argument(
+        "--no-merge-comments",
+        "--prevent-comment-group",
+        dest="merge_comments",
+        action="store_false",
+        default=True,
+        help="don't merge consecutive top-level comments by the same author into one block "
+        "(merging is ON by default; --prevent-comment-group is an accepted alias)",
+    )
+    p.add_argument(
+        "-c",
+        "--comments",
+        action="store_true",
+        help="collect comments (the default when no selector is given); combine with -t for both",
+    )
+    p.add_argument(
+        "-t",
         "--transcript",
         action="store_true",
-        help="also fetch the video transcript -> out/<slug>-<id>.transcript.txt "
-        "(skipped if the video has none, e.g. many music videos)",
+        help="collect the transcript -> out/<slug>-<id>.transcript.txt (skipped if the video has "
+        "none, e.g. many music videos). Without -c this selects the transcript ONLY; add -c for "
+        "both. NOTE: this changes the old meaning of --transcript, which also kept comments.",
     )
     p.add_argument(
         "--transcript-only",
         action="store_true",
-        help="fetch only the transcript and skip comments (much faster)",
+        help="fetch only the transcript and skip comments (alias for -t without -c)",
     )
     p.add_argument(
         "--headed",
@@ -522,8 +565,9 @@ def main(argv: list[str] | None = None) -> int:
         log.error("no valid YouTube URLs/ids given (pass URLs and/or --from-file a .txt/.csv)")
         return 2
 
-    with_transcript = args.transcript or args.transcript_only
-    with_comments = not args.transcript_only
+    with_comments, with_transcript = resolve_modes(
+        args.comments, args.transcript, args.transcript_only
+    )
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
     jobs = max(1, min(jobs, len(targets)))
@@ -543,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
         max_replies=args.max_replies,
         with_comments=with_comments,
         with_transcript=with_transcript,
+        merge_comments=args.merge_comments,
         inner_progress=inner_progress,
         quiet=args.quiet,
     )
