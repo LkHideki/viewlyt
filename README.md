@@ -19,9 +19,14 @@ em lotes (o `alt` de emojis/emotes e o texto dos links são preservados), e o
 resultado é escrito agrupado em blocos — um comentário seguido de suas respostas,
 blocos separados por uma linha em branco.
 
-Opcionalmente, com `--transcript`, também coleta a **transcrição completa** do
-vídeo (abre o painel pelo botão de transcrição na descrição) em
-`out/<title-slug>-<video_id>.transcript.txt`.
+Opcionalmente, com `-t`/`--transcript`, também coleta a **transcrição completa**
+do vídeo (abre o painel pelo botão de transcrição na descrição) em
+`out/<title-slug>-<video_id>.transcript.txt`. Use `-c -t` para comentários **e**
+transcrição, ou `-t` sozinho para só a transcrição.
+
+> **Mudança de comportamento:** `-t`/`--transcript` sozinho agora coleta SÓ a
+> transcrição (antes, `--transcript` também mantinha os comentários). Para os dois,
+> use `-c -t`.
 
 ## Requisitos
 
@@ -61,11 +66,14 @@ uv run viewlyt --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 # Escreve em outro diretório:
 uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 
-# Comentários + transcrição completa do vídeo:
-uv run viewlyt --transcript 'https://youtu.be/dQw4w9WgXcQ'
+# Comentários + transcrição completa do vídeo (seletores -c e -t juntos):
+uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 
 # Só a transcrição (pula os comentários — bem mais rápido):
-uv run viewlyt --transcript-only 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-only
+
+# Não fundir comentários consecutivos do mesmo autor (a fusão é o padrão):
+uv run viewlyt --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
 
 # Vários vídeos de uma vez (pool de instâncias reutilizadas):
 uv run viewlyt '<url1>' '<url2>' '<url3>'
@@ -83,12 +91,14 @@ uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
 | `-V, --version` | — | mostra a versão e sai |
 | `-f, --from-file PATH` | — | arquivo com URLs/ids (`.txt` uma por linha, `.csv` qualquer coluna); repetível |
 | `-j, --jobs N` | `min(4, nº vídeos)` | nº de navegadores concorrentes (instâncias reutilizadas) |
-| `--limit N` | `100` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
+| `--limit N` | `150` | Meta de comentários de primeiro nível a coletar (ou todos, se menos) |
 | `--max-viewports N` | `25` | Orçamento de rolagem (nº de passos de rolar-até-o-fim) |
 | `--no-replies` | off | Não expande/coleta respostas (mais rápido) |
-| `--max-replies N` | `10` | Máximo de respostas por comentário (`0` desativa) |
-| `--transcript` | off | Também coleta a transcrição → `out/<title-slug>-<video_id>.transcript.txt` |
-| `--transcript-only` | off | Coleta só a transcrição (pula os comentários) |
+| `--max-replies N` | `15` | Máximo de respostas por comentário (`0` desativa) |
+| `--no-merge-comments` | off | Não funde comentários de primeiro nível consecutivos do mesmo autor (a fusão é o padrão; `--prevent-comment-group` é alias) |
+| `-c, --comments` | off | Coleta comentários (é o padrão quando nenhum seletor é dado; combine com `-t` para ambos) |
+| `-t, --transcript` | off | Coleta a transcrição → `out/<title-slug>-<video_id>.transcript.txt`. Sem `-c`, coleta SÓ a transcrição; com `-c`, ambos. **Muda** o sentido antigo de `--transcript` (que também mantinha os comentários). |
+| `--transcript-only` | off | Coleta só a transcrição (alias de `-t` sem `-c`) |
 | `--headed` | off | Usa um navegador visível em vez de headless |
 | `--no-fallback` | off | Não tenta de novo em modo visível ao detectar bloqueio |
 | `--user-data-dir DIR` | — | Perfil persistente do Chrome (use um já logado para furar o bot wall) |
@@ -113,8 +123,8 @@ o custo de abrir o Chrome), com até `--jobs` navegadores em paralelo (padrão
 
 ## Transcrição
 
-Com `--transcript` (ou `--transcript-only`), o coletor expande a descrição, clica
-no botão **"Show transcript"** e lê o painel de transcrição, gravando
+Com `-t`/`--transcript` (ou `--transcript-only`), o coletor expande a descrição,
+clica no botão **"Show transcript"** e lê o painel de transcrição, gravando
 `out/<title-slug>-<video_id>.transcript.txt` com **um segmento por linha**:
 
 ```
@@ -125,8 +135,8 @@ no botão **"Show transcript"** e lê o painel de transcrição, gravando
 - O timestamp é o do próprio YouTube, **verbatim** (`m:ss` ou `h:mm:ss` em vídeos
   longos) — nunca reformatado.
 - **Sem deduplicação**: refrões e marcadores como `[Music]` se repetem de propósito.
-- É **opt-in** (mantém a coleta de comentários rápida por padrão). `--transcript-only`
-  pula os comentários e é bem mais rápido.
+- É **opt-in** (mantém a coleta de comentários rápida por padrão). `-t`/`--transcript-only`
+  (sem `-c`) pula os comentários e é bem mais rápido.
 - Vídeos **sem transcrição** (muitos clipes musicais) são ignorados graciosamente —
   o resumo final mostra `transcript: unavailable` e nenhum arquivo é criado.
 - Para texto corrido sem timestamps: `sed 's/^\[[^]]*\] //' arquivo.transcript.txt`.
@@ -176,6 +186,11 @@ que já tenha feito login no YouTube — é o bypass mais confiável.
   Autores que não resolvem aparecem como `unknown`.
 - O slug do nome do arquivo é o título do vídeo, normalizado em NFKD com acentos
   removidos (títulos em português viram ASCII), em minúsculas e com hífens.
+- **Fusão (padrão):** comentários de primeiro nível **consecutivos do mesmo autor**
+  (real — nunca `unknown`/vazio) são unidos em um só bloco (likes/data do primeiro,
+  textos concatenados na ordem, todas as respostas mantidas) e **duplicatas exatas**
+  (mesmo autor + mesmo texto) são descartadas. Desative com `--no-merge-comments`
+  (alias `--prevent-comment-group`).
 
 ## Organização
 
@@ -253,8 +268,8 @@ uv run --python 3.14t viewlyt '<url>'
 
 ## Notas / limitações
 
-- Comentários de primeiro nível miram o `--limit` (100 por padrão); as respostas são
-  limitadas pelo `--max-replies` (10 por padrão) e expandidas em um nível (as threads
+- Comentários de primeiro nível miram o `--limit` (150 por padrão); as respostas são
+  limitadas pelo `--max-replies` (15 por padrão) e expandidas em um nível (as threads
   de resposta do YouTube são planas).
 - As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
 - Um IP residencial e um perfil logado melhoram muito a confiabilidade.

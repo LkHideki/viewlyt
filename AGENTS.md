@@ -11,9 +11,11 @@ uv sync                                             # cria o ambiente e instala 
 uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run viewlyt --limit 100 --max-replies 10 '<url>'
-uv run viewlyt --transcript '<url>'              # comentários + transcrição -> *.transcript.txt
-uv run viewlyt --transcript-only '<url>'         # só a transcrição (pula comentários)
+uv run viewlyt --limit 150 --max-replies 15 '<url>'
+uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.txt
+uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
+uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)
+uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
 uv run pytest                                       # testes (sem navegador)
@@ -52,10 +54,18 @@ Os testes também rodam sem pytest via `uv run python tests/test_units.py`.
   para muitos parses minúsculos limitados pelo GIL; a etapa é irrisória perto do Selenium.
 - Extraia o texto do comentário do **innerHTML** de `#content-text` (nunca `element.text`,
   que perde o `alt` dos emojis); likes de `#vote-count-middle`; data de `#published-time-text`.
+  Cada campo é lido por uma **lista ordenada de seletores** (`*_SELECTORS`) via
+  `_first_text`/`_first_inner_html` (o primeiro acerto não-vazio vence), para sobreviver
+  a renomeações de DOM do YouTube; os nomes escalares legados continuam apontando para o 1º item.
 - Formato de saída: um bloco por comentário de primeiro nível, blocos separados por linha em branco:
   - comentário: `@user [N likes, yyyy-mm-dd]: mensagem`
   - resposta:   `    ↳ (in reply to @parent) @author [N likes, yyyy-mm-dd]: mensagem`
   - mensagens achatadas em uma única linha; datas são **aproximadas** (vêm do tempo relativo do YouTube).
+  - **Fusão (padrão):** comentários de primeiro nível consecutivos do MESMO autor real
+    (≠ `""`/`unknown`) são fundidos em um bloco (likes/data do 1º, textos concatenados, todas
+    as respostas mantidas); duplicatas exatas (mesmo autor + texto) são descartadas. É uma etapa
+    pura em `htmltext.group_consecutive_comments`, aplicada em `format_comment_lines`; desative
+    com `--no-merge-comments` (alias `--prevent-comment-group`).
 
 ## Git / commits
 
