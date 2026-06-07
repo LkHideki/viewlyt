@@ -97,6 +97,14 @@ REPLY_ITEM = (
 REPLY_ITEM_FALLBACK = (
     "ytd-comment-view-model:not([is-top-level]), ytd-comment-renderer:not(#comment)"
 )
+# Union of both reply selectors, used to WAIT for and COUNT replies during expansion.
+# The primary REPLY_ITEM often misses current YouTube reply DOM (replies render
+# outside ytd-comment-replies-renderer/#replies), so waiting on it alone TIMES OUT
+# ~6s/thread even though the reply loaded — and the continuation loop, counting via
+# the same miss, never fired, leaving most replies uncollected. The union resolves
+# as soon as a reply appears and counts every reply, fixing both the stall and the
+# under-collection.
+REPLY_ITEM_ANY = f"{REPLY_ITEM}, {REPLY_ITEM_FALLBACK}"
 REPLY_CONTINUATION = "ytd-comment-replies-renderer ytd-continuation-item-renderer"
 
 # Localized "comments are turned off" markers — lets the load phase bail in <1s
@@ -424,14 +432,14 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         return
     try:
         WebDriverWait(driver, 6).until(
-            lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > 0
+            lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY)) > 0
         )
     except (TimeoutException, StaleElementReferenceException, WebDriverException):
         return
 
     for _ in range(max_more_clicks):
         try:
-            before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM))
+            before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY))
         except (StaleElementReferenceException, WebDriverException):
             break
         if before >= max_replies:
@@ -455,7 +463,7 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         try:
             WebDriverWait(driver, 5).until(
                 lambda d, before=before: (
-                    len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM)) > before
+                    len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY)) > before
                 )
             )
         except (TimeoutException, StaleElementReferenceException, WebDriverException):
