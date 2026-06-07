@@ -815,19 +815,21 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
                 log.warning("found the transcript button but could not click it")
                 return []
             seg_timeout, retry = timeout, True
+            # Panel host usually appears before the segments hydrate; don't block long.
+            try:
+                WebDriverWait(driver, min(seg_timeout, 4.0)).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
+                )
+            except TimeoutException:
+                pass
         else:
+            # No reachable control: most such videos (music clips) genuinely have no
+            # transcript, so the speculative direct-open gets a SHORT budget and no
+            # extra panel-host wait — keep transcript-less videos fast.
             if not _open_transcript_panel_direct(driver):
                 log.info("no transcript control — transcript unavailable for this video")
                 return []
-            seg_timeout, retry = min(timeout, 3.0), False
-
-        # Panel host usually appears before the segments hydrate; don't block long.
-        try:
-            WebDriverWait(driver, min(seg_timeout, 4.0)).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
-            )
-        except TimeoutException:
-            pass
+            seg_timeout, retry = min(timeout, 2.0), False
 
         n_seg = _wait_for_segments(driver, seg_timeout)
         if n_seg == 0 and retry:
