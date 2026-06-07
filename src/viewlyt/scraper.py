@@ -40,19 +40,73 @@ log = logging.getLogger("viewlyt")
 
 COMMENTS_CONTAINER = "ytd-comments#comments"
 COMMENT_THREAD = "ytd-comment-thread-renderer"
-TOP_COMMENT = "#comment"  # the top-level comment inside a thread
-COMMENT_TEXT = "#content-text"  # tag-agnostic (yt-attributed/formatted-string)
-COMMENT_AUTHOR = "#author-text"
-LIKES = "#vote-count-middle"  # like count (empty when zero)
-PUBLISHED_TIME = "#published-time-text"  # relative timestamp, e.g. "2 days ago"
 READ_MORE = "#more"  # "Read more" text expander (not #more-replies)
 MORE_REPLIES = "#more-replies"  # "View N replies" toggle
 REPLIES_RENDERER = "ytd-comment-replies-renderer"
+
+# Each per-field selector is an ORDERED fallback list: the first one that yields a
+# value wins, so collection survives YouTube renaming/wrapping a node (a single
+# pinned selector would silently return "" -> the field comes out empty/unknown).
+# The legacy scalar names below stay defined as the first element for readability
+# and for anyone importing them.
+TOP_COMMENT_SELECTORS = (
+    "#comment",  # the top-level comment inside a thread
+    "ytd-comment-view-model#comment",
+    "#comment-content",
+)
+COMMENT_TEXT_SELECTORS = (
+    "#content-text",  # canonical; tag-agnostic (yt-attributed/formatted-string)
+    "yt-attributed-string#content-text",
+    "#comment-content #content-text",
+    "#content #content-text",
+    "yt-formatted-string#content-text",
+)
+COMMENT_AUTHOR_SELECTORS = (
+    "#author-text",
+    "a#author-text",
+    "#header-author #author-text",
+    "#author-comment-badge #author-text",  # channel-owner / badge case
+    "h3 #author-text",
+)
+LIKES_SELECTORS = (
+    "#vote-count-middle",  # like count (empty when zero)
+    "#vote-count-left",
+    "[id*=vote-count]",  # last-ditch any vote-count node
+)
+PUBLISHED_TIME_SELECTORS = (
+    "#published-time-text",  # relative timestamp, e.g. "2 days ago"
+    "#published-time-text a",
+    "a.yt-simple-endpoint#published-time-text",
+    "#header-author #published-time-text",
+)
+TOP_COMMENT = TOP_COMMENT_SELECTORS[0]
+COMMENT_TEXT = COMMENT_TEXT_SELECTORS[0]
+COMMENT_AUTHOR = COMMENT_AUTHOR_SELECTORS[0]
+LIKES = LIKES_SELECTORS[0]
+PUBLISHED_TIME = PUBLISHED_TIME_SELECTORS[0]
+
 REPLY_ITEM = (
     "ytd-comment-replies-renderer ytd-comment-view-model, "
-    "ytd-comment-replies-renderer ytd-comment-renderer"
+    "ytd-comment-replies-renderer ytd-comment-renderer, "
+    "#replies ytd-comment-view-model, "  # wrapper id instead of renderer tag
+    "#replies ytd-comment-renderer, "
+    "#loaded-replies ytd-comment-view-model"  # some layouts use #loaded-replies
+)
+# Used only when REPLY_ITEM finds nothing after a successful expand: any non-top-level
+# comment node directly under the thread.
+REPLY_ITEM_FALLBACK = (
+    "ytd-comment-view-model:not([is-top-level]), ytd-comment-renderer:not(#comment)"
 )
 REPLY_CONTINUATION = "ytd-comment-replies-renderer ytd-continuation-item-renderer"
+
+# Localized "comments are turned off" markers — lets the load phase bail in <1s
+# instead of waiting out the whole first-thread timeout on a disabled section.
+COMMENTS_OFF_MARKERS = (
+    "comments are turned off",
+    "comentários estão desativados",
+    "comentários foram desativados",
+    "los comentarios están desactivados",
+)
 
 # Transcript (description -> "Show transcript" -> engagement panel)
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
@@ -217,6 +271,26 @@ def detect_block(driver) -> str | None:
     return None
 
 
+def _comments_disabled(driver) -> bool:
+    """True when YouTube shows a 'comments are turned off' notice for this video.
+
+    Reads only the comments section's text (not the whole page) and never raises —
+    on any WebDriver error it returns False so the caller falls through to its
+    normal wait/timeout path.
+    """
+    try:
+        src = (
+            driver.execute_script(
+                "var c=document.querySelector('ytd-comments,#comments,#sections');"
+                "return c ? c.innerText : '';"
+            )
+            or ""
+        ).lower()
+    except WebDriverException:
+        return False
+    return any(marker in src for marker in COMMENTS_OFF_MARKERS)
+
+
 # --------------------------------------------------------------------------- #
 # Element helpers
 # --------------------------------------------------------------------------- #
@@ -243,16 +317,44 @@ def _inner_html(el, css: str) -> str:
         return ""
 
 
+def _first_text(el, selectors) -> str:
+    """``textContent`` of the first matching descendant among ``selectors`` (in order).
+
+    Delegates to :func:`_text` (inheriting its exception-swallowing), so it never
+    raises; returns "" when none of the selectors match a non-empty node.
+    """
+    for css in selectors:
+        val = _text(el, css)
+        if val:
+            return val
+    return ""
+
+
+def _first_inner_html(el, selectors) -> str:
+    """``innerHTML`` of the first descendant among ``selectors`` with non-blank content.
+
+    Skips whitespace-only matches so an empty wrapper can't shadow a populated
+    alternate; returns "" when none match.
+    """
+    for css in selectors:
+        html = _inner_html(el, css)
+        if html.strip():
+            return html
+    return ""
+
+
 def _likes(comment_el) -> str:
     """Like count text (e.g. '842', '1.2K'); '0' when the count is empty/hidden."""
-    return _text(comment_el, LIKES) or "0"
+    return _first_text(comment_el, LIKES_SELECTORS) or "0"
 
 
 def _top_el(thread):
-    try:
-        return thread.find_element(By.CSS_SELECTOR, TOP_COMMENT)
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
-        return thread
+    for css in TOP_COMMENT_SELECTORS:
+        try:
+            return thread.find_element(By.CSS_SELECTOR, css)
+        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+            continue
+    return thread
 
 
 def _scroll_into_view(driver, el) -> None:
@@ -370,7 +472,7 @@ def collect_comments(
     expand_replies: bool = True,
     max_replies: int = 10,
     progress: bool = True,
-    first_thread_timeout: float = 20.0,
+    first_thread_timeout: float = 30.0,
 ) -> list[dict]:
     """Load up to ``limit`` top-level comments and harvest them with replies.
 
@@ -386,11 +488,25 @@ def collect_comments(
         "var c=document.querySelector(arguments[0]); if (c) { c.scrollIntoView(); }",
         COMMENTS_CONTAINER,
     )
-    try:
-        WebDriverWait(driver, first_thread_timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_THREAD))
-        )
-    except TimeoutException:
+    # Wait for the first thread, actively re-nudging the lazy-load observer each
+    # slice; bail fast (and cleanly) when comments are turned off for the video.
+    deadline = time.time() + first_thread_timeout
+    while time.time() < deadline:
+        if _comments_disabled(driver):
+            log.warning("comments are turned off for this video")
+            return []
+        try:
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_THREAD))
+            )
+            break
+        except TimeoutException:
+            driver.execute_script("window.scrollBy(0, 1200);")
+            driver.execute_script(
+                "var c=document.querySelector(arguments[0]); if (c) c.scrollIntoView();",
+                COMMENTS_CONTAINER,
+            )
+    else:
         log.warning("no comment threads appeared — comments disabled, empty, or blocked")
         return []
 
@@ -447,44 +563,54 @@ def collect_comments(
     records: list[dict] = []
     desc = "harvesting (+replies)" if expand_replies and max_replies > 0 else "harvesting"
     for th in tqdm(threads, desc=desc, unit="thread", leave=False, disable=not progress):
-        top = _top_el(th)
-        _scroll_into_view(driver, top)
-        _click_read_more(driver, top)
+        # A single thread going stale mid-harvest must not abort the whole run;
+        # the inner field reads each swallow their own errors, this catches the
+        # rarer case of `th`/`top` itself going stale between reads.
+        try:
+            top = _top_el(th)
+            _scroll_into_view(driver, top)
+            _click_read_more(driver, top)
 
-        html = _inner_html(top, COMMENT_TEXT)
-        if not html.strip():
-            continue  # truly empty comment body: skip it (and its replies)
-        parent_author = _text(top, COMMENT_AUTHOR)
-        records.append(
-            {
-                "kind": "comment",
-                "author": parent_author,
-                "html": html,
-                "likes": _likes(top),
-                "date_raw": _text(top, PUBLISHED_TIME),
-            }
-        )
+            html = _first_inner_html(top, COMMENT_TEXT_SELECTORS)
+            if not html.strip():
+                continue  # truly empty comment body: skip it (and its replies)
+            parent_author = _first_text(top, COMMENT_AUTHOR_SELECTORS)
+            records.append(
+                {
+                    "kind": "comment",
+                    "author": parent_author,
+                    "html": html,
+                    "likes": _likes(top),
+                    "date_raw": _first_text(top, PUBLISHED_TIME_SELECTORS),
+                }
+            )
 
-        if expand_replies and max_replies > 0:
-            _expand_replies(driver, th, max_replies)
-            try:
-                reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
-            except (StaleElementReferenceException, WebDriverException):
-                reply_els = []
-            for rep in reply_els:
-                r_html = _inner_html(rep, COMMENT_TEXT)
-                if not r_html.strip():
-                    continue
-                records.append(
-                    {
-                        "kind": "reply",
-                        "author": _text(rep, COMMENT_AUTHOR),
-                        "parent_author": parent_author,
-                        "html": r_html,
-                        "likes": _likes(rep),
-                        "date_raw": _text(rep, PUBLISHED_TIME),
-                    }
-                )
+            if expand_replies and max_replies > 0:
+                _expand_replies(driver, th, max_replies)
+                try:
+                    reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM)[:max_replies]
+                    if not reply_els:  # primary selector found nothing — try the fallback
+                        reply_els = th.find_elements(By.CSS_SELECTOR, REPLY_ITEM_FALLBACK)[
+                            :max_replies
+                        ]
+                except (StaleElementReferenceException, WebDriverException):
+                    reply_els = []
+                for rep in reply_els:
+                    r_html = _first_inner_html(rep, COMMENT_TEXT_SELECTORS)
+                    if not r_html.strip():
+                        continue
+                    records.append(
+                        {
+                            "kind": "reply",
+                            "author": _first_text(rep, COMMENT_AUTHOR_SELECTORS),
+                            "parent_author": parent_author,
+                            "html": r_html,
+                            "likes": _likes(rep),
+                            "date_raw": _first_text(rep, PUBLISHED_TIME_SELECTORS),
+                        }
+                    )
+        except (StaleElementReferenceException, WebDriverException):
+            continue
 
     n_top = sum(1 for r in records if r["kind"] == "comment")
     log.info(
