@@ -337,6 +337,7 @@ def collect_comments(
     max_viewports: int = 25,
     expand_replies: bool = True,
     max_replies: int = 10,
+    progress: bool = True,
     first_thread_timeout: float = 20.0,
 ) -> list[dict]:
     """Load up to ``limit`` top-level comments and harvest them with replies.
@@ -364,7 +365,7 @@ def collect_comments(
     # ---- Phase A: load top-level comments -------------------------------- #
     log.info("loading up to %d top-level comments (scroll budget %dx)", limit, max_viewports)
     stale = 0
-    with tqdm(total=limit, desc="loading comments", unit="cmt", leave=False) as bar:
+    with tqdm(total=limit, desc="loading comments", unit="cmt", leave=False, disable=not progress) as bar:
         for _ in range(max_viewports):
             before = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
             bar.n = min(before, limit)
@@ -404,7 +405,7 @@ def collect_comments(
     # ---- Phase B: expand + harvest, each thread exactly once ------------- #
     records: list[dict] = []
     desc = "harvesting (+replies)" if expand_replies and max_replies > 0 else "harvesting"
-    for th in tqdm(threads, desc=desc, unit="thread", leave=False):
+    for th in tqdm(threads, desc=desc, unit="thread", leave=False, disable=not progress):
         top = _top_el(th)
         _scroll_into_view(driver, top)
         _click_read_more(driver, top)
