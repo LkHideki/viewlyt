@@ -60,9 +60,19 @@ TRANSCRIPT_SECTION = "ytd-video-description-transcript-section-renderer"
 TRANSCRIPT_PANEL = (
     'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]'
 )
-TRANSCRIPT_SEGMENT = "ytd-transcript-segment-renderer"
-TRANSCRIPT_TS = ".segment-timestamp"
-TRANSCRIPT_SEG_TEXT = "yt-formatted-string.segment-text, .segment-text"
+# YouTube's "modern transcript" panel renders each line as
+# <transcript-segment-view-model> (timestamp in a .ytw…Timestamp div, text in a
+# .ytAttributedStringHost span); older layouts used <ytd-transcript-segment-renderer>
+# with .segment-timestamp/.segment-text. Match BOTH so the scraper survives the
+# rollout (and any clients still served the legacy UI).
+#
+# Each modern segment also has a *sibling* .ytwTranscriptSegmentViewModelTimestampA11yLabel
+# div holding the screen-reader spoken form ("30 minutes, 40 seconds"). The timestamp
+# selector must therefore stay an EXACT class-token match — never a substring/startswith
+# on "ytwTranscriptSegmentViewModelTimestamp" — or it would also grab that A11y label.
+TRANSCRIPT_SEGMENT = "transcript-segment-view-model, ytd-transcript-segment-renderer"
+TRANSCRIPT_TS = ".ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp"
+TRANSCRIPT_SEG_TEXT = "span.ytAttributedStringHost, yt-formatted-string.segment-text, .segment-text"
 
 # Locale-dependent "before you continue" consent buttons (best-effort fallback;
 # the cookie priming below usually skips the interstitial entirely).
