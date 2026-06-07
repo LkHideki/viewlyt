@@ -14,6 +14,7 @@ from viewlyt.cli import format_comment_lines, gather_urls, read_urls_from_file  
 from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
+    format_transcript,
     html_to_text,
     parse_relative_date,
     slugify,
@@ -178,6 +179,29 @@ def test_url_inputs() -> None:
     print("ok: url_inputs")
 
 
+def test_format_transcript() -> None:
+    segs = [
+        ("0:05", "hi there"),
+        ("1:02", "  multi\nline   text "),   # whitespace collapsed
+        ("1:02", "  multi\nline   text "),   # exact duplicate MUST be kept (no dedup)
+        ("1:10:33", "[Music]"),              # long-video h:mm:ss verbatim; marker kept
+        ("  3:07  ", "padded ts"),           # timestamp padding trimmed (verbatim otherwise)
+        ("2:00", "   "),                     # empty after collapse -> dropped
+        ("", "sem timestamp"),               # missing ts -> just text
+    ]
+    out = format_transcript(segs)
+    assert out == [
+        "[0:05] hi there",
+        "[1:02] multi line text",
+        "[1:02] multi line text",
+        "[1:10:33] [Music]",
+        "[3:07] padded ts",
+        "sem timestamp",
+    ], out
+    assert format_transcript([]) == []
+    print("ok: format_transcript")
+
+
 if __name__ == "__main__":
     test_extract_video_id()
     test_html_to_text()
@@ -186,5 +210,6 @@ if __name__ == "__main__":
     test_parse_relative_date()
     test_convert_batch()
     test_format_comment_lines()
+    test_format_transcript()
     test_url_inputs()
     print("ALL TESTS PASSED")
