@@ -301,7 +301,7 @@ def _comments_disabled(driver) -> bool:
     try:
         src = (
             driver.execute_script(
-                "var c=document.querySelector('ytd-comments,#comments,#sections');"
+                "var c=document.querySelector('ytd-comments,#comments');"
                 "return c ? c.innerText : '';"
             )
             or ""
@@ -717,7 +717,7 @@ def _find_transcript_button(driver):
         for m in driver.find_elements(By.CSS_SELECTOR, OVERFLOW_MENU_BUTTON):
             if _displayed(m):
                 _js_click(driver, m)
-                time.sleep(0.4)
+                time.sleep(0.25)
                 break
     except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
@@ -829,7 +829,7 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
             if not _open_transcript_panel_direct(driver):
                 log.info("no transcript control — transcript unavailable for this video")
                 return []
-            seg_timeout, retry = min(timeout, 2.0), False
+            seg_timeout, retry = min(timeout, 1.2), False
 
         n_seg = _wait_for_segments(driver, seg_timeout)
         if n_seg == 0 and retry:
