@@ -192,6 +192,50 @@ def test_url_inputs() -> None:
     print("ok: url_inputs")
 
 
+def test_resolve_chrome_binary() -> None:
+    import os
+
+    from viewlyt.driver import CHROME_BINARY_ENV, _resolve_chrome_binary
+
+    # An explicit env override wins and is returned verbatim.
+    saved = os.environ.get(CHROME_BINARY_ENV)
+    try:
+        os.environ[CHROME_BINARY_ENV] = "/custom/path/to/chrome"
+        assert _resolve_chrome_binary() == "/custom/path/to/chrome"
+    finally:
+        if saved is None:
+            os.environ.pop(CHROME_BINARY_ENV, None)
+        else:
+            os.environ[CHROME_BINARY_ENV] = saved
+
+    # Without an override it returns a path string or None (never raises).
+    os.environ.pop(CHROME_BINARY_ENV, None)
+    got = _resolve_chrome_binary()
+    assert got is None or isinstance(got, str)
+    print("ok: resolve_chrome_binary")
+
+
+def test_lazy_import_no_selenium() -> None:
+    """`import viewlyt` and the pure helpers must NOT drag in Selenium."""
+    import os
+    import subprocess
+
+    code = (
+        "import sys, viewlyt\n"
+        "assert 'selenium' not in sys.modules, 'selenium imported by `import viewlyt`'\n"
+        "viewlyt.slugify('x'); viewlyt.html_to_text('<b>x</b>'); _ = viewlyt.__version__\n"
+        "assert 'selenium' not in sys.modules, 'selenium imported by a pure helper'\n"
+        "from viewlyt import scrape_video\n"  # this one is allowed to pull selenium
+        "assert 'selenium' in sys.modules, 'scrape_video should load selenium lazily'\n"
+        "print('lazy-import OK')\n"
+    )
+    src = str(Path(__file__).resolve().parent.parent / "src")
+    env = {**os.environ, "PYTHONPATH": src}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, f"lazy import test failed:\n{r.stdout}\n{r.stderr}"
+    print("ok: lazy_import_no_selenium")
+
+
 def test_format_transcript() -> None:
     segs = [
         ("0:05", "hi there"),
@@ -225,4 +269,6 @@ if __name__ == "__main__":
     test_format_comment_lines()
     test_format_transcript()
     test_url_inputs()
+    test_resolve_chrome_binary()
+    test_lazy_import_no_selenium()
     print("ALL TESTS PASSED")
