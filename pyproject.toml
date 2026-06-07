@@ -1,7 +1,7 @@
 [project]
 name = "viewlyt"
 version = "0.1.0"
-description = "Scrape all loaded comments from a YouTube video into <video_id>.txt using Selenium."
+description = "Scrape a YouTube video's comments (likes, dates, replies) and transcript into text files, using Selenium."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -18,3 +18,22 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/viewlyt"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8",
+    "pre-commit>=3.7",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["out", "out_test"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]  # line length is handled by the formatter; don't flag long strings
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
