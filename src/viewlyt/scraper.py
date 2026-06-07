@@ -200,8 +200,17 @@ def detect_block(driver) -> str | None:
 # Element helpers
 # --------------------------------------------------------------------------- #
 def _text(el, css: str) -> str:
+    """Text of a descendant via ``textContent`` (collapsed whitespace).
+
+    Deliberately NOT Selenium's ``.text``: that returns only *rendered/visible*
+    text, so it yields "" for nodes that are off-viewport or visually hidden —
+    e.g. the plain ``#author-text`` of a channel-owner comment, whose name is
+    shown in a highlighted badge instead (which made such authors come out as
+    ``unknown``). ``textContent`` reads the name regardless of visibility.
+    """
     try:
-        return el.find_element(By.CSS_SELECTOR, css).text.strip()
+        node = el.find_element(By.CSS_SELECTOR, css)
+        return " ".join((node.get_attribute("textContent") or "").split())
     except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         return ""
 
