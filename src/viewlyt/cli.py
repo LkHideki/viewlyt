@@ -452,8 +452,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--limit",
         type=int,
-        default=100,
-        help="target top-level comments per video, or all if fewer (default: 100)",
+        default=150,
+        help="target top-level comments per video, or all if fewer (default: 150)",
     )
     p.add_argument(
         "--max-viewports",
@@ -467,8 +467,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-replies",
         type=int,
-        default=10,
-        help="max replies per comment (default: 10; 0 disables)",
+        default=15,
+        help="max replies per comment (default: 15; 0 disables)",
     )
     p.add_argument(
         "--transcript",
