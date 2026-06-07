@@ -1,0 +1,58 @@
+# ---- Python / uv ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+build/
+dist/
+.uv/
+uv.lock.bak
+
+# ---- Test / type-check caches ----
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+htmlcov/
+
+# ---- Selenium / Chrome runtime junk ----
+*.crdownload
+chromedriver*
+debug_*.png
+debug_*.html
+# Persistent browser profiles from --user-data-dir (may hold cookies/sessions!)
+chrome-profile*/
+*-chrome-profile/
+user-data-dir/
+
+# ---- Scraper output (contains usernames / PII — do not commit) ----
+out/
+out_test/
+*.txt
+!requirements*.txt
+
+# ---- Secrets / credentials (never commit) ----
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+id_rsa*
+secrets.*
+credentials.json
+
+# ---- Local Claude Code settings ----
+.claude/settings.local.json
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
