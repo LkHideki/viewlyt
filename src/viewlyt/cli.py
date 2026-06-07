@@ -25,6 +25,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -53,6 +54,21 @@ from .scraper import (
 log = logging.getLogger("viewlyt")
 
 REPLY_INDENT = "    ↳ "  # 4 spaces + ↳
+
+_EXAMPLES = """\
+exemplos:
+  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # comentários -> out/<slug>-<id>.txt
+  viewlyt --transcript '<url>'                    # comentários + transcrição
+  viewlyt --transcript-only '<url>'               # só a transcrição (mais rápido)
+  viewlyt --limit 50 --no-replies '<url>'         # coleta enxuta e rápida
+  viewlyt --from-file urls.txt -j 4               # vários vídeos (.txt/.csv), 4 navegadores
+  viewlyt --headed '<url>'                        # navegador visível (contra o bot wall)
+"""
+
+
+def _color(text: str, code: str) -> str:
+    """Wrap text in an ANSI color only when writing to a real terminal."""
+    return f"\033[{code}m{text}\033[0m" if sys.stdout.isatty() else text
 
 
 # --------------------------------------------------------------------------- #
@@ -392,8 +408,13 @@ def _safe_quit(driver) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="viewlyt",
-        description="Scrape YouTube comments (likes, dates, replies) into "
-        "out/<title-slug>-<video_id>.txt. Accepts many URLs and/or .txt/.csv files.",
+        description="Scrape YouTube comments (likes, dates, replies) and optional transcript "
+        "into out/<title-slug>-<video_id>.txt. Accepts many URLs and/or .txt/.csv files.",
+        epilog=_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument(
+        "-V", "--version", action="version", version=f"%(prog)s {_pkg_version('viewlyt')}"
     )
     p.add_argument(
         "inputs",
@@ -529,9 +550,9 @@ def main(argv: list[str] | None = None) -> int:
                 if s.get("transcript_file")
                 else "transcript: unavailable"
             )
-        print(f"  ✓ {s['video_id']}  " + " | ".join(parts))
+        print(f"  {_color('✓', '32')} {s['video_id']}  " + " | ".join(parts))
     for s in failed:
-        print(f"  ✗ {s['video_id']}  {s['error']}", file=sys.stderr)
+        print(f"  {_color('✗', '31')} {s['video_id']}  {s['error']}", file=sys.stderr)
     if failed and not ok:
         return 1
     return 0
