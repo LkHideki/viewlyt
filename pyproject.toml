@@ -69,3 +69,6 @@ ignore = ["E501"]  # line length is handled by the formatter; don't flag long st
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "e2e: real browser + network; opt-in via VIEWLYT_E2E=1 (skipped by default)",
+]
