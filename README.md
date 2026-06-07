@@ -27,8 +27,12 @@ vídeo (abre o painel pelo botão de transcrição na descrição) em
 
 - `uv` (instala/gerencia o Python; requer **Python ≥ 3.11**, e o `.python-version`
   fixa o **3.14** para desenvolvimento)
-- Google Chrome instalado em `/usr/bin/google-chrome` (o Selenium Manager baixa
-  automaticamente o ChromeDriver compatível — nada para instalar manualmente)
+- Google Chrome (ou Chromium) instalado. O binário é localizado automaticamente:
+  `$VIEWLYT_CHROME_BINARY` → `/usr/bin/google-chrome` → qualquer `chrome`/`chromium`
+  no `PATH` → autodetecção do Selenium (locais padrão de macOS/Windows). Defina
+  `VIEWLYT_CHROME_BINARY` para apontar um binário específico (ex.: Brave, ou um
+  caminho fora do `PATH`). O Selenium Manager baixa o ChromeDriver compatível
+  sozinho — nada para instalar manualmente.
 
 ## Instalação
 
@@ -254,6 +258,10 @@ uv run --python 3.14t viewlyt '<url>'
   de resposta do YouTube são planas).
 - As datas dos comentários são aproximadas a partir dos tempos relativos do YouTube (veja acima).
 - Um IP residencial e um perfil logado melhoram muito a confiabilidade.
+- A saída é `.txt`, mas o texto vem de terceiros: ao **importar em uma planilha**
+  (Excel/Sheets), uma célula começando com `=`, `+`, `-` ou `@` pode ser
+  interpretada como fórmula (CSV/formula injection). Trate como dado não confiável
+  ou desative a interpretação de fórmulas ao importar.
 
 ## Licença
 
