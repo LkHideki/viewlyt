@@ -1,4 +1,4 @@
-# ytcomments
+# viewlyt
 
 CLI que coleta os comentários de um vídeo do YouTube (com likes, datas e respostas)
 em `out/<title-slug>-<video_id>.txt`, usando Selenium + Google Chrome headless,
@@ -8,22 +8,22 @@ gerenciado com `uv`. Veja @README.md para o uso completo.
 
 ```bash
 uv sync                                             # cria o ambiente e instala as deps (Python 3.14)
-uv run ytcomments '<url-do-youtube>'                # coleta (headless por padrão) -> out/
-uv run ytcomments '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
-uv run ytcomments --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run ytcomments --limit 100 --max-replies 10 '<url>'
-uv run ytcomments --headed '<url>'                  # navegador visível (melhor contra o bot wall)
+uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
+uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
+uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
+uv run viewlyt --limit 100 --max-replies 10 '<url>'
+uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 uv run python tests/test_units.py                   # testes sem navegador (sem dependência de pytest)
 ```
 
 ## Estrutura
 
-- `src/ytcomments/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
+- `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
   data relativa, flatten, `convert_batch`). Mantenha sem dependências: roda dentro de
   threads/subinterpretadores, então NUNCA pode importar Selenium.
-- `src/ytcomments/driver.py` — construtor do Chrome headless com stealth.
-- `src/ytcomments/scraper.py` — parsing de URL, bypass de consentimento/bot, carga + coleta em duas fases.
-- `src/ytcomments/cli.py` — argparse, orquestração, conversão paralela, escrita do arquivo.
+- `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
+- `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, carga + coleta em duas fases.
+- `src/viewlyt/cli.py` — argparse, orquestração, conversão paralela, escrita do arquivo.
 - `tests/test_units.py` — testes das funções puras.
 - `out/` — entregáveis (no `.gitignore`).
 

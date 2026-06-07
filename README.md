@@ -1,4 +1,4 @@
-# ytcomments
+# viewlyt
 
 Coleta os comentários de um ou vários vídeos do YouTube em
 `out/<title-slug>-<video_id>.txt` (texto puro, sem tags HTML) usando **Selenium**
@@ -35,29 +35,29 @@ uv sync
 
 ```bash
 # Padrão: headless. Escreve out/<title-slug>-dQw4w9WgXcQ.txt
-uv run ytcomments 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+uv run viewlyt 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Aceita também youtu.be, /shorts/, /embed/ e o id puro:
-uv run ytcomments 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt 'https://youtu.be/dQw4w9WgXcQ'
 
 # Navegador visível (mais confiável contra o bot wall):
-uv run ytcomments --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+uv run viewlyt --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Coleta no máximo 50 comentários e ignora respostas (bem mais rápido):
-uv run ytcomments --limit 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt --limit 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
 # Mantém até 25 respostas por comentário:
-uv run ytcomments --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
 # Escreve em outro diretório:
-uv run ytcomments -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 
 # Vários vídeos de uma vez (pool de instâncias reutilizadas):
-uv run ytcomments '<url1>' '<url2>' '<url3>'
+uv run viewlyt '<url1>' '<url2>' '<url3>'
 
 # A partir de um arquivo .txt (uma URL por linha) ou .csv (qualquer coluna):
-uv run ytcomments --from-file urls.txt
-uv run ytcomments videos.csv -j 4          # 4 navegadores em paralelo
+uv run viewlyt --from-file urls.txt
+uv run viewlyt videos.csv -j 4          # 4 navegadores em paralelo
 ```
 
 ### Opções
@@ -143,7 +143,7 @@ que já tenha feito login no YouTube — é o bypass mais confiável.
 
 ```
 pyproject.toml            projeto uv + entry point de console-script
-src/ytcomments/
+src/viewlyt/
   cli.py                  argparse, coleta de URLs/arquivos, pool de instâncias, formatação, saída
   driver.py               construtor do WebDriver Chrome com stealth (timeout de 10s)
   scraper.py              parsing de URL, bypass de consentimento, carga/expansão/coleta em duas fases
@@ -175,7 +175,7 @@ Selenium e (c) num interpretador **free-threaded** ele paraleliza de verdade:
 
 ```bash
 uv python install 3.14t      # CPython free-threaded
-uv run --python 3.14t ytcomments '<url>'
+uv run --python 3.14t viewlyt '<url>'
 ```
 
 ## Notas / limitações
