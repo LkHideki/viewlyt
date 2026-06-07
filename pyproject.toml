@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
     "selenium>=4.21",
-    "tqdm>=4.66",
+    "tqdm>=4.66.3",  # >=4.66.3 clears CVE-2024-34062 (we use only the progress API)
 ]
 
 [project.urls]
