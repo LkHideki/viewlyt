@@ -218,6 +218,39 @@ def format_transcript(segments: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
+def format_related(items: list[dict]) -> list[str]:
+    """Format related-video records as a 1-based numbered Markdown list.
+
+    Each item is ``{"title": str, "views": str, "url": str}`` (the shape
+    :func:`viewlyt.scraper.collect_related` returns). Produces lines like::
+
+        1. [1.2B views. Video Title](https://www.youtube.com/watch?v=ID)
+
+    ``views`` is YouTube's own sidebar text kept VERBATIM — it already includes
+    the word "views"/"visualizações", so nothing is appended (avoids a double
+    "views views"). When ``views`` is empty the count prefix is dropped:
+    ``1. [Title](url)``. The title is flattened to a single line; items with an
+    empty title are skipped (and don't consume a number, so numbering stays
+    contiguous).
+
+    KNOWN LIMITATION: a title containing ``]`` (e.g. "[Official Video]") breaks
+    the Markdown link syntactically — kept as-is by design (the text is still
+    readable), like the approximate dates elsewhere. Treat the file as plain text.
+    """
+    lines: list[str] = []
+    n = 0
+    for it in items:
+        title = flatten_inline(it.get("title") or "")
+        if not title:
+            continue
+        n += 1
+        url = (it.get("url") or "").strip()
+        views = " ".join((it.get("views") or "").split())
+        label = f"{views}. {title}" if views else title
+        lines.append(f"{n}. [{label}]({url})")
+    return lines
+
+
 _REL_RE = re.compile(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", re.I)
 _UNIT_DAYS = {"second": 0, "minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30, "year": 365}
 

@@ -25,6 +25,7 @@ from viewlyt.cli import (  # noqa: E402
 from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
     flatten_inline,
+    format_related,
     format_transcript,
     group_consecutive_comments,
     html_to_text,
@@ -558,6 +559,27 @@ def test_lazy_import_no_selenium() -> None:
     print("ok: lazy_import_no_selenium")
 
 
+def test_format_related() -> None:
+    items = [
+        {
+            "title": "Vídeo A",
+            "views": "1.2B views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        },
+        {"title": "  multi\nline  ", "views": "20M views", "url": "u2"},  # title flattened
+        {"title": "No count", "views": "", "url": "u3"},  # empty views -> no prefix
+        {"title": "", "views": "5 views", "url": "u4"},  # no title -> skipped, no number
+    ]
+    out = format_related(items)
+    assert out == [
+        "1. [1.2B views. Vídeo A](https://www.youtube.com/watch?v=aaaaaaaaaaa)",
+        "2. [20M views. multi line](u2)",
+        "3. [No count](u3)",  # numbering stays contiguous despite the skipped item
+    ], out
+    assert format_related([]) == []
+    print("ok: format_related")
+
+
 def test_format_transcript() -> None:
     segs = [
         ("0:05", "hi there"),
@@ -713,6 +735,7 @@ if __name__ == "__main__":
     test_comments_disabled()
     test_harvest_thread_fallback()
     test_transcript_timestamp_exact_token()
+    test_format_related()
     test_format_transcript()
     test_html_to_text_img_fallbacks()
     test_html_to_text_blocks_and_nested_anchor()
