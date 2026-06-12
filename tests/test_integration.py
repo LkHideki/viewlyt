@@ -475,3 +475,68 @@ def test_scrape_video_related_zero_skips(monkeypatch):
     monkeypatch.setattr(api, "collect_related", unreached)
     r = api.scrape_video("dQw4w9WgXcQ", comments=True, related=0)
     assert r.related == [] and r.related_lines() == []
+
+
+def test_scrape_result_comment_lines_and_write(monkeypatch, tmp_path):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="Meu Título")
+    recs = [
+        {
+            "kind": "comment",
+            "author": "@joao",
+            "html": "<b>oi</b>",
+            "likes": "5",
+            "date_raw": "2 days ago",
+        },
+        {
+            "kind": "reply",
+            "author": "@maria",
+            "parent_author": "@joao",
+            "html": "resp",
+            "likes": "1",
+            "date_raw": "1 day ago",
+        },
+    ]
+    segs = [("0:00", "ola")]
+    rel = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel",
+            "views": "5 views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        }
+    ]
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: recs)
+    monkeypatch.setattr(api, "fetch_transcript", lambda d, **k: segs)
+    monkeypatch.setattr(api, "collect_related", lambda d, **k: rel)
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=True, related=3)
+
+    # comment_lines() reproduces the CLI .txt body byte-for-byte
+    assert r.comment_lines() == format_comment_lines(recs, progress=False, merge_comments=True)
+
+    # write() drops exactly the three non-empty files with the CLI's names
+    written = r.write(str(tmp_path))
+    slug = slugify("Meu Título")
+    assert set(written) == {"comments", "transcript", "related"}
+    assert written["comments"] == tmp_path / f"{slug}-dQw4w9WgXcQ.txt"
+    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.transcript.txt").exists()
+    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.related.txt").exists()
+    assert written["comments"].read_text(encoding="utf-8") == "\n".join(r.comment_lines()) + "\n"
+
+
+def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
+    # Only non-empty sections are written (no 0-byte files).
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T")
+    monkeypatch.setattr(
+        api,
+        "collect_comments",
+        lambda d, **k: [
+            {"kind": "comment", "author": "@a", "html": "x", "likes": "0", "date_raw": ""}
+        ],
+    )
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=False, related=0)
+    written = r.write(str(tmp_path))
+    assert set(written) == {"comments"}  # no transcript/related files
+    assert list(tmp_path.glob("*.txt")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt"]

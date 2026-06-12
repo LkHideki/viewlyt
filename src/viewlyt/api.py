@@ -18,9 +18,17 @@ helpers (``html_to_text``, ``format_transcript``, …) live — dependency-free 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
+from pathlib import Path
 
 from .driver import build_driver
-from .htmltext import format_related, format_transcript, html_to_text
+from .htmltext import (
+    format_comment_lines,
+    format_related,
+    format_transcript,
+    html_to_text,
+    slugify,
+)
 from .scraper import (
     BlockedError,
     collect_comments,
@@ -67,6 +75,9 @@ class ScrapeResult:
     comments: list[Comment] = field(default_factory=list)
     transcript: list[tuple[str, str]] = field(default_factory=list)
     related: list[RelatedVideo] = field(default_factory=list)
+    # Raw scraper records (with HTML), kept so comment_lines()/write() can reuse the
+    # exact CLI merge+format pipeline. Private; hidden from repr.
+    _records: list[dict] = field(default_factory=list, repr=False)
 
     @property
     def top_level(self) -> list[Comment]:
@@ -75,6 +86,12 @@ class ScrapeResult:
     @property
     def replies(self) -> list[Comment]:
         return [c for c in self.comments if c.kind == "reply"]
+
+    def comment_lines(self, *, merge: bool = True, today: date | None = None) -> list[str]:
+        """Comments as the CLI-formatted text block (merged by default) — identical
+        to viewlyt's ``out/<slug>-<id>.txt`` body (see
+        :func:`viewlyt.format_comment_lines`)."""
+        return format_comment_lines(self._records, today=today, merge=merge)
 
     def transcript_lines(self) -> list[str]:
         """Transcript as ``[ts] text`` lines (see :func:`viewlyt.format_transcript`)."""
@@ -85,6 +102,31 @@ class ScrapeResult:
         return format_related(
             [{"title": r.title, "views": r.views, "url": r.url} for r in self.related]
         )
+
+    def write(self, out_dir: str, *, merge: bool = True) -> dict[str, Path]:
+        """Write the scraped data to ``out_dir`` exactly like the CLI:
+        ``<slug>-<id>.txt`` (comments), ``.transcript.txt``, ``.related.txt``.
+
+        Only non-empty sections are written (no 0-byte files). Returns a mapping
+        of section name (``"comments"``/``"transcript"``/``"related"``) to the
+        written :class:`pathlib.Path`.
+        """
+        base = Path(out_dir)
+        slug = slugify(self.title)
+        sections = (
+            ("comments", self.comment_lines(merge=merge), ""),
+            ("transcript", self.transcript_lines(), ".transcript"),
+            ("related", self.related_lines(), ".related"),
+        )
+        written: dict[str, Path] = {}
+        for kind, lines, suffix in sections:
+            if not lines:
+                continue
+            base.mkdir(parents=True, exist_ok=True)
+            path = base / f"{slug or 'video'}-{self.video_id}{suffix}.txt"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            written[kind] = path
+        return written
 
 
 def _to_comments(records: list[dict]) -> list[Comment]:
@@ -113,6 +155,57 @@ def _to_related(items: list[dict]) -> list[RelatedVideo]:
     ]
 
 
+def _scrape_url(
+    driver,
+    url: str,
+    *,
+    comments: bool,
+    transcript: bool,
+    related: int,
+    limit: int,
+    max_viewports: int,
+    replies: bool,
+    max_replies: int,
+) -> ScrapeResult:
+    """Scrape one video on an already-built, consent-primed ``driver``.
+
+    Shared by :func:`scrape_video`, :class:`Session` and :func:`scrape_videos`.
+    Raises :class:`BlockedError` on a consent/bot wall. Does NOT build or quit the
+    driver — the caller owns its lifecycle.
+    """
+    video_id = extract_video_id(url)
+    safe_get(driver, f"https://www.youtube.com/watch?v={video_id}")
+    dismiss_consent_dialog(driver, timeout=2.0)
+    block = detect_block(driver)
+    if block:
+        raise BlockedError(block)
+    title = get_video_title(driver)
+    records = (
+        collect_comments(
+            driver,
+            limit=limit,
+            max_viewports=max_viewports,
+            expand_replies=replies,
+            max_replies=max_replies,
+            progress=False,
+        )
+        if comments
+        else []
+    )
+    # Related before transcript: the transcript panel takes over the #secondary
+    # column that hosts the related lockups (collect_related never raises).
+    rel = collect_related(driver, limit=related, progress=False) if related > 0 else []
+    tx = fetch_transcript(driver, progress=False) if transcript else []
+    return ScrapeResult(
+        video_id=video_id,
+        title=title,
+        comments=_to_comments(records),
+        transcript=tx,
+        related=_to_related(rel),
+        _records=records,
+    )
+
+
 def scrape_video(
     url: str,
     *,
@@ -131,43 +224,25 @@ def scrape_video(
     Builds and quits its own Chrome. ``related`` is the number of sidebar related
     videos to collect (0 = none). Raises :class:`viewlyt.BlockedError` if YouTube
     serves a consent/bot wall (retry with ``headless=False`` or a logged-in
-    ``user_data_dir``).
+    ``user_data_dir``). To scrape several videos on ONE browser, use
+    :class:`Session` or :func:`scrape_videos`.
     """
-    video_id = extract_video_id(url)
     driver = build_driver(headless=headless, user_data_dir=user_data_dir)
     try:
         prime_consent_cookies(driver)
-        safe_get(driver, f"https://www.youtube.com/watch?v={video_id}")
-        dismiss_consent_dialog(driver, timeout=2.0)
-        block = detect_block(driver)
-        if block:
-            raise BlockedError(block)
-        title = get_video_title(driver)
-        records = (
-            collect_comments(
-                driver,
-                limit=limit,
-                max_viewports=max_viewports,
-                expand_replies=replies,
-                max_replies=max_replies,
-                progress=False,
-            )
-            if comments
-            else []
+        return _scrape_url(
+            driver,
+            url,
+            comments=comments,
+            transcript=transcript,
+            related=related,
+            limit=limit,
+            max_viewports=max_viewports,
+            replies=replies,
+            max_replies=max_replies,
         )
-        # Related before transcript: the transcript panel takes over the #secondary
-        # column that hosts the related lockups (collect_related never raises).
-        rel = collect_related(driver, limit=related, progress=False) if related > 0 else []
-        tx = fetch_transcript(driver, progress=False) if transcript else []
     finally:
         try:
             driver.quit()
         except Exception:  # pragma: no cover
             pass
-    return ScrapeResult(
-        video_id=video_id,
-        title=title,
-        comments=_to_comments(records),
-        transcript=tx,
-        related=_to_related(rel),
-    )
