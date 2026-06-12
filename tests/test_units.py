@@ -418,6 +418,11 @@ def test_flag_plumbing() -> None:
         pass
     else:  # pragma: no cover
         raise AssertionError("expected --unify/--unify-all to be mutually exclusive")
+    # --limit-comments / --limit-replies are the canonical names; old names alias them
+    assert p.parse_args(["--limit-comments", "10"]).limit == 10
+    assert p.parse_args(["--limit", "10"]).limit == 10  # kept alias
+    assert p.parse_args(["--limit-replies", "3"]).max_replies == 3
+    assert p.parse_args(["--max-replies", "3"]).max_replies == 3  # kept alias
     # new defaults are wired into the parser
     d = p.parse_args([])
     assert d.limit == 150 and d.max_replies == 5

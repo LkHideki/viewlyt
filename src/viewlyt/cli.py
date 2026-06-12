@@ -70,7 +70,9 @@ exemplos:
   viewlyt -t '<url>'                               # só a transcrição (mais rápido)
   viewlyt --transcript-only '<url>'                # idem (alias de -t sem -c)
   viewlyt --no-merge-comments '<url>'              # não funde comentários do mesmo autor
-  viewlyt --limit 50 --no-replies '<url>'          # coleta enxuta e rápida
+  viewlyt --limit-comments 50 --no-replies '<url>' # coleta enxuta e rápida
+  viewlyt --unify '<url>'                          # todos os produtos num só arquivo
+  viewlyt --unify-all '<url1>' '<url2>'            # todos os vídeos num arquivo só
   viewlyt --from-file urls.txt -j 4                # vários vídeos (.txt/.csv), 4 navegadores
   viewlyt --headed '<url>'                         # navegador visível (contra o bot wall)
 """
@@ -516,10 +518,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="number of concurrent browser instances (default: min(4, nº de vídeos))",
     )
     p.add_argument(
+        "--limit-comments",
         "--limit",
+        dest="limit",
         type=int,
         default=150,
-        help="target top-level comments per video, or all if fewer (default: 150)",
+        metavar="N",
+        help="target top-level comments per video, or all if fewer (default: 150; "
+        "--limit is a kept alias)",
     )
     p.add_argument(
         "--max-viewports",
@@ -531,10 +537,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-replies", action="store_true", help="don't expand/collect replies (faster)"
     )
     p.add_argument(
+        "--limit-replies",
         "--max-replies",
+        dest="max_replies",
         type=int,
         default=5,
-        help="max replies per comment (default: 5; 0 disables)",
+        metavar="N",
+        help="max replies per comment (default: 5; 0 disables; --max-replies is a kept alias)",
     )
     p.add_argument(
         "--no-merge-comments",
