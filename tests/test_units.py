@@ -27,8 +27,10 @@ from viewlyt.htmltext import (  # noqa: E402
     flatten_inline,
     format_related,
     format_transcript,
+    format_unified,
     group_consecutive_comments,
     html_to_text,
+    join_unified,
     parse_relative_date,
     slugify,
 )
@@ -627,6 +629,53 @@ def test_format_related() -> None:
     print("ok: format_related")
 
 
+def test_format_unified() -> None:
+    out = format_unified(
+        "Meu Vídeo",
+        [
+            ("Comments", ["@a [1 likes, x]: oi", "@b [2 likes, y]: tchau"]),
+            ("Transcript", []),  # empty section -> skipped entirely (no header)
+            ("Related videos", ["1. [5 views. T](u)"]),
+        ],
+    )
+    assert out == [
+        "# Meu Vídeo",
+        "",
+        "## Comments",
+        "",
+        "@a [1 likes, x]: oi",
+        "@b [2 likes, y]: tchau",
+        "",
+        "## Related videos",
+        "",
+        "1. [5 views. T](u)",
+    ], out
+    # all sections empty -> just the title; no title + nothing -> empty
+    assert format_unified("T", [("Comments", []), ("Transcript", [])]) == ["# T"]
+    assert format_unified("", []) == []
+    print("ok: format_unified")
+
+
+def test_join_unified() -> None:
+    a = format_unified("V1", [("Comments", ["c1"])])
+    b = format_unified("V2", [("Related videos", ["r1"])])
+    assert join_unified([a, [], b]) == [  # empty block skipped, blank line between
+        "# V1",
+        "",
+        "## Comments",
+        "",
+        "c1",
+        "",
+        "# V2",
+        "",
+        "## Related videos",
+        "",
+        "r1",
+    ]
+    assert join_unified([]) == []
+    print("ok: join_unified")
+
+
 def test_format_transcript() -> None:
     segs = [
         ("0:05", "hi there"),
@@ -785,6 +834,8 @@ if __name__ == "__main__":
     test_collect_related_resilience()
     test_transcript_timestamp_exact_token()
     test_format_related()
+    test_format_unified()
+    test_join_unified()
     test_format_transcript()
     test_html_to_text_img_fallbacks()
     test_html_to_text_blocks_and_nested_anchor()

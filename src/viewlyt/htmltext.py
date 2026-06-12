@@ -366,3 +366,49 @@ def format_comment_lines(
             out.append("")  # blank line separating blocks
         out.extend(block)
     return out
+
+
+def format_unified(title: str, sections: list[tuple[str, list[str]]]) -> list[str]:
+    """Combine a video's product sections into one document under a title and
+    per-section Markdown headers.
+
+    PRODUCT-AGNOSTIC: pass ``[(header, lines), ...]`` in the desired order; an
+    empty section is skipped entirely (no header), consistent with the "no 0-byte
+    files" rule. A future product type flows in by just adding a ``(header, lines)``
+    pair — no other change. Layout::
+
+        # <title>
+
+        ## Comments
+        <comment lines>
+
+        ## Transcript
+        <transcript lines>
+    """
+    out: list[str] = []
+    if title:
+        out.append(f"# {title}")
+    for header, lines in sections:
+        if not lines:
+            continue
+        if out:
+            out.append("")  # blank line before each section
+        out.append(f"## {header}")
+        out.append("")
+        out.extend(lines)
+    return out
+
+
+def join_unified(blocks: list[list[str]]) -> list[str]:
+    """Concatenate several per-video unified blocks (each from :func:`format_unified`)
+    into one document, blocks separated by a blank line; empty blocks are skipped.
+
+    Powers ``--unify-all`` (and the library equivalent over a list of videos)."""
+    out: list[str] = []
+    for block in blocks:
+        if not block:
+            continue
+        if out:
+            out.append("")
+        out.extend(block)
+    return out
