@@ -434,3 +434,44 @@ def test_scrape_video_comments_only_skips_transcript(monkeypatch):
     monkeypatch.setattr(api, "fetch_transcript", unreached)
     r = api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=False)
     assert r.transcript == [] and r.transcript_lines() == [] and len(r.top_level) == 1
+
+
+def test_scrape_video_collects_related(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T")
+    rel = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel A",
+            "views": "1.2B views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        }
+    ]
+    monkeypatch.setattr(api, "collect_related", lambda d, **k: rel)
+
+    def unreached(d, **k):
+        raise AssertionError("comments/transcript must be skipped")
+
+    monkeypatch.setattr(api, "collect_comments", unreached)
+    monkeypatch.setattr(api, "fetch_transcript", unreached)
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=False, related=5)
+    assert len(r.related) == 1
+    assert r.related[0].video_id == "aaaaaaaaaaa" and r.related[0].views == "1.2B views"
+    assert r.related_lines() == [
+        "1. [1.2B views. Rel A](https://www.youtube.com/watch?v=aaaaaaaaaaa)"
+    ]
+    assert r.comments == [] and r.transcript == [] and drv.quit_calls == 1
+
+
+def test_scrape_video_related_zero_skips(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T")
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
+
+    def unreached(d, **k):
+        raise AssertionError("collect_related must be skipped when related=0")
+
+    monkeypatch.setattr(api, "collect_related", unreached)
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True, related=0)
+    assert r.related == [] and r.related_lines() == []

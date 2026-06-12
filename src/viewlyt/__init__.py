@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 # Pure helpers: stdlib only, safe to import eagerly (no Selenium).
 from .htmltext import (
     flatten_inline,
+    format_related,
     format_transcript,
     html_to_text,
     parse_relative_date,
@@ -37,19 +38,22 @@ _LAZY = {
     "scrape_video": "api",
     "ScrapeResult": "api",
     "Comment": "api",
+    "RelatedVideo": "api",
     "build_driver": "driver",
     "collect_comments": "scraper",
+    "collect_related": "scraper",
     "fetch_transcript": "scraper",
     "extract_video_id": "scraper",
     "BlockedError": "scraper",
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs see the real symbols
-    from .api import Comment, ScrapeResult, scrape_video
+    from .api import Comment, RelatedVideo, ScrapeResult, scrape_video
     from .driver import build_driver
     from .scraper import (
         BlockedError,
         collect_comments,
+        collect_related,
         extract_video_id,
         fetch_transcript,
     )
@@ -73,15 +77,18 @@ __all__ = [
     "scrape_video",
     "ScrapeResult",
     "Comment",
+    "RelatedVideo",
     # building blocks (lazy)
     "extract_video_id",
     "build_driver",
     "collect_comments",
+    "collect_related",
     "fetch_transcript",
     "BlockedError",
     # pure text helpers (eager)
     "html_to_text",
     "format_transcript",
+    "format_related",
     "parse_relative_date",
     "flatten_inline",
     "slugify",

@@ -20,10 +20,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .driver import build_driver
-from .htmltext import format_transcript, html_to_text
+from .htmltext import format_related, format_transcript, html_to_text
 from .scraper import (
     BlockedError,
     collect_comments,
+    collect_related,
     detect_block,
     dismiss_consent_dialog,
     extract_video_id,
@@ -47,6 +48,17 @@ class Comment:
 
 
 @dataclass(slots=True)
+class RelatedVideo:
+    """One related video from the watch-page sidebar. ``views`` is YouTube's own
+    sidebar text (e.g. "1.2B views"); the sidebar exposes NO likes."""
+
+    video_id: str
+    title: str
+    views: str
+    url: str
+
+
+@dataclass(slots=True)
 class ScrapeResult:
     """Everything scraped for one video. ``transcript`` is ``[(timestamp, text)]``."""
 
@@ -54,6 +66,7 @@ class ScrapeResult:
     title: str
     comments: list[Comment] = field(default_factory=list)
     transcript: list[tuple[str, str]] = field(default_factory=list)
+    related: list[RelatedVideo] = field(default_factory=list)
 
     @property
     def top_level(self) -> list[Comment]:
@@ -66,6 +79,12 @@ class ScrapeResult:
     def transcript_lines(self) -> list[str]:
         """Transcript as ``[ts] text`` lines (see :func:`viewlyt.format_transcript`)."""
         return format_transcript(self.transcript)
+
+    def related_lines(self) -> list[str]:
+        """Related videos as a numbered Markdown list (see :func:`viewlyt.format_related`)."""
+        return format_related(
+            [{"title": r.title, "views": r.views, "url": r.url} for r in self.related]
+        )
 
 
 def _to_comments(records: list[dict]) -> list[Comment]:
@@ -82,11 +101,24 @@ def _to_comments(records: list[dict]) -> list[Comment]:
     ]
 
 
+def _to_related(items: list[dict]) -> list[RelatedVideo]:
+    return [
+        RelatedVideo(
+            video_id=it.get("video_id") or "",
+            title=it.get("title") or "",
+            views=it.get("views") or "",
+            url=it.get("url") or "",
+        )
+        for it in items
+    ]
+
+
 def scrape_video(
     url: str,
     *,
     comments: bool = True,
     transcript: bool = False,
+    related: int = 0,
     limit: int = 150,
     max_viewports: int = 25,
     replies: bool = True,
@@ -96,9 +128,10 @@ def scrape_video(
 ) -> ScrapeResult:
     """Scrape one video and return a :class:`ScrapeResult` (writes no files).
 
-    Builds and quits its own Chrome. Raises :class:`viewlyt.BlockedError` if
-    YouTube serves a consent/bot wall (retry with ``headless=False`` or a
-    logged-in ``user_data_dir``).
+    Builds and quits its own Chrome. ``related`` is the number of sidebar related
+    videos to collect (0 = none). Raises :class:`viewlyt.BlockedError` if YouTube
+    serves a consent/bot wall (retry with ``headless=False`` or a logged-in
+    ``user_data_dir``).
     """
     video_id = extract_video_id(url)
     driver = build_driver(headless=headless, user_data_dir=user_data_dir)
@@ -122,6 +155,9 @@ def scrape_video(
             if comments
             else []
         )
+        # Related before transcript: the transcript panel takes over the #secondary
+        # column that hosts the related lockups (collect_related never raises).
+        rel = collect_related(driver, limit=related, progress=False) if related > 0 else []
         tx = fetch_transcript(driver, progress=False) if transcript else []
     finally:
         try:
@@ -129,5 +165,9 @@ def scrape_video(
         except Exception:  # pragma: no cover
             pass
     return ScrapeResult(
-        video_id=video_id, title=title, comments=_to_comments(records), transcript=tx
+        video_id=video_id,
+        title=title,
+        comments=_to_comments(records),
+        transcript=tx,
+        related=_to_related(rel),
     )
