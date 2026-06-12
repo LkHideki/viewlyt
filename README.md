@@ -227,7 +227,7 @@ already logged in to YouTube — it's the most reliable bypass.
 pyproject.toml            uv project + console-script entry point
 src/viewlyt/
   __init__.py             public API (scrape_video, helpers) + __version__
-  api.py                  scrape_video / ScrapeResult / Comment (use as a library)
+  api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
@@ -237,30 +237,63 @@ tests/test_units.py       browser-free tests for the pure functions
 
 ## Use as a library
 
-Besides the CLI, you can use viewlyt as a library:
+Everything the CLI does is available as a typed library (the package ships
+`py.typed`, so editors and `mypy`/`pyright` see the types).
+
+### One video
 
 ```python
 from viewlyt import scrape_video
 
 r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True, related=5)
 print(r.title)
-for c in r.top_level:            # or r.comments / r.replies
+for c in r.top_level:                 # or r.comments / r.replies
     print(c.author, c.likes, c.date, c.text)
-print("\n".join(r.transcript_lines()))
-for v in r.related:              # RelatedVideo(video_id, title, views, url)
+for v in r.related:                   # RelatedVideo(video_id, title, views, url)
     print(v.views, v.title, v.url)
+
+print("\n".join(r.comment_lines()))   # same text as the CLI's .txt (merged)
+print("\n".join(r.transcript_lines()))
 print("\n".join(r.related_lines()))
+r.write("out/")                       # .txt / .transcript.txt / .related.txt (non-empty only)
 ```
 
-`scrape_video` creates and closes its own Chrome and returns a `ScrapeResult`
-(comments as plain-text `Comment` objects + the transcript as
-`[(timestamp, text)]`). It raises `viewlyt.BlockedError` if it hits the bot wall
-(try `headless=False` or `user_data_dir=` of a logged-in profile). The
-low-level building blocks (`build_driver`, `collect_comments`,
-`collect_related`, `fetch_transcript`, `extract_video_id`) and the pure helpers
-(`html_to_text`, `format_transcript`, `format_related`, `parse_relative_date`,
-`slugify`) are also exposed. To use
-just the pure helpers **without importing Selenium**, do
+`scrape_video` builds and closes its own Chrome and returns a `ScrapeResult`. It
+raises `viewlyt.BlockedError` on the bot wall (try `headless=False` or
+`user_data_dir=` of a logged-in profile).
+
+### Many videos on one reused browser
+
+Building Chrome is the slow part, so reuse it. `scrape_videos` runs a bounded
+pool of reused browsers; `Session` is the manual, single-browser equivalent:
+
+```python
+from viewlyt import scrape_videos, Session
+
+# Pool of `jobs` reused browsers. Returns a list ALIGNED to input order:
+# a ScrapeResult per success, or None for a failed video (logged, not dropped).
+results = scrape_videos(urls, jobs=4, transcript=True, related=10)
+for url, r in zip(urls, results):
+    if r is None:
+        print("failed:", url)
+    else:
+        r.write("out/")
+
+# Or drive one browser yourself (a headless Session falls back to headed on a block):
+with Session(headless=True) as s:
+    a = s.scrape(url1)
+    b = s.scrape(url2)                # same browser, no cold-start
+```
+
+### Pure helpers (no Selenium)
+
+The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
+`group_consecutive_comments`, `format_transcript`, `format_related`,
+`parse_relative_date`, `flatten_inline`, `slugify` — and the Selenium-backed
+building blocks (`build_driver`, `collect_comments`, `collect_related`,
+`fetch_transcript`, `extract_video_id`) are all exposed. `import viewlyt` stays
+Selenium-free until you touch a Selenium-backed name; to use only the pure
+helpers, import them straight from the leaf module:
 `from viewlyt.htmltext import html_to_text`.
 
 ## Development

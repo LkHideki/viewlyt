@@ -32,14 +32,19 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 ## Estrutura
 
 - `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
-  data relativa, flatten, `convert_batch`, `format_transcript`, `format_related`). Mantenha sem
-  dependências: roda dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
+  data relativa, flatten, `convert_batch`, `format_comment_lines`, `format_transcript`,
+  `format_related`, `group_consecutive_comments`). Mantenha sem dependências: roda dentro de
+  threads/subinterpretadores, então NUNCA pode importar Selenium. `cli.format_comment_lines` é um
+  wrapper fino que injeta o conversor com ThreadPool — saída idêntica (travada por teste).
 - `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
 - `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases,
   transcrição, vídeos relacionados (`collect_related`, da barra lateral `#secondary`).
 - `src/viewlyt/cli.py` — argparse, orquestração, pool de instâncias, conversão paralela, escrita do arquivo.
-- `src/viewlyt/api.py` — API de biblioteca (`scrape_video`/`ScrapeResult`/`Comment`); depende só de
-  `driver`/`scraper`/`htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API pública.
+- `src/viewlyt/api.py` — API de biblioteca: 1 vídeo (`scrape_video`) e batch com navegador
+  reutilizado (`Session` context manager, `scrape_videos` com pool), mais os formatadores no
+  `ScrapeResult` (`comment_lines`/`transcript_lines`/`related_lines`/`write`). Tudo sobre o helper
+  compartilhado `_scrape_url` (driver já construído/primed); depende só de `driver`/`scraper`/
+  `htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API (lazy p/ Selenium, eager p/ puras).
 - `tests/test_units.py` — testes das funções puras (roda também standalone via `python`).
 - `tests/conftest.py` — fakes/helpers pytest-only (FakeDriver, builders de registros, `cli_run`, marca e2e).
 - `tests/test_integration.py` — integração sem navegador (monkeypatch do boundary Selenium em `cli`/`api`).

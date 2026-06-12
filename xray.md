@@ -477,20 +477,38 @@ sintaticamente — mantido assim de propósito (texto continua legível).
 
 ## 15. Módulo `api.py` — uso como biblioteca
 
-`scrape_video` cria e fecha seu próprio driver (`try/finally driver.quit()`).
-Nunca escreve arquivos. Lança `BlockedError` em consent/botwall.
+Tudo gira em torno do helper compartilhado **`_scrape_url(driver, url, *, ...)`**:
+faz `safe_get`→`detect_block`→coleta e devolve um `ScrapeResult`, **sem**
+construir nem fechar o driver (o chamador é dono do ciclo de vida). Três frentes
+o usam:
 
-`ScrapeResult`:
-- `.comments` — todos os objetos `Comment` (flat, comentários + respostas)
-- `.top_level` — filter `kind == "comment"`
-- `.replies` — filter `kind == "reply"`
-- `.transcript_lines()` — delega a `format_transcript`
+- **`scrape_video(url, *, comments, transcript, related, ...)`** — constrói/prima/
+  fecha o próprio Chrome (`try/finally quit`), 1 vídeo, **sem** fallback (lança
+  `BlockedError` em consent/botwall). Nunca escreve arquivos.
+- **`Session(*, headless, user_data_dir, fallback)`** — context manager que
+  constrói+prima **um** Chrome de forma lazy (no 1º `scrape`) e raspa vários
+  vídeos nele (sem cold-start). `scrape(url, ...)` faz fallback headless→headed
+  num bloqueio (a menos de `fallback=False`). `close()` é idempotente.
+- **`scrape_videos(urls, *, jobs=4, ...)`** — pool de `jobs` workers, cada um com
+  sua `Session` reutilizada. Retorna `list[ScrapeResult | None]` **alinhada à
+  ordem de entrada** (None por falha, logada — nunca descartada silenciosamente);
+  sessão envenenada é reciclada. WebDriver continua single-thread (1 driver por
+  worker, nunca compartilhado).
 
-`Comment` é um `dataclass(slots=True)` com:
-`kind, author, text, likes, date, parent_author`.
+`ScrapeResult` (`dataclass(slots=True)`):
+- `.comments` / `.top_level` / `.replies` — objetos `Comment`
+- `.related` — objetos `RelatedVideo`
+- `.transcript` — `[(timestamp, text)]`
+- `._records` — **privado** (`repr=False`): os records crus do scraper (com HTML),
+  guardados para `comment_lines`/`write` reusarem o pipeline EXATO da CLI
+- `.comment_lines(merge=True)` — corpo idêntico ao `out/<slug>-<id>.txt` da CLI
+- `.transcript_lines()` / `.related_lines()` — delegam a `format_transcript`/`format_related`
+- `.write(out_dir, merge=True) -> dict[str, Path]` — grava `.txt`/`.transcript.txt`/
+  `.related.txt` (só seções não-vazias), retorna `{seção: path}`
 
-Nota: no `Comment`, o campo se chama `date` (já é a string relativa raw, e.g.
-`"2 days ago"`) — ao contrário do record do scraper que usa `date_raw`.
+`Comment(kind, author, text, likes, date, parent_author)` — note `date` (string
+relativa raw, ex. `"2 days ago"`), ao contrário do record do scraper (`date_raw`).
+`RelatedVideo(video_id, title, views, url)`.
 
 ---
 
@@ -499,19 +517,28 @@ Nota: no `Comment`, o campo se chama `date` (já é a string relativa raw, e.g.
 ```python
 _LAZY = {
     "scrape_video": "api",
+    "scrape_videos": "api",
+    "Session": "api",
     "ScrapeResult": "api",
     "Comment": "api",
+    "RelatedVideo": "api",
     "build_driver": "driver",
     "collect_comments": "scraper",
+    "collect_related": "scraper",
     "fetch_transcript": "scraper",
     "extract_video_id": "scraper",
     "BlockedError": "scraper",
 }
 ```
 
-`__getattr__` importa o módulo na primeira acesso e faz cache em `globals()`.
-Símbolos puros (`html_to_text`, `slugify`, etc.) são importados eagerly de
-`htmltext` (sem custo).
+`__getattr__` importa o módulo no primeiro acesso e faz cache em `globals()`.
+Símbolos puros (`html_to_text`, `format_comment_lines`, `group_consecutive_comments`,
+`slugify`, etc.) são importados eagerly de `htmltext` (sem custo, sem Selenium).
+Os **nav primitives** (`safe_get`, `detect_block`, …) NÃO são expostos de
+propósito — `Session` é o seam suportado para dirigir um driver reutilizado.
+O teste `test_lazy_import_no_selenium` trava: (a) `import viewlyt` e as puras não
+puxam Selenium; (b) `Session`/`scrape_videos` resolvem (typo em `_LAZY` só falha
+no acesso).
 
 ---
 
@@ -633,3 +660,11 @@ Commits: convencional (`feat(scraper): ...`), blocos pequenos, sem trailers
 12. **`scrape_one` retorna 5-tupla** `(video_id, title, records, transcript, related)` —
     desempacotada em DOIS lugares no worker de `run_batch` (normal + fallback headed);
     mantenha os dois em sincronia.
+13. **Formatter de comentário é puro em `htmltext`**: `format_comment_lines` vive em
+    `htmltext` com conversor injetável (default `convert_batch`). `cli.format_comment_lines`
+    é só um wrapper que injeta o `_convert_all`/ThreadPool. A saída DEVE ser idêntica —
+    travada por `test_format_comment_lines_pure_matches_cli`. Não divirja as duas.
+14. **`scrape_videos` retorna `list[ScrapeResult | None]`** alinhada à entrada (None por
+    falha, logada). NÃO descarte falhas silenciosamente nem mude para retorno desalinhado.
+    `_scrape_url` é o seam compartilhado (driver já construído/primed) entre `scrape_video`,
+    `Session` e `scrape_videos`.
