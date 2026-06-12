@@ -30,6 +30,7 @@ from .htmltext import (
     format_comment_lines,
     format_related,
     format_transcript,
+    format_unified,
     html_to_text,
     slugify,
 )
@@ -109,27 +110,52 @@ class ScrapeResult:
             [{"title": r.title, "views": r.views, "url": r.url} for r in self.related]
         )
 
-    def write(self, out_dir: str, *, merge: bool = True) -> dict[str, Path]:
-        """Write the scraped data to ``out_dir`` exactly like the CLI:
-        ``<slug>-<id>.txt`` (comments), ``.transcript.txt``, ``.related.txt``.
+    def _sections(self, *, merge: bool = True) -> list[tuple[str, str, str, list[str]]]:
+        """Single source of the product sections, in canonical order:
+        ``(kind, header, filename-suffix, lines)``. Drives ``write()`` (separate
+        files), ``unified_lines()``/``write(unify=True)``, and is the one place a
+        new product type is added so it flows into every output for free."""
+        return [
+            ("comments", "Comments", "", self.comment_lines(merge=merge)),
+            ("transcript", "Transcript", ".transcript", self.transcript_lines()),
+            ("related", "Related videos", ".related", self.related_lines()),
+        ]
 
-        Only non-empty sections are written (no 0-byte files). Returns a mapping
-        of section name (``"comments"``/``"transcript"``/``"related"``) to the
-        written :class:`pathlib.Path`.
+    def unified_lines(self, *, merge: bool = True) -> list[str]:
+        """All collected products in ONE document — ``# title`` + ``## section``
+        blocks, empty sections skipped (see :func:`viewlyt.format_unified`)."""
+        return format_unified(
+            self.title,
+            [(header, lines) for _kind, header, _suffix, lines in self._sections(merge=merge)],
+        )
+
+    def write(self, out_dir: str, *, merge: bool = True, unify: bool = False) -> dict[str, Path]:
+        """Write the scraped data to ``out_dir``.
+
+        Default — one file per product, exactly like the CLI: ``<slug>-<id>.txt``
+        (comments), ``.transcript.txt``, ``.related.txt`` (only non-empty ones).
+        With ``unify=True`` — a single ``<slug>-<id>.unified.txt`` with every
+        product instead. Returns a mapping of section name (or ``"unified"``) to
+        the written :class:`pathlib.Path`.
         """
         base = Path(out_dir)
-        slug = slugify(self.title)
-        sections = (
-            ("comments", self.comment_lines(merge=merge), ""),
-            ("transcript", self.transcript_lines(), ".transcript"),
-            ("related", self.related_lines(), ".related"),
-        )
+        base_name = f"{slugify(self.title) or 'video'}-{self.video_id}"
         written: dict[str, Path] = {}
-        for kind, lines, suffix in sections:
+
+        if unify:
+            lines = self.unified_lines(merge=merge)
+            if lines:
+                base.mkdir(parents=True, exist_ok=True)
+                path = base / f"{base_name}.unified.txt"
+                path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                written["unified"] = path
+            return written
+
+        for kind, _header, suffix, lines in self._sections(merge=merge):
             if not lines:
                 continue
             base.mkdir(parents=True, exist_ok=True)
-            path = base / f"{slug or 'video'}-{self.video_id}{suffix}.txt"
+            path = base / f"{base_name}{suffix}.txt"
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             written[kind] = path
         return written

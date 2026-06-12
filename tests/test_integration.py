@@ -17,7 +17,7 @@ from conftest import make_reply as _r
 import viewlyt.api as api
 import viewlyt.cli as cli
 from viewlyt.cli import format_comment_lines
-from viewlyt.htmltext import format_related, format_transcript, slugify
+from viewlyt.htmltext import format_related, format_transcript, format_unified, slugify
 from viewlyt.scraper import BlockedError
 
 
@@ -540,6 +540,75 @@ def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
     written = r.write(str(tmp_path))
     assert set(written) == {"comments"}  # no transcript/related files
     assert list(tmp_path.glob("*.txt")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt"]
+
+
+def _scrape_all_three(monkeypatch, *, title="T"):
+    """scrape_video mocked to return comments + transcript + related."""
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title=title)
+    recs = [
+        {
+            "kind": "comment",
+            "author": "@a",
+            "html": "<b>oi</b>",
+            "likes": "5",
+            "date_raw": "2 days ago",
+        },
+        {
+            "kind": "reply",
+            "author": "@b",
+            "parent_author": "@a",
+            "html": "re",
+            "likes": "0",
+            "date_raw": "",
+        },
+    ]
+    segs = [("0:00", "ola"), ("0:02", "mundo")]
+    rel = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel",
+            "views": "5 views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        }
+    ]
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: recs)
+    monkeypatch.setattr(api, "fetch_transcript", lambda d, **k: segs)
+    monkeypatch.setattr(api, "collect_related", lambda d, **k: rel)
+    return api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=True, related=3)
+
+
+def test_scrape_result_unified_lines_matches_standalone(monkeypatch):
+    # Drift guard: the unified doc MUST be exactly format_unified() over the
+    # standalone formatters, in canonical order — pins ordering/skip-empty and
+    # keeps api/cli section enumerations honest.
+    r = _scrape_all_three(monkeypatch, title="Meu Título")
+    expected = format_unified(
+        "Meu Título",
+        [
+            ("Comments", r.comment_lines()),
+            ("Transcript", r.transcript_lines()),
+            ("Related videos", r.related_lines()),
+        ],
+    )
+    assert r.unified_lines() == expected
+    # and each standalone section's lines appear contiguously inside it
+    assert r.comment_lines()[0] in r.unified_lines()
+    assert "## Comments" in r.unified_lines() and "## Related videos" in r.unified_lines()
+
+
+def test_scrape_result_write_unify_replaces_separate_files(monkeypatch, tmp_path):
+    r = _scrape_all_three(monkeypatch, title="T")
+    written = r.write(str(tmp_path), unify=True)
+
+    uf = tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.unified.txt"
+    assert set(written) == {"unified"} and written["unified"] == uf
+    assert uf.read_text(encoding="utf-8") == "\n".join(r.unified_lines()) + "\n"
+    # A3: the separate per-product files are NOT written alongside the unified one
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.transcript.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.related.txt").exists()
+    assert list(tmp_path.glob("*.txt")) == [uf]
 
 
 # --------------------------------------------------------------------------- #
