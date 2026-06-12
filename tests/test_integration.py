@@ -540,3 +540,100 @@ def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
     written = r.write(str(tmp_path))
     assert set(written) == {"comments"}  # no transcript/related files
     assert list(tmp_path.glob("*.txt")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt"]
+
+
+# --------------------------------------------------------------------------- #
+# Session / scrape_videos (reused-browser library API)
+# --------------------------------------------------------------------------- #
+def _patch_session_boundary(monkeypatch, *, on_safe_get=None, on_detect=None):
+    """Patch the api boundary for Session/scrape_videos tests, EXCEPT build_driver
+    (each test controls that to observe driver reuse / count)."""
+    for name in ("prime_consent_cookies", "dismiss_consent_dialog"):
+        monkeypatch.setattr(api, name, lambda *a, **k: None)
+    monkeypatch.setattr(api, "safe_get", on_safe_get or (lambda *a, **k: None))
+    monkeypatch.setattr(api, "detect_block", on_detect or (lambda d: ""))
+    monkeypatch.setattr(api, "get_video_title", lambda d: "T")
+    monkeypatch.setattr(
+        api,
+        "collect_comments",
+        lambda d, **k: [
+            {"kind": "comment", "author": "@a", "html": "x", "likes": "0", "date_raw": ""}
+        ],
+    )
+
+
+def test_session_reuses_one_driver_across_videos(monkeypatch):
+    builds = []
+
+    def fake_build(**kw):
+        d = FakeDriver()
+        builds.append(d)
+        return d
+
+    monkeypatch.setattr(api, "build_driver", fake_build)
+    _patch_session_boundary(monkeypatch)
+
+    with api.Session(headless=True) as s:
+        a = s.scrape("dQw4w9WgXcQ", comments=True)
+        b = s.scrape("abcdefghij_", comments=True)
+
+    assert len(builds) == 1  # ONE Chrome built and reused across both videos
+    assert a.video_id == "dQw4w9WgXcQ" and b.video_id == "abcdefghij_"
+    assert builds[0].quit_calls == 1  # closed once on context-manager exit
+
+
+def test_session_fallback_rebuilds_headed_on_block(monkeypatch):
+    builds = []
+
+    def fake_build(*, headless, user_data_dir):
+        builds.append(headless)
+        return FakeDriver()
+
+    state = {"n": 0}
+
+    def detect(d):
+        state["n"] += 1
+        return "consent" if state["n"] == 1 else ""
+
+    monkeypatch.setattr(api, "build_driver", fake_build)
+    _patch_session_boundary(monkeypatch, on_detect=detect)
+
+    with api.Session(headless=True, fallback=True) as s:
+        r = s.scrape("dQw4w9WgXcQ")
+    assert builds == [True, False]  # rebuilt headed after the block, retried
+    assert r.video_id == "dQw4w9WgXcQ"
+
+
+def test_session_fallback_false_reraises(monkeypatch):
+    monkeypatch.setattr(api, "build_driver", lambda **k: FakeDriver())
+    _patch_session_boundary(monkeypatch, on_detect=lambda d: "consent")
+    with api.Session(headless=True, fallback=False) as s:
+        with pytest.raises(BlockedError) as ei:
+            s.scrape("dQw4w9WgXcQ")
+    assert ei.value.kind == "consent"
+
+
+def test_scrape_videos_preserves_order_and_isolates_failures(monkeypatch):
+    monkeypatch.setattr(api, "build_driver", lambda **k: FakeDriver())
+
+    def safe_get(driver, watch_url):
+        if "abcdefghij_" in watch_url:  # make the 2nd video fail mid-scrape
+            raise RuntimeError("boom")
+
+    _patch_session_boundary(monkeypatch, on_safe_get=safe_get)
+
+    urls = ["dQw4w9WgXcQ", "abcdefghij_", "kLmNoPqRsTu"]
+    results = api.scrape_videos(urls, jobs=2)
+
+    assert len(results) == 3  # aligned to input order
+    assert results[1] is None  # the failing video -> None, not dropped
+    assert results[0].video_id == "dQw4w9WgXcQ"
+    assert results[2].video_id == "kLmNoPqRsTu"
+
+
+def test_scrape_videos_empty_returns_empty(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("build_driver must not be called for an empty list")
+
+    monkeypatch.setattr(api, "build_driver", boom)
+    assert api.scrape_videos([]) == []

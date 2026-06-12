@@ -17,9 +17,13 @@ helpers (``html_to_text``, ``format_transcript``, …) live — dependency-free 
 
 from __future__ import annotations
 
+import logging
+import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from queue import Empty, Queue
 
 from .driver import build_driver
 from .htmltext import (
@@ -41,6 +45,8 @@ from .scraper import (
     prime_consent_cookies,
     safe_get,
 )
+
+log = logging.getLogger("viewlyt")
 
 
 @dataclass(slots=True)
@@ -246,3 +252,164 @@ def scrape_video(
             driver.quit()
         except Exception:  # pragma: no cover
             pass
+
+
+class Session:
+    """A reusable scraping session over ONE Chrome instance.
+
+    Building Chrome is the expensive part; a ``Session`` builds (and
+    consent-primes) it once and scrapes many videos on it, amortising the
+    cold-start. Use it as a context manager so the browser is always closed::
+
+        with viewlyt.Session(headless=True) as s:
+            a = s.scrape(url1)
+            b = s.scrape(url2)          # same browser, no cold-start
+
+    On a consent/bot wall a headless session transparently rebuilds itself headed
+    and retries the video once; pass ``fallback=False`` to instead re-raise
+    :class:`BlockedError`. The driver is built lazily on the first ``scrape``.
+    """
+
+    def __init__(
+        self,
+        *,
+        headless: bool = True,
+        user_data_dir: str | None = None,
+        fallback: bool = True,
+    ) -> None:
+        self._headless = headless
+        self._user_data_dir = user_data_dir
+        self._fallback = fallback
+        self._driver = None
+
+    def __enter__(self) -> Session:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self.close()
+        return False
+
+    def _ensure_driver(self):
+        if self._driver is None:
+            self._driver = build_driver(headless=self._headless, user_data_dir=self._user_data_dir)
+            prime_consent_cookies(self._driver)
+        return self._driver
+
+    def scrape(
+        self,
+        url: str,
+        *,
+        comments: bool = True,
+        transcript: bool = False,
+        related: int = 0,
+        limit: int = 150,
+        max_viewports: int = 25,
+        replies: bool = True,
+        max_replies: int = 5,
+    ) -> ScrapeResult:
+        """Scrape one video on this session's (lazily built) browser.
+
+        Raises :class:`BlockedError` only when a block survives the headed retry
+        (or when ``fallback=False``).
+        """
+        kw = dict(
+            comments=comments,
+            transcript=transcript,
+            related=related,
+            limit=limit,
+            max_viewports=max_viewports,
+            replies=replies,
+            max_replies=max_replies,
+        )
+        try:
+            return _scrape_url(self._ensure_driver(), url, **kw)
+        except BlockedError:
+            if self._headless and self._fallback:
+                log.warning("blocked on %s — rebuilding this session headed", url)
+                self.close()
+                self._headless = False
+                return _scrape_url(self._ensure_driver(), url, **kw)
+            raise
+
+    def close(self) -> None:
+        """Quit the browser (idempotent; also called on context-manager exit)."""
+        if self._driver is not None:
+            try:
+                self._driver.quit()
+            except Exception:  # pragma: no cover
+                pass
+            self._driver = None
+
+
+def scrape_videos(
+    urls: Iterable[str],
+    *,
+    jobs: int = 4,
+    comments: bool = True,
+    transcript: bool = False,
+    related: int = 0,
+    limit: int = 150,
+    max_viewports: int = 25,
+    replies: bool = True,
+    max_replies: int = 5,
+    headless: bool = True,
+    user_data_dir: str | None = None,
+    fallback: bool = True,
+) -> list[ScrapeResult | None]:
+    """Scrape many videos over a bounded pool of reused browsers.
+
+    Runs ``jobs`` worker threads, each owning ONE reused, consent-primed
+    :class:`Session` (Chrome starts once per worker, not once per video). Returns
+    a list ALIGNED to the ``urls`` input order: a :class:`ScrapeResult` per
+    success, or ``None`` for a video that failed (the error is logged). A poisoned
+    session is recycled, so one bad video can't sink the batch.
+
+    WebDriver is single-thread per instance — each worker keeps its own driver and
+    they are never shared.
+    """
+    url_list = list(urls)
+    if not url_list:
+        return []
+    jobs = max(1, min(jobs, len(url_list)))
+    kw = dict(
+        comments=comments,
+        transcript=transcript,
+        related=related,
+        limit=limit,
+        max_viewports=max_viewports,
+        replies=replies,
+        max_replies=max_replies,
+    )
+
+    q: Queue[tuple[int, str]] = Queue()
+    for item in enumerate(url_list):
+        q.put(item)
+    results: list[ScrapeResult | None] = [None] * len(url_list)
+    lock = threading.Lock()
+
+    def worker() -> None:
+        session = Session(headless=headless, user_data_dir=user_data_dir, fallback=fallback)
+        try:
+            while True:
+                try:
+                    idx, url = q.get_nowait()
+                except Empty:
+                    break
+                try:
+                    res = session.scrape(url, **kw)
+                    with lock:
+                        results[idx] = res
+                except Exception as exc:  # isolate per-video; recycle the session
+                    log.warning("scrape_videos: %r failed: %s", url, exc)
+                    session.close()
+                finally:
+                    q.task_done()
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(jobs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
