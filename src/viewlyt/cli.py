@@ -643,13 +643,15 @@ def main(argv: list[str] | None = None) -> int:
         args.comments, args.transcript, args.transcript_only, args.related
     )
     related_limit = args.related
-    # --unify/--unify-all alone (no product selector) collects EVERY product;
-    # related needs a count, so default it (override with -r N).
+    # --unify/--unify-all with no PRODUCT selector (-c/-t/--transcript-only) collects
+    # EVERY product. -r N is NOT such a selector here — it only sets the related count
+    # (defaulting to _UNIFY_DEFAULT_RELATED), so `--unify -r 3` still gets comments +
+    # transcript + 3 related. With an explicit -c/-t the selectors are respected.
     if (args.unify or args.unify_all) and not (
-        args.comments or args.transcript or args.transcript_only or args.related > 0
+        args.comments or args.transcript or args.transcript_only
     ):
         with_comments = with_transcript = with_related = True
-        related_limit = _UNIFY_DEFAULT_RELATED
+        related_limit = args.related if args.related > 0 else _UNIFY_DEFAULT_RELATED
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
     jobs = max(1, min(jobs, len(targets)))

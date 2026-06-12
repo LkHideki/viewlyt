@@ -428,6 +428,30 @@ def test_main_unify_alone_collects_all(monkeypatch):
     assert kw["related_limit"] == 20  # _UNIFY_DEFAULT_RELATED, since no -r given
 
 
+def test_main_unify_with_r_keeps_collect_all_just_sets_count(monkeypatch):
+    # -r N is NOT a product selector for --unify: it still collects everything,
+    # only overriding the related count (regression for the run-real bug).
+    cap = {}
+    monkeypatch.setattr(
+        cli,
+        "run_batch",
+        _fake_run_batch_capturing(
+            cap,
+            {
+                "with_comments": True,
+                "with_transcript": True,
+                "with_related": True,
+                "unified_file": "uf",
+            },
+        ),
+    )
+    rc = cli.main(["--unify", "-r", "3", "dQw4w9WgXcQ"])
+    assert rc == 0
+    kw = cap["kw"]
+    assert kw["with_comments"] and kw["with_transcript"] and kw["with_related"]
+    assert kw["related_limit"] == 3  # -r overrides the count but keeps collect-all
+
+
 def test_main_unify_respects_explicit_selectors(monkeypatch):
     cap = {}
     monkeypatch.setattr(
