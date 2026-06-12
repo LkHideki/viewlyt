@@ -116,6 +116,24 @@ COMMENTS_OFF_MARKERS = (
     "los comentarios están desactivados",
 )
 
+# Related videos (watch-page secondary column). YouTube retired the legacy
+# ytd-compact-video-renderer in favour of <yt-lockup-view-model>; Shorts use a
+# DIFFERENT tag (ytm-shorts-lockup-view-model), so selecting the lockup tag skips
+# them for free. The sidebar exposes title + url + views (NO likes — likes live
+# only on each video's own page).
+RELATED_ITEM_SELECTORS = (
+    "#secondary yt-lockup-view-model",
+    "ytd-watch-next-secondary-results-renderer yt-lockup-view-model",
+)
+# Title node inside a lockup — ordered fallback, EXACT class tokens (never a
+# substring class matcher; see test_transcript_timestamp_exact_token).
+RELATED_TITLE_SELECTORS = (
+    ".yt-lockup-metadata-view-model-wiz__title",
+    "h3 a",
+    "a[title]",
+    "span[role=text]",
+)
+
 # Transcript (description -> "Show transcript" -> engagement panel)
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
 TRANSCRIPT_SECTION = "ytd-video-description-transcript-section-renderer"
@@ -733,6 +751,80 @@ def collect_comments(
         "collected %d records (%d comments + %d replies)", len(records), n_top, len(records) - n_top
     )
     return records
+
+
+# --------------------------------------------------------------------------- #
+# Related videos (secondary column)
+# --------------------------------------------------------------------------- #
+# Single-round-trip read of the secondary column: for each <yt-lockup-view-model>
+# take the first /watch?v= link's id, the title (ordered selector fallback, then
+# the link's title attr), and the views metadata span (the one whose text matches
+# view/visualiz — the sibling spans are the channel, a "•", and the upload date).
+# De-dups by id and canonicalises the url. Mirrors _HARVEST_JS's ft()/fallback style.
+_RELATED_JS = r"""
+var ITEM=arguments[0], TITLE=arguments[1], LIMIT=arguments[2];
+var items=document.querySelectorAll(ITEM), out=[], seen={};
+for(var i=0;i<items.length && out.length<LIMIT;i++){
+  var lu=items[i];
+  var a=lu.querySelector("a[href*='/watch?v=']");
+  if(!a)continue;
+  var m=(a.getAttribute('href')||'').match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if(!m||seen[m[1]])continue;
+  var id=m[1], title='';
+  for(var k=0;k<TITLE.length;k++){var tn=lu.querySelector(TITLE[k]);
+    if(tn){var tt=(tn.textContent||'').replace(/\s+/g,' ').trim();if(tt){title=tt;break;}}}
+  if(!title)title=(a.getAttribute('title')||'').replace(/\s+/g,' ').trim();
+  if(!title)continue;
+  var views='', meta=lu.querySelector('yt-content-metadata-view-model');
+  if(meta){var sp=meta.querySelectorAll('span');
+    for(var j=0;j<sp.length;j++){var vx=(sp[j].textContent||'').replace(/\s+/g,' ').trim();
+      if(/view|visualiz/i.test(vx)){views=vx;break;}}}
+  seen[id]=1;
+  out.push({video_id:id,title:title,views:views,url:'https://www.youtube.com/watch?v='+id});
+}
+return out;
+"""
+
+
+def collect_related(driver, limit: int = 10, progress: bool = True) -> list[dict]:
+    """Collect up to ``limit`` related videos from the watch page's secondary column.
+
+    Returns a list of ``{"video_id", "title", "views", "url"}`` dicts. ``views`` is
+    YouTube's own sidebar text (e.g. "1.2B views") — the sidebar exposes NO likes,
+    only views. NEVER raises (returns ``[]`` on any error), like
+    :func:`fetch_transcript`, so a related-collection hiccup can't discard
+    already-harvested comments or recycle the pooled driver.
+    """
+    if limit <= 0:
+        return []
+    sel = ", ".join(RELATED_ITEM_SELECTORS)
+    try:
+        if progress:
+            log.info("collecting up to %d related videos", limit)
+        # The secondary column hydrates lazily; nudge-scroll until enough lockups
+        # are present or the count stops growing (stale guard handles short lists).
+        driver.execute_script("window.scrollTo(0, 600);")
+        prev, stale = -1, 0
+        for _ in range(12):
+            n = len(driver.find_elements(By.CSS_SELECTOR, sel))
+            if n >= limit:
+                break
+            if n == prev:
+                stale += 1
+                if stale >= 3:
+                    break
+            else:
+                stale = 0
+            prev = n
+            driver.execute_script("window.scrollBy(0, 1200);")
+            time.sleep(0.5)
+        items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
+        if progress:
+            log.info("collected %d related videos", len(items))
+        return items[:limit]
+    except WebDriverException as exc:
+        log.warning("related collection failed: %s", exc)
+        return []
 
 
 # --------------------------------------------------------------------------- #

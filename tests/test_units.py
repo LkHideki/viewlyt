@@ -466,6 +466,16 @@ def test_harvest_thread_fallback() -> None:
     print("ok: harvest_thread_fallback")
 
 
+def test_collect_related_resilience() -> None:
+    # collect_related must never raise: limit<=0 short-circuits, and any WebDriver
+    # error returns [] (mirrors fetch_transcript so it can't poison the pool).
+    from viewlyt.scraper import collect_related
+
+    assert collect_related(_StubDriver(), limit=0) == []
+    assert collect_related(_StubDriver(raise_exc=True), limit=5) == []
+    print("ok: collect_related_resilience")
+
+
 def test_transcript_timestamp_exact_token() -> None:
     # Guard: the transcript timestamp selector must be an EXACT class token so it
     # can never grab the sibling ...TimestampA11yLabel ("30 minutes, 40 seconds").
@@ -734,6 +744,7 @@ if __name__ == "__main__":
     test_top_el_fallback()
     test_comments_disabled()
     test_harvest_thread_fallback()
+    test_collect_related_resilience()
     test_transcript_timestamp_exact_token()
     test_format_related()
     test_format_transcript()
