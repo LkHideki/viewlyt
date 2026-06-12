@@ -1,7 +1,7 @@
 # viewlyt
 
 Collects the comments of one or several YouTube videos into
-`out/<title-slug>-<video_id>.txt` (plain text, no HTML tags) using **Selenium**
+`out/<title-slug>-<video_id>.md` (plain text, no HTML tags) using **Selenium**
 + **Google Chrome** headless, managed with [`uv`](https://github.com/astral-sh/uv).
 
 It opens the video page and works in two phases (with `tqdm` progress bars):
@@ -21,7 +21,7 @@ blocks separated by a blank line.
 
 Optionally, with `-t`/`--transcript`, it also collects the **full transcript**
 of the video (opening the panel via the transcript button in the description)
-into `out/<title-slug>-<video_id>.transcript.txt`. Use `-c -t` for comments
+into `out/<title-slug>-<video_id>.transcript.md`. Use `-c -t` for comments
 **and** transcript, or `-t` alone for the transcript only.
 
 > **Behavior change:** `-t`/`--transcript` alone now collects ONLY the
@@ -48,7 +48,7 @@ uv sync
 ## Usage
 
 ```bash
-# Default: headless. Writes out/<title-slug>-dQw4w9WgXcQ.txt
+# Default: headless. Writes out/<title-slug>-dQw4w9WgXcQ.md
 uv run viewlyt 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Also accepts youtu.be, /shorts/, /embed/ and the bare id:
@@ -72,13 +72,13 @@ uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 # Transcript only (skips the comments — much faster):
 uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-only
 
-# First 17 related (sidebar) videos -> out/<slug>-<id>.related.txt:
+# First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
 uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
 
-# Everything in ONE file out/<slug>-<id>.unified.txt (comments + transcript + related):
+# Everything in ONE file out/<slug>-<id>.unified.md (comments + transcript + related):
 uv run viewlyt --unify 'https://youtu.be/dQw4w9WgXcQ'
 
-# Combine several videos into a single out/unified-all.txt:
+# Combine several videos into a single out/unified-all.md:
 uv run viewlyt --unify-all '<url1>' '<url2>' '<url3>'
 
 # Don't merge consecutive comments from the same author (merging is the default):
@@ -106,15 +106,15 @@ uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 | `--limit-replies N` | `5` | Maximum replies per comment (`0` disables it). `--max-replies` is a kept alias. |
 | `--no-merge-comments` | off | Does not merge consecutive top-level comments from the same author (merging is the default; `--prevent-comment-group` is an alias) |
 | `-c, --comments` | off | Collects comments (the default when no selector is given; combine with `-t` for both) |
-| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.txt`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
+| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
-| `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.txt` (`0` = off). Without `-c` it selects related ONLY; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
-| `--unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.txt` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
-| `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.txt` (no per-video files). Mutually exclusive with `--unify`. |
+| `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Without `-c` it selects related ONLY; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
+| `--unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
+| `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
 | `--headed` | off | Uses a visible browser instead of headless |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
-| `-o, --out-dir DIR` | `out` | Directory for `<title-slug>-<video_id>.txt` |
+| `-o, --out-dir DIR` | `out` | Directory for `<title-slug>-<video_id>.md` |
 | `-q, --quiet` | off | Only logs warnings/errors |
 
 ## Several videos (batch mode)
@@ -130,7 +130,7 @@ considerably.
   batch); a problematic session is recreated automatically.
 - With **one** video, the detailed per-phase bars appear; with **several**, a
   general "videos" bar appears plus a final per-video summary.
-- Each video produces its own `out/<title-slug>-<video_id>.txt`.
+- Each video produces its own `out/<title-slug>-<video_id>.md`.
 
 > Each Chrome instance consumes memory (~300–500 MB). Adjust `--jobs` according to the available RAM.
 
@@ -138,7 +138,7 @@ considerably.
 
 With `-t`/`--transcript` (or `--transcript-only`), the collector expands the
 description, clicks the **"Show transcript"** button and reads the transcript
-panel, writing `out/<title-slug>-<video_id>.transcript.txt` with **one segment
+panel, writing `out/<title-slug>-<video_id>.transcript.md` with **one segment
 per line**:
 
 ```
@@ -153,13 +153,13 @@ per line**:
   (without `-c`) skips the comments and is much faster.
 - Videos **without a transcript** (many music clips) are skipped gracefully —
   the final summary shows `transcript: unavailable` and no file is created.
-- For running text without timestamps: `sed 's/^\[[^]]*\] //' file.transcript.txt`.
+- For running text without timestamps: `sed 's/^\[[^]]*\] //' file.transcript.md`.
 
 ## Related videos
 
 With `-r`/`--related N` the collector reads the watch page's secondary column
 (the "related" / "up next" sidebar) and writes the first N videos to
-`out/<title-slug>-<video_id>.related.txt` as a numbered Markdown list:
+`out/<title-slug>-<video_id>.related.md` as a numbered Markdown list:
 
 ```
 1. [1.2B views. Michael Jackson - Smooth Criminal (Official Video)](https://www.youtube.com/watch?v=h_D3VFfhvs4)
@@ -183,8 +183,8 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
 By default each product goes to its own file. To get **everything in one file**:
 
 - **`--unify`** writes a video's products into a single
-  `out/<title-slug>-<video_id>.unified.txt` (instead of the separate
-  `.txt`/`.transcript.txt`/`.related.txt`):
+  `out/<title-slug>-<video_id>.unified.md` (instead of the separate
+  `.md`/`.transcript.md`/`.related.md`):
 
   ```
   # <video title>
@@ -200,7 +200,7 @@ By default each product goes to its own file. To get **everything in one file**:
   ```
 
 - **`--unify-all`** combines **all** the videos of a run into a single
-  `out/unified-all.txt` (one `# title` block per video, in input order; no
+  `out/unified-all.md` (one `# title` block per video, in input order; no
   per-video files). Mutually exclusive with `--unify`.
 
 Both **collect every product when used alone** (comments + transcript + 20
@@ -232,7 +232,7 @@ already logged in to YouTube — it's the most reliable bypass.
 
 ## Output format
 
-`out/<title-slug>-<video_id>.txt` groups each comment with its replies into a
+`out/<title-slug>-<video_id>.md` groups each comment with its replies into a
 **block**, blocks separated by a blank line:
 
 ```
@@ -292,12 +292,12 @@ for c in r.top_level:                 # or r.comments / r.replies
 for v in r.related:                   # RelatedVideo(video_id, title, views, url)
     print(v.views, v.title, v.url)
 
-print("\n".join(r.comment_lines()))   # same text as the CLI's .txt (merged)
+print("\n".join(r.comment_lines()))   # same text as the CLI's .md (merged)
 print("\n".join(r.transcript_lines()))
 print("\n".join(r.related_lines()))
 print("\n".join(r.unified_lines()))   # all products in one document (like --unify)
-r.write("out/")                       # .txt / .transcript.txt / .related.txt (non-empty only)
-r.write("out/", unify=True)           # or a single <slug>-<id>.unified.txt
+r.write("out/")                       # .md / .transcript.md / .related.md (non-empty only)
+r.write("out/", unify=True)           # or a single <slug>-<id>.unified.md
 ```
 
 `scrape_video` builds and closes its own Chrome and returns a `ScrapeResult`. It
@@ -387,7 +387,7 @@ uv run --python 3.14t viewlyt '<url>'
   reply threads are flat).
 - The comment dates are approximated from YouTube's relative times (see above).
 - A residential IP and a logged-in profile greatly improve reliability.
-- The output is `.txt`, but the text comes from third parties: when **importing
+- The output is `.md`, but the text comes from third parties: when **importing
   into a spreadsheet** (Excel/Sheets), a cell starting with `=`, `+`, `-` or `@`
   may be interpreted as a formula (CSV/formula injection). Treat it as untrusted
   data or disable formula interpretation when importing.

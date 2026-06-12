@@ -12,7 +12,7 @@ decisões não-óbvias**.
 
 `viewlyt` é uma CLI (e biblioteca) que abre vídeos do YouTube com um Chrome
 headless via Selenium e coleta comentários (com likes, datas e respostas) e/ou a
-transcrição completa, gravando o resultado em arquivos `.txt` limpos em `out/`.
+transcrição completa, gravando o resultado em arquivos `.md` limpos em `out/`.
 
 Aceita múltiplas URLs/ids e arquivos `.txt`/`.csv`; processa em paralelo com um
 pool de instâncias do Chrome reutilizadas.
@@ -457,11 +457,11 @@ sintaticamente — mantido assim de propósito (texto continua legível).
 
 ### Arquivo de saída
 
-`out/<slug>-<video_id>.txt` para comentários.
-`out/<slug>-<video_id>.transcript.txt` para transcrição.
-`out/<slug>-<video_id>.related.txt` para relacionados.
-`out/<slug>-<video_id>.unified.txt` para `--unify` (1 por vídeo).
-`out/unified-all.txt` para `--unify-all` (1 global, todos os vídeos).
+`out/<slug>-<video_id>.md` para comentários.
+`out/<slug>-<video_id>.transcript.md` para transcrição.
+`out/<slug>-<video_id>.related.md` para relacionados.
+`out/<slug>-<video_id>.unified.md` para `--unify` (1 por vídeo).
+`out/unified-all.md` para `--unify-all` (1 global, todos os vídeos).
 
 **`--unify`/`--unify-all`** (mutuamente exclusivos): unem os produtos. Sozinhos
 coletam tudo (c+t+r, related=`_UNIFY_DEFAULT_RELATED`=20; `-r N` só ajusta o
@@ -512,15 +512,15 @@ o usam:
 - `.transcript` — `[(timestamp, text)]`
 - `._records` — **privado** (`repr=False`): os records crus do scraper (com HTML),
   guardados para `comment_lines`/`write` reusarem o pipeline EXATO da CLI
-- `.comment_lines(merge=True)` — corpo idêntico ao `out/<slug>-<id>.txt` da CLI
+- `.comment_lines(merge=True)` — corpo idêntico ao `out/<slug>-<id>.md` da CLI
 - `.transcript_lines()` / `.related_lines()` — delegam a `format_transcript`/`format_related`
 - `._sections(merge=True)` — **fonte única** das seções `(kind, header, suffix, lines)`,
   em ordem canônica; alimenta `write()`, `unified_lines()` e `write(unify=True)`
 - `.unified_lines(merge=True)` — todos os produtos num doc (`# título` + `## seção`),
   vazias puladas; via `format_unified`
 - `.write(out_dir, merge=True, unify=False) -> dict[str, Path]` — sem `unify`: grava
-  `.txt`/`.transcript.txt`/`.related.txt` (só não-vazias); com `unify=True`: um único
-  `.unified.txt`. Retorna `{seção|"unified": path}`
+  `.md`/`.transcript.md`/`.related.md` (só não-vazias); com `unify=True`: um único
+  `.unified.md`. Retorna `{seção|"unified": path}`
 
 `Comment(kind, author, text, likes, date, parent_author)` — note `date` (string
 relativa raw, ex. `"2 days ago"`), ao contrário do record do scraper (`date_raw`).
@@ -620,14 +620,18 @@ chama.
 ## 19. Não-commitáveis e PII
 
 O `.gitignore` exclui:
-- `out/`, `out_test/`, `*.txt` (exceto `requirements*.txt`) — saída do scraper
-  contém nomes de usuário (PII).
+- `out/`, `out_test/` — diretórios de saída do scraper (contêm nomes de usuário, PII).
+- `*.transcript.md`, `*.related.md`, `*.unified.md`, `unified-all.md` — produtos do
+  scraper escritos FORA de `out/` (sufixos exclusivos da ferramenta, não pegam docs).
 - `.env`, `*.pem`, `*.key`, etc. — segredos.
 - `chrome-profile*/`, `user-data-dir/` — cookies de sessão.
 - `__pycache__/`, `*.pyc`, `.venv/`, `.pytest_cache/`, etc.
 
-Nota: `xray.md` e outros `.md` **não** são ignorados; não commite este arquivo
-a menos que explicitamente solicitado.
+Nota: como a saída agora é `.md`, NÃO há glob `*.md` (isso ignoraria os próprios
+docs — `README.md`, `AGENTS.md`, `xray.md`, …). Logo o arquivo de comentários
+`<slug>-<id>.md` só é coberto pelo ignore quando fica em `out/`/`out_test/` — mantenha
+a saída coletada nesses diretórios. `xray.md` e outros `.md` **não** são ignorados;
+não commite este arquivo a menos que explicitamente solicitado.
 
 ---
 

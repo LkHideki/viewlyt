@@ -1,7 +1,7 @@
 # viewlyt
 
 CLI que coleta os comentários de um vídeo do YouTube (com likes, datas e respostas)
-em `out/<title-slug>-<video_id>.txt`, usando Selenium + Google Chrome headless,
+em `out/<title-slug>-<video_id>.md`, usando Selenium + Google Chrome headless,
 gerenciado com `uv`. Veja @README.md para o uso completo.
 
 ## Comandos
@@ -12,12 +12,12 @@ uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão)
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
 uv run viewlyt --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
-uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.txt
+uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.md
 uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
 uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)
-uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.txt (views, não likes)
-uv run viewlyt --unify '<url>'                   # todos os produtos -> *.unified.txt (1 arquivo)
-uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.txt (1 arquivo só)
+uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.md (views, não likes)
+uv run viewlyt --unify '<url>'                   # todos os produtos -> *.unified.md (1 arquivo)
+uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.md (1 arquivo só)
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
@@ -90,7 +90,7 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
   combine com `-c`/`-t`. **Seletores nunca podem usar `class`-substring** (`[class*=…]`) — o teste
   `test_transcript_timestamp_exact_token` proíbe em todo o `scraper.py`; use tokens exatos.
 - **Unificação (`--unify`/`--unify-all`):** unem os produtos num arquivo. `--unify` = 1 por vídeo
-  (`<slug>-<id>.unified.txt`); `--unify-all` = 1 global (`out/unified-all.txt`), mutuamente
+  (`<slug>-<id>.unified.md`); `--unify-all` = 1 global (`out/unified-all.md`), mutuamente
   exclusivos. **Sozinhos** (sem `-c`/`-t`/`--transcript-only`) coletam TUDO (comments + transcript
   + 20 related); `-r N` só ajusta o count (não é seletor aqui); com `-c`/`-t` unem só aqueles. A
   ENUMERAÇÃO das seções vive em UM lugar — `ScrapeResult._sections` (api) e o mesmo trio no
@@ -105,7 +105,7 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
   (`feat(scraper): …`, `chore: …`, `docs: …`).
 - Antes de commitar, rode `uv run ruff format && uv run ruff check && uv run pytest`
   (ou instale o `pre-commit`, que faz isso sozinho).
-- **Nunca commite** a saída coletada (`out/`, `*.txt` — contêm nomes de usuário/PII), segredos
+- **Nunca commite** a saída coletada (`out/` e os `.md` de saída — contêm nomes de usuário/PII), segredos
   ou credenciais (`.env`, `*.pem`, `*.key`, …), `.venv/`, nem perfis de navegador de
   `--user-data-dir` (guardam cookies/sessões). O `.gitignore` já garante isso; se adicionar
   um perfil persistente, mantenha-o fora do repo ou em um caminho coberto pelas regras de ignore.
