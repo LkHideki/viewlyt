@@ -35,6 +35,7 @@ from .driver import build_driver
 from .htmltext import (
     convert_batch,
     flatten_inline,
+    format_related,
     format_transcript,
     group_consecutive_comments,
     parse_relative_date,
@@ -43,6 +44,7 @@ from .htmltext import (
 from .scraper import (
     BlockedError,
     collect_comments,
+    collect_related,
     detect_block,
     dismiss_consent_dialog,
     extract_video_id,
@@ -152,10 +154,12 @@ def scrape_one(
     progress: bool,
     with_comments: bool = True,
     with_transcript: bool = False,
-) -> tuple[str, str, list[dict], list[tuple[str, str]]]:
+    with_related: bool = False,
+    related_limit: int = 0,
+) -> tuple[str, str, list[dict], list[tuple[str, str]], list[dict]]:
     """Scrape a single video with an already-primed driver. Raises
     ``BlockedError`` on a consent/bot wall. Returns
-    ``(video_id, title, records, transcript)``."""
+    ``(video_id, title, records, transcript, related)``."""
     video_id = extract_video_id(url)
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
     log.info("video id: %s", video_id)
@@ -179,29 +183,41 @@ def scrape_one(
         if with_comments
         else []
     )
+    # Related runs AFTER comments (it scrolls back to the top sidebar) but BEFORE
+    # the transcript: opening the transcript panel takes over the #secondary column,
+    # which would hide the related lockups. collect_related never raises ([] on error).
+    related = (
+        collect_related(driver, limit=related_limit, progress=progress) if with_related else []
+    )
     # Transcript is the LAST page action so its panel/scroll can't perturb the
     # comment lazy-load; fetch_transcript never raises (returns [] on any issue).
     transcript = fetch_transcript(driver, progress=progress) if with_transcript else []
-    return video_id, title, records, transcript
+    return video_id, title, records, transcript, related
 
 
 # --------------------------------------------------------------------------- #
 # Mode resolution
 # --------------------------------------------------------------------------- #
-def resolve_modes(comments: bool, transcript: bool, transcript_only: bool) -> tuple[bool, bool]:
-    """Resolve ``(with_comments, with_transcript)`` from the independent selectors.
+def resolve_modes(
+    comments: bool, transcript: bool, transcript_only: bool, related: int = 0
+) -> tuple[bool, bool, bool]:
+    """Resolve ``(with_comments, with_transcript, with_related)`` from the selectors.
 
-    ``-c/--comments`` and ``-t/--transcript`` are independent toggles, with the
-    back-compat ``--transcript-only`` alias. The table is: no flags -> comments
-    only; ``-c`` -> comments only; ``-t`` -> transcript only; ``-c -t`` -> both;
-    ``--transcript-only`` -> transcript only (``-c`` is ignored in that case).
+    ``-c/--comments``, ``-t/--transcript`` and ``-r/--related N`` are independent
+    toggles (``related`` is the count; ``> 0`` enables it), with the back-compat
+    ``--transcript-only`` alias. Comments are the implicit default ONLY when no
+    other selector is given, mirroring how ``-t`` alone means transcript-only:
+    no flags -> comments; ``-c`` -> comments; ``-t`` -> transcript; ``-r N`` ->
+    related; any combination selects exactly those; ``--transcript-only`` forces
+    comments off regardless of ``-c``.
     """
     with_transcript = transcript or transcript_only
+    with_related = related > 0
     if transcript_only:
         with_comments = False
     else:
-        with_comments = comments or (not transcript)
-    return with_comments, with_transcript
+        with_comments = comments or not (with_transcript or with_related)
+    return with_comments, with_transcript, with_related
 
 
 # --------------------------------------------------------------------------- #
@@ -316,6 +332,8 @@ def run_batch(
     max_replies: int,
     with_comments: bool,
     with_transcript: bool,
+    with_related: bool,
+    related_limit: int,
     merge_comments: bool,
     inner_progress: bool,
     quiet: bool,
@@ -342,6 +360,8 @@ def run_batch(
         progress=inner_progress,
         with_comments=with_comments,
         with_transcript=with_transcript,
+        with_related=with_related,
+        related_limit=related_limit,
     )
 
     def add(summary: dict) -> None:
@@ -363,7 +383,9 @@ def run_batch(
                     if driver is None:
                         driver = build_primed_driver(local_headless, user_data_dir)
                     try:
-                        vid, title, records, transcript = scrape_one(driver, url, **scrape_kw)
+                        vid, title, records, transcript, related = scrape_one(
+                            driver, url, **scrape_kw
+                        )
                     except BlockedError as exc:
                         if local_headless and fallback:
                             log.warning(
@@ -375,7 +397,9 @@ def run_batch(
                             _safe_quit(driver)
                             local_headless = False
                             driver = build_primed_driver(local_headless, user_data_dir)
-                            vid, title, records, transcript = scrape_one(driver, url, **scrape_kw)
+                            vid, title, records, transcript, related = scrape_one(
+                                driver, url, **scrape_kw
+                            )
                         else:
                             raise
                     slug = slugify(title)
@@ -397,6 +421,14 @@ def run_batch(
                                 _write(slug, vid, tlines, out_dir, suffix=".transcript")
                             )
                             n_seg = len(tlines)
+                    related_file, n_related = None, 0
+                    if with_related and related:
+                        rlines = format_related(related)
+                        if rlines:  # don't create a 0-byte .related.txt
+                            related_file = str(
+                                _write(slug, vid, rlines, out_dir, suffix=".related")
+                            )
+                            n_related = len(rlines)
                     add(
                         {
                             "url": url,
@@ -410,6 +442,9 @@ def run_batch(
                             "with_transcript": with_transcript,
                             "transcript_file": transcript_file,
                             "segments": n_seg,
+                            "with_related": with_related,
+                            "related_file": related_file,
+                            "related": n_related,
                         }
                     )
                 except Exception as exc:  # isolate this video; recycle the session
@@ -525,6 +560,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="fetch only the transcript and skip comments (alias for -t without -c)",
     )
     p.add_argument(
+        "-r",
+        "--related",
+        type=int,
+        default=0,
+        metavar="N",
+        help="collect the first N related videos -> out/<slug>-<id>.related.txt "
+        "(0 = off). Without -c this selects related ONLY; combine with -c/-t. "
+        "Lists 'N. [<views> views. <title>](<url>)' — the sidebar exposes views, not likes.",
+    )
+    p.add_argument(
         "--headed",
         action="store_true",
         help="visible browser instead of headless (more reliable vs the bot wall)",
@@ -565,8 +610,8 @@ def main(argv: list[str] | None = None) -> int:
         log.error("no valid YouTube URLs/ids given (pass URLs and/or --from-file a .txt/.csv)")
         return 2
 
-    with_comments, with_transcript = resolve_modes(
-        args.comments, args.transcript, args.transcript_only
+    with_comments, with_transcript, with_related = resolve_modes(
+        args.comments, args.transcript, args.transcript_only, args.related
     )
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
@@ -587,6 +632,8 @@ def main(argv: list[str] | None = None) -> int:
         max_replies=args.max_replies,
         with_comments=with_comments,
         with_transcript=with_transcript,
+        with_related=with_related,
+        related_limit=args.related,
         merge_comments=args.merge_comments,
         inner_progress=inner_progress,
         quiet=args.quiet,
@@ -607,6 +654,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"transcript: {s['segments']} segments -> {s['transcript_file']}"
                 if s.get("transcript_file")
                 else "transcript: unavailable"
+            )
+        if s.get("with_related"):
+            parts.append(
+                f"related: {s['related']} videos -> {s['related_file']}"
+                if s.get("related_file")
+                else "related: unavailable"
             )
         print(f"  {_color('✓', '32')} {s['video_id']}  " + " | ".join(parts))
     for s in failed:

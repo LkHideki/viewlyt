@@ -17,7 +17,7 @@ from conftest import make_reply as _r
 import viewlyt.api as api
 import viewlyt.cli as cli
 from viewlyt.cli import format_comment_lines
-from viewlyt.htmltext import format_transcript, slugify
+from viewlyt.htmltext import format_related, format_transcript, slugify
 from viewlyt.scraper import BlockedError
 
 
@@ -35,6 +35,8 @@ def _run_batch(targets, tmp_path, **overrides):
         max_replies=5,
         with_comments=True,
         with_transcript=False,
+        with_related=False,
+        related_limit=0,
         merge_comments=True,
         inner_progress=False,
         quiet=True,
@@ -49,8 +51,8 @@ def _run_batch(targets, tmp_path, **overrides):
 def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_path):
     recs_a = [_c("@joao", "ola", likes="5", date_raw="2 days ago")]
     table = {
-        "idA": ("vidA", "Hello World", recs_a, []),
-        "idB": ("vidB", "Outro", [_c("@x", "hi")], []),
+        "idA": ("vidA", "Hello World", recs_a, [], []),
+        "idB": ("vidB", "Outro", [_c("@x", "hi")], [], []),
     }
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
@@ -68,7 +70,7 @@ def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_p
 
 def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path):
     ids = ["v1", "v2", "v3", "v4"]
-    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], []) for i, vid in enumerate(ids)}
+    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], [], []) for i, vid in enumerate(ids)}
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
 
@@ -80,7 +82,7 @@ def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path
 def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
     recs = [_c("@joao", "parte1", likes="7"), _r("@maria", "@joao", "resp"), _c("@joao", "parte2")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], []))
 
     merged = _run_batch([("vid", "id")], tmp_path, merge_comments=True)
     body = (tmp_path / f"{slugify('T')}-vid.txt").read_text(encoding="utf-8")
@@ -93,7 +95,7 @@ def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
 def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
 
     sums = _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True)
 
@@ -105,8 +107,63 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     assert sums[0]["segments"] == 2 and sums[0]["with_transcript"] is True
 
 
+def test_run_batch_related_writes_file(monkeypatch, tmp_path):
+    related = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel A",
+            "views": "1.2B views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        },
+        {
+            "video_id": "bbbbbbbbbbb",
+            "title": "Rel B",
+            "views": "20M views",
+            "url": "https://www.youtube.com/watch?v=bbbbbbbbbbb",
+        },
+    ]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli, "scrape_one", lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], related)
+    )
+
+    sums = _run_batch([("vid", "id")], tmp_path, with_related=True, related_limit=5)
+
+    rf = tmp_path / f"{slugify('T')}-vid.related.txt"
+    assert rf.exists()
+    assert rf.read_text(encoding="utf-8") == "\n".join(format_related(related)) + "\n"
+    assert sums[0]["with_related"] is True and sums[0]["related"] == 2
+    assert sums[0]["related_file"] == str(rf)
+    assert (tmp_path / f"{slugify('T')}-vid.txt").exists()  # comments still written too
+
+
+def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
+    related = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel A",
+            "views": "5 views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        }
+    ]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", [], [], related))
+
+    sums = _run_batch(
+        [("vid", "id")], tmp_path, with_comments=False, with_related=True, related_limit=3
+    )
+
+    assert not (tmp_path / f"{slugify('T')}-vid.txt").exists()
+    assert (tmp_path / f"{slugify('T')}-vid.related.txt").exists()
+    assert sums[0]["file"] is None and sums[0]["comments"] == 0
+    assert sums[0]["with_related"] is True and sums[0]["related"] == 1
+
+
 def test_run_batch_per_video_error_isolation(monkeypatch, tmp_path):
-    good = {"idA": ("vidA", "A", [_c("@a", "x")], []), "idC": ("vidC", "C", [_c("@c", "z")], [])}
+    good = {
+        "idA": ("vidA", "A", [_c("@a", "x")], [], []),
+        "idC": ("vidC", "C", [_c("@c", "z")], [], []),
+    }
 
     def scrape_one(driver, url, **kw):
         if url == "idB":
@@ -138,7 +195,7 @@ def test_run_batch_blocked_retries_headed_when_fallback_true(monkeypatch, tmp_pa
         state["n"] += 1
         if state["n"] == 1:
             raise BlockedError("consent")
-        return ("vid", "T", [_c("@a", "x")], [])
+        return ("vid", "T", [_c("@a", "x")], [], [])
 
     monkeypatch.setattr(cli, "build_primed_driver", build)
     monkeypatch.setattr(cli, "scrape_one", scrape_one)
@@ -229,6 +286,36 @@ def test_main_transcript_flag_wiring(monkeypatch):
     assert rc == 0
     assert cap["kw"]["with_comments"] is False and cap["kw"]["with_transcript"] is True
     assert cap["kw"]["jobs"] == 2 and len(cap["targets"]) == 2
+
+
+def test_main_related_flag_wiring(monkeypatch):
+    cap = {}
+
+    def fake_run_batch(targets, **kw):
+        cap["kw"] = kw
+        return [
+            {
+                "video_id": t[0],
+                "error": None,
+                "with_comments": False,
+                "file": None,
+                "comments": 0,
+                "lines": 0,
+                "with_transcript": False,
+                "transcript_file": None,
+                "segments": 0,
+                "with_related": True,
+                "related_file": "rf",
+                "related": 5,
+            }
+            for t in targets
+        ]
+
+    monkeypatch.setattr(cli, "run_batch", fake_run_batch)
+    rc = cli.main(["-r", "5", "dQw4w9WgXcQ"])
+    assert rc == 0
+    assert cap["kw"]["with_related"] is True and cap["kw"]["related_limit"] == 5
+    assert cap["kw"]["with_comments"] is False  # -r alone -> related only
 
 
 def test_main_all_failed_returns_one(monkeypatch, capsys):

@@ -352,13 +352,23 @@ def test_group_consecutive_comments_shape() -> None:
 
 
 def test_resolve_modes() -> None:
-    # (comments, transcript, transcript_only) -> (with_comments, with_transcript)
-    assert resolve_modes(False, False, False) == (True, False)  # no flags -> comments only
-    assert resolve_modes(True, False, False) == (True, False)  # -c -> comments only
-    assert resolve_modes(False, True, False) == (False, True)  # -t -> transcript only
-    assert resolve_modes(True, True, False) == (True, True)  # -c -t -> both
-    assert resolve_modes(False, False, True) == (False, True)  # --transcript-only
-    assert resolve_modes(True, False, True) == (False, True)  # --transcript-only wins over -c
+    # (comments, transcript, transcript_only, related) -> (comments, transcript, related)
+    assert resolve_modes(False, False, False) == (True, False, False)  # no flags -> comments
+    assert resolve_modes(True, False, False) == (True, False, False)  # -c -> comments only
+    assert resolve_modes(False, True, False) == (False, True, False)  # -t -> transcript only
+    assert resolve_modes(True, True, False) == (True, True, False)  # -c -t -> both
+    assert resolve_modes(False, False, True) == (False, True, False)  # --transcript-only
+    assert resolve_modes(True, False, True) == (
+        False,
+        True,
+        False,
+    )  # --transcript-only wins over -c
+    # related is a count (0 = off); >0 enables it and, alone, suppresses the comment default
+    assert resolve_modes(False, False, False, 0) == (True, False, False)  # -r 0 -> comments
+    assert resolve_modes(False, False, False, 5) == (False, False, True)  # -r 5 -> related only
+    assert resolve_modes(True, False, False, 5) == (True, False, True)  # -c -r 5 -> both
+    assert resolve_modes(False, True, False, 5) == (False, True, True)  # -t -r 5 -> tx + related
+    assert resolve_modes(True, True, False, 5) == (True, True, True)  # -c -t -r 5 -> all three
     print("ok: resolve_modes")
 
 
@@ -372,6 +382,10 @@ def test_flag_plumbing() -> None:
     a = p.parse_args(["-c", "-t"])
     assert a.comments is True and a.transcript is True
     assert p.parse_args(["--transcript-only"]).transcript_only is True
+    # -r/--related is an int count, default 0 (off)
+    assert p.parse_args([]).related == 0
+    assert p.parse_args(["-r", "17"]).related == 17
+    assert p.parse_args(["--related", "23"]).related == 23
     # new defaults are wired into the parser
     d = p.parse_args([])
     assert d.limit == 150 and d.max_replies == 5

@@ -23,7 +23,14 @@ def test_version_flag_smoke():
 def test_help_flag_smoke():
     r = cli_run(["--help"])
     assert r.returncode == 0, r.stderr
-    for token in ("--comments", "--transcript-only", "--no-merge-comments", "-c", "-t"):
+    for token in (
+        "--comments",
+        "--transcript-only",
+        "--no-merge-comments",
+        "--related",
+        "-c",
+        "-t",
+    ):
         assert token in r.stdout, token
 
 
