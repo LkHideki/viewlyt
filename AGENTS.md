@@ -11,11 +11,13 @@ uv sync                                             # cria o ambiente e instala 
 uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run viewlyt --limit 150 --max-replies 5 '<url>'
+uv run viewlyt --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
 uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.txt
 uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
 uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)
 uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.txt (views, não likes)
+uv run viewlyt --unify '<url>'                   # todos os produtos -> *.unified.txt (1 arquivo)
+uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.txt (1 arquivo só)
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
@@ -33,9 +35,10 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 
 - `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
   data relativa, flatten, `convert_batch`, `format_comment_lines`, `format_transcript`,
-  `format_related`, `group_consecutive_comments`). Mantenha sem dependências: roda dentro de
-  threads/subinterpretadores, então NUNCA pode importar Selenium. `cli.format_comment_lines` é um
-  wrapper fino que injeta o conversor com ThreadPool — saída idêntica (travada por teste).
+  `format_related`, `format_unified`/`join_unified`, `group_consecutive_comments`). Mantenha sem
+  dependências: roda dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
+  `cli.format_comment_lines` é um wrapper fino que injeta o conversor com ThreadPool — saída
+  idêntica (travada por teste).
 - `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
 - `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases,
   transcrição, vídeos relacionados (`collect_related`, da barra lateral `#secondary`).
@@ -86,6 +89,14 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
   gera `N. [<views>. <título>](<url>)`. O modo espelha `-t`: `-r N` sozinho = só relacionados;
   combine com `-c`/`-t`. **Seletores nunca podem usar `class`-substring** (`[class*=…]`) — o teste
   `test_transcript_timestamp_exact_token` proíbe em todo o `scraper.py`; use tokens exatos.
+- **Unificação (`--unify`/`--unify-all`):** unem os produtos num arquivo. `--unify` = 1 por vídeo
+  (`<slug>-<id>.unified.txt`); `--unify-all` = 1 global (`out/unified-all.txt`), mutuamente
+  exclusivos. **Sozinhos** (sem `-c`/`-t`/`--transcript-only`) coletam TUDO (comments + transcript
+  + 20 related); `-r N` só ajusta o count (não é seletor aqui); com `-c`/`-t` unem só aqueles. A
+  ENUMERAÇÃO das seções vive em UM lugar — `ScrapeResult._sections` (api) e o mesmo trio no
+  `run_batch` —, e `htmltext.format_unified(title, [(header, lines)])` é **agnóstico de produto**
+  (seção vazia é pulada), então um produto novo entra de graça. `ScrapeResult.write(unify=True)` e
+  `unified_lines()` dão a paridade na lib; `join_unified` concatena vários vídeos (`--unify-all`).
 
 ## Git / commits
 

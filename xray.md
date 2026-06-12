@@ -460,6 +460,17 @@ sintaticamente — mantido assim de propósito (texto continua legível).
 `out/<slug>-<video_id>.txt` para comentários.
 `out/<slug>-<video_id>.transcript.txt` para transcrição.
 `out/<slug>-<video_id>.related.txt` para relacionados.
+`out/<slug>-<video_id>.unified.txt` para `--unify` (1 por vídeo).
+`out/unified-all.txt` para `--unify-all` (1 global, todos os vídeos).
+
+**`--unify`/`--unify-all`** (mutuamente exclusivos): unem os produtos. Sozinhos
+coletam tudo (c+t+r, related=`_UNIFY_DEFAULT_RELATED`=20; `-r N` só ajusta o
+count, **não** é seletor); com `-c`/`-t` unem só aqueles (`main` decide isso via a
+guarda que checa só os seletores booleanos). `--unify` escreve por vídeo no worker;
+`--unify-all` faz cada worker guardar seu bloco em `unified_blocks` (sob lock) e,
+após o pool drenar, `join_unified` concatena em ordem de entrada e grava 1 arquivo.
+A flag `--limit` virou `--limit-comments` e `--max-replies` virou `--limit-replies`
+(nomes antigos mantidos como aliases).
 
 ### `run_batch` — pool de workers
 
@@ -503,8 +514,13 @@ o usam:
   guardados para `comment_lines`/`write` reusarem o pipeline EXATO da CLI
 - `.comment_lines(merge=True)` — corpo idêntico ao `out/<slug>-<id>.txt` da CLI
 - `.transcript_lines()` / `.related_lines()` — delegam a `format_transcript`/`format_related`
-- `.write(out_dir, merge=True) -> dict[str, Path]` — grava `.txt`/`.transcript.txt`/
-  `.related.txt` (só seções não-vazias), retorna `{seção: path}`
+- `._sections(merge=True)` — **fonte única** das seções `(kind, header, suffix, lines)`,
+  em ordem canônica; alimenta `write()`, `unified_lines()` e `write(unify=True)`
+- `.unified_lines(merge=True)` — todos os produtos num doc (`# título` + `## seção`),
+  vazias puladas; via `format_unified`
+- `.write(out_dir, merge=True, unify=False) -> dict[str, Path]` — sem `unify`: grava
+  `.txt`/`.transcript.txt`/`.related.txt` (só não-vazias); com `unify=True`: um único
+  `.unified.txt`. Retorna `{seção|"unified": path}`
 
 `Comment(kind, author, text, likes, date, parent_author)` — note `date` (string
 relativa raw, ex. `"2 days ago"`), ao contrário do record do scraper (`date_raw`).
@@ -583,9 +599,10 @@ chama.
 
 | Constante | Valor | Onde |
 |-----------|-------|------|
-| `limit` | 150 | cli default, api default |
+| `limit` | 150 | cli (`--limit-comments`/`--limit`), api default |
 | `max_viewports` | 25 | cli default, api default |
-| `max_replies` | 5 | cli default, api default |
+| `max_replies` | 5 | cli (`--limit-replies`/`--max-replies`), api default |
+| `_UNIFY_DEFAULT_RELATED` | 20 | related count quando `--unify`/`--unify-all` sozinhos |
 | `jobs` | `min(4, len(targets))` | cli |
 | `page_load_timeout` | 10s | `build_driver` |
 | `first_thread_timeout` | 30s | `collect_comments` |
@@ -668,3 +685,9 @@ Commits: convencional (`feat(scraper): ...`), blocos pequenos, sem trailers
     falha, logada). NÃO descarte falhas silenciosamente nem mude para retorno desalinhado.
     `_scrape_url` é o seam compartilhado (driver já construído/primed) entre `scrape_video`,
     `Session` e `scrape_videos`.
+15. **`-r N` NÃO é seletor sob `--unify`**: a guarda collect-all checa só `-c`/`-t`/
+    `--transcript-only`; `-r N` apenas troca o count de related. `--unify -r 3` = c+t+3
+    related (um run real pegou o oposto). `format_unified(title, [(header, lines)])` é
+    agnóstico (seção vazia pulada) — a enumeração das seções vive em UM lugar por caminho
+    (`ScrapeResult._sections` / o trio no `run_batch`); o teste de drift trava o conteúdo
+    do unificado contra os formatadores standalone.

@@ -58,10 +58,10 @@ uv run viewlyt 'https://youtu.be/dQw4w9WgXcQ'
 uv run viewlyt --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Collects at most 50 comments and skips replies (much faster):
-uv run viewlyt --limit 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
 # Keeps up to 25 replies per comment:
-uv run viewlyt --max-replies 25 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt --limit-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
 # Writes to another directory:
 uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
@@ -74,6 +74,12 @@ uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-o
 
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.txt:
 uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
+
+# Everything in ONE file out/<slug>-<id>.unified.txt (comments + transcript + related):
+uv run viewlyt --unify 'https://youtu.be/dQw4w9WgXcQ'
+
+# Combine several videos into a single out/unified-all.txt:
+uv run viewlyt --unify-all '<url1>' '<url2>' '<url3>'
 
 # Don't merge consecutive comments from the same author (merging is the default):
 uv run viewlyt --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
@@ -94,15 +100,17 @@ uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 | `-V, --version` | — | shows the version and exits |
 | `-f, --from-file PATH` | — | file with URLs/ids (`.txt` one per line, `.csv` any column); repeatable |
 | `-j, --jobs N` | `min(4, # videos)` | number of concurrent browsers (reused instances) |
-| `--limit N` | `150` | Target number of top-level comments to collect (or all, if fewer) |
+| `--limit-comments N` | `150` | Target number of top-level comments to collect (or all, if fewer). `--limit` is a kept alias. |
 | `--max-viewports N` | `25` | Scroll budget (number of scroll-to-end steps) |
 | `--no-replies` | off | Does not expand/collect replies (faster) |
-| `--max-replies N` | `5` | Maximum replies per comment (`0` disables it) |
+| `--limit-replies N` | `5` | Maximum replies per comment (`0` disables it). `--max-replies` is a kept alias. |
 | `--no-merge-comments` | off | Does not merge consecutive top-level comments from the same author (merging is the default; `--prevent-comment-group` is an alias) |
 | `-c, --comments` | off | Collects comments (the default when no selector is given; combine with `-t` for both) |
 | `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.txt`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
 | `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.txt` (`0` = off). Without `-c` it selects related ONLY; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
+| `--unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.txt` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
+| `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.txt` (no per-video files). Mutually exclusive with `--unify`. |
 | `--headed` | off | Uses a visible browser instead of headless |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
@@ -170,6 +178,36 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
   `[4K Remaster]`) breaks the Markdown link syntactically — it's kept as-is by
   design (the text stays readable). Treat the file as plain text.
 
+## Unified output
+
+By default each product goes to its own file. To get **everything in one file**:
+
+- **`--unify`** writes a video's products into a single
+  `out/<title-slug>-<video_id>.unified.txt` (instead of the separate
+  `.txt`/`.transcript.txt`/`.related.txt`):
+
+  ```
+  # <video title>
+
+  ## Comments
+  @user [842 likes, 2026-06-04]: ...
+
+  ## Transcript
+  [0:00] ...
+
+  ## Related videos
+  1. [1.2B views. ...](https://www.youtube.com/watch?v=...)
+  ```
+
+- **`--unify-all`** combines **all** the videos of a run into a single
+  `out/unified-all.txt` (one `# title` block per video, in input order; no
+  per-video files). Mutually exclusive with `--unify`.
+
+Both **collect every product when used alone** (comments + transcript + 20
+related) — pass `-r N` to change the related count, or give explicit `-c`/`-t`
+to unify only those. Empty sections (e.g. a video with no transcript) are
+skipped, and headers are Markdown so the file renders nicely.
+
 ## Getting past YouTube/Google blocks
 
 The collector applies several layers to work on a fresh machine:
@@ -231,7 +269,7 @@ src/viewlyt/
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
-  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related (pure, tested)
+  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
 tests/test_units.py       browser-free tests for the pure functions
 ```
 
@@ -255,7 +293,9 @@ for v in r.related:                   # RelatedVideo(video_id, title, views, url
 print("\n".join(r.comment_lines()))   # same text as the CLI's .txt (merged)
 print("\n".join(r.transcript_lines()))
 print("\n".join(r.related_lines()))
+print("\n".join(r.unified_lines()))   # all products in one document (like --unify)
 r.write("out/")                       # .txt / .transcript.txt / .related.txt (non-empty only)
+r.write("out/", unify=True)           # or a single <slug>-<id>.unified.txt
 ```
 
 `scrape_video` builds and closes its own Chrome and returns a `ScrapeResult`. It
@@ -283,18 +323,22 @@ for url, r in zip(urls, results):
 with Session(headless=True) as s:
     a = s.scrape(url1)
     b = s.scrape(url2)                # same browser, no cold-start
+
+# The --unify-all equivalent: one document over many videos
+from viewlyt import join_unified
+doc = join_unified([r.unified_lines() for r in results if r])
 ```
 
 ### Pure helpers (no Selenium)
 
 The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
 `group_consecutive_comments`, `format_transcript`, `format_related`,
-`parse_relative_date`, `flatten_inline`, `slugify` — and the Selenium-backed
-building blocks (`build_driver`, `collect_comments`, `collect_related`,
-`fetch_transcript`, `extract_video_id`) are all exposed. `import viewlyt` stays
-Selenium-free until you touch a Selenium-backed name; to use only the pure
-helpers, import them straight from the leaf module:
-`from viewlyt.htmltext import html_to_text`.
+`format_unified`, `join_unified`, `parse_relative_date`, `flatten_inline`,
+`slugify` — and the Selenium-backed building blocks (`build_driver`,
+`collect_comments`, `collect_related`, `fetch_transcript`, `extract_video_id`)
+are all exposed. `import viewlyt` stays Selenium-free until you touch a
+Selenium-backed name; to use only the pure helpers, import them straight from the
+leaf module: `from viewlyt.htmltext import html_to_text`.
 
 ## Development
 
@@ -336,8 +380,8 @@ uv run --python 3.14t viewlyt '<url>'
 
 ## Notes / limitations
 
-- Top-level comments aim for the `--limit` (150 by default); replies are
-  limited by `--max-replies` (5 by default) and expanded one level (YouTube's
+- Top-level comments aim for the `--limit-comments` (150 by default); replies are
+  limited by `--limit-replies` (5 by default) and expanded one level (YouTube's
   reply threads are flat).
 - The comment dates are approximated from YouTube's relative times (see above).
 - A residential IP and a logged-in profile greatly improve reliability.
