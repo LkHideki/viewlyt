@@ -32,8 +32,12 @@ user-data-dir/
 # ---- Scraper output (contains usernames / PII — do not commit) ----
 out/
 out_test/
-*.txt
-!requirements*.txt
+# Stray product files written outside out/. These suffixes are scraper-only, so
+# committed docs (README.md, AGENTS.md, xray.md, …) are NOT caught by them.
+*.transcript.md
+*.related.md
+*.unified.md
+unified-all.md
 
 # ---- Secrets / credentials (never commit) ----
 .env

@@ -61,7 +61,7 @@ def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_p
 
     sums = _run_batch([("vidA", "idA"), ("vidB", "idB")], tmp_path)
 
-    fa = tmp_path / f"{slugify('Hello World')}-vidA.txt"
+    fa = tmp_path / f"{slugify('Hello World')}-vidA.md"
     assert fa.exists()
     expect = "\n".join(format_comment_lines(recs_a, progress=False, merge_comments=True)) + "\n"
     assert fa.read_text(encoding="utf-8") == expect
@@ -87,7 +87,7 @@ def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], []))
 
     merged = _run_batch([("vid", "id")], tmp_path, merge_comments=True)
-    body = (tmp_path / f"{slugify('T')}-vid.txt").read_text(encoding="utf-8")
+    body = (tmp_path / f"{slugify('T')}-vid.md").read_text(encoding="utf-8")
     assert "parte1 parte2" in body and merged[0]["comments"] == 1
 
     not_merged = _run_batch([("vid", "id")], tmp_path, merge_comments=False)
@@ -101,8 +101,8 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
 
     sums = _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True)
 
-    plain = tmp_path / f"{slugify('Titulo')}-vid.txt"
-    tx = tmp_path / f"{slugify('Titulo')}-vid.transcript.txt"
+    plain = tmp_path / f"{slugify('Titulo')}-vid.md"
+    tx = tmp_path / f"{slugify('Titulo')}-vid.transcript.md"
     assert not plain.exists() and tx.exists()
     assert tx.read_text(encoding="utf-8") == "\n".join(format_transcript(segs)) + "\n"
     assert sums[0]["file"] is None and sums[0]["comments"] == 0
@@ -131,12 +131,12 @@ def test_run_batch_related_writes_file(monkeypatch, tmp_path):
 
     sums = _run_batch([("vid", "id")], tmp_path, with_related=True, related_limit=5)
 
-    rf = tmp_path / f"{slugify('T')}-vid.related.txt"
+    rf = tmp_path / f"{slugify('T')}-vid.related.md"
     assert rf.exists()
     assert rf.read_text(encoding="utf-8") == "\n".join(format_related(related)) + "\n"
     assert sums[0]["with_related"] is True and sums[0]["related"] == 2
     assert sums[0]["related_file"] == str(rf)
-    assert (tmp_path / f"{slugify('T')}-vid.txt").exists()  # comments still written too
+    assert (tmp_path / f"{slugify('T')}-vid.md").exists()  # comments still written too
 
 
 def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
@@ -155,8 +155,8 @@ def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
         [("vid", "id")], tmp_path, with_comments=False, with_related=True, related_limit=3
     )
 
-    assert not (tmp_path / f"{slugify('T')}-vid.txt").exists()
-    assert (tmp_path / f"{slugify('T')}-vid.related.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.md").exists()
+    assert (tmp_path / f"{slugify('T')}-vid.related.md").exists()
     assert sums[0]["file"] is None and sums[0]["comments"] == 0
     assert sums[0]["with_related"] is True and sums[0]["related"] == 1
 
@@ -185,7 +185,7 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
         related_limit=3,
     )
 
-    uf = tmp_path / f"{slugify('T')}-vid.unified.txt"
+    uf = tmp_path / f"{slugify('T')}-vid.unified.md"
     assert uf.exists()
     # drift guard: the unified file == format_unified over the standalone formatters
     expected = format_unified(
@@ -198,9 +198,9 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
     )
     assert uf.read_text(encoding="utf-8") == "\n".join(expected) + "\n"
     # A3: the separate per-product files are NOT written
-    assert not (tmp_path / f"{slugify('T')}-vid.txt").exists()
-    assert not (tmp_path / f"{slugify('T')}-vid.transcript.txt").exists()
-    assert not (tmp_path / f"{slugify('T')}-vid.related.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.md").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.transcript.md").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.related.md").exists()
     assert sums[0]["unified_file"] == str(uf)
 
 
@@ -216,13 +216,13 @@ def test_run_batch_unify_all_global(monkeypatch, tmp_path):
         [("vidA", "idA"), ("vidB", "idB")], tmp_path, jobs=2, unify_all=True, with_comments=True
     )
 
-    gf = tmp_path / "unified-all.txt"
+    gf = tmp_path / "unified-all.md"
     assert gf.exists()
     body = gf.read_text(encoding="utf-8")
     assert body.index("# TA") < body.index("# TB")  # input order preserved
     assert "xa" in body and "xb" in body
     # A2/A3: no per-video files, only the single global one
-    assert list(tmp_path.glob("*.txt")) == [gf]
+    assert list(tmp_path.glob("*.md")) == [gf]
     # the global path is stamped on each successful summary
     assert all(s["unified_file"] == str(gf) for s in sums)
 
@@ -246,8 +246,8 @@ def test_run_batch_per_video_error_isolation(monkeypatch, tmp_path):
     by = {s["video_id"]: s for s in sums}
     assert by["vidB"]["error"] == "boom"
     assert by["vidA"]["error"] is None and by["vidC"]["error"] is None
-    assert (tmp_path / f"{slugify('A')}-vidA.txt").exists()
-    assert not list(tmp_path.glob("*-vidB.txt"))
+    assert (tmp_path / f"{slugify('A')}-vidA.md").exists()
+    assert not list(tmp_path.glob("*-vidB.md"))
 
 
 def test_run_batch_blocked_retries_headed_when_fallback_true(monkeypatch, tmp_path):
@@ -486,7 +486,7 @@ def test_main_unify_all_wiring(monkeypatch):
                 "with_comments": True,
                 "with_transcript": True,
                 "with_related": True,
-                "unified_file": "unified-all.txt",
+                "unified_file": "unified-all.md",
             },
         ),
     )
@@ -690,16 +690,16 @@ def test_scrape_result_comment_lines_and_write(monkeypatch, tmp_path):
 
     r = api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=True, related=3)
 
-    # comment_lines() reproduces the CLI .txt body byte-for-byte
+    # comment_lines() reproduces the CLI .md body byte-for-byte
     assert r.comment_lines() == format_comment_lines(recs, progress=False, merge_comments=True)
 
     # write() drops exactly the three non-empty files with the CLI's names
     written = r.write(str(tmp_path))
     slug = slugify("Meu Título")
     assert set(written) == {"comments", "transcript", "related"}
-    assert written["comments"] == tmp_path / f"{slug}-dQw4w9WgXcQ.txt"
-    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.transcript.txt").exists()
-    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.related.txt").exists()
+    assert written["comments"] == tmp_path / f"{slug}-dQw4w9WgXcQ.md"
+    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.transcript.md").exists()
+    assert (tmp_path / f"{slug}-dQw4w9WgXcQ.related.md").exists()
     assert written["comments"].read_text(encoding="utf-8") == "\n".join(r.comment_lines()) + "\n"
 
 
@@ -717,7 +717,7 @@ def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
     r = api.scrape_video("dQw4w9WgXcQ", comments=True, transcript=False, related=0)
     written = r.write(str(tmp_path))
     assert set(written) == {"comments"}  # no transcript/related files
-    assert list(tmp_path.glob("*.txt")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt"]
+    assert list(tmp_path.glob("*.md")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.md"]
 
 
 def _scrape_all_three(monkeypatch, *, title="T"):
@@ -779,14 +779,14 @@ def test_scrape_result_write_unify_replaces_separate_files(monkeypatch, tmp_path
     r = _scrape_all_three(monkeypatch, title="T")
     written = r.write(str(tmp_path), unify=True)
 
-    uf = tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.unified.txt"
+    uf = tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.unified.md"
     assert set(written) == {"unified"} and written["unified"] == uf
     assert uf.read_text(encoding="utf-8") == "\n".join(r.unified_lines()) + "\n"
     # A3: the separate per-product files are NOT written alongside the unified one
-    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.txt").exists()
-    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.transcript.txt").exists()
-    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.related.txt").exists()
-    assert list(tmp_path.glob("*.txt")) == [uf]
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.md").exists()
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.transcript.md").exists()
+    assert not (tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.related.md").exists()
+    assert list(tmp_path.glob("*.md")) == [uf]
 
 
 # --------------------------------------------------------------------------- #

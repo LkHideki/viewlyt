@@ -5,7 +5,7 @@ list video URLs/ids. Videos are processed by a bounded pool of **reused** Chrome
 instances (one driver per worker, amortising browser startup across many videos),
 so the I/O-bound work runs in parallel without spawning a browser per URL.
 
-Output per video: ``out/<title-slug>-<video_id>.txt`` — one block per top-level
+Output per video: ``out/<title-slug>-<video_id>.md`` — one block per top-level
 comment (comment + its replies), blocks separated by a blank line:
 
     @user [842 likes, 2026-06-04]: message text
@@ -61,11 +61,11 @@ log = logging.getLogger("viewlyt")
 # related needs a count, so default to this (overridable with -r N).
 _UNIFY_DEFAULT_RELATED = 20
 
-UNIFIED_ALL_FILENAME = "unified-all.txt"  # the single --unify-all output
+UNIFIED_ALL_FILENAME = "unified-all.md"  # the single --unify-all output
 
 _EXAMPLES = """\
 exemplos:
-  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # comentários -> out/<slug>-<id>.txt
+  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # comentários -> out/<slug>-<id>.md
   viewlyt -c -t '<url>'                            # comentários + transcrição
   viewlyt -t '<url>'                               # só a transcrição (mais rápido)
   viewlyt --transcript-only '<url>'                # idem (alias de -t sem -c)
@@ -272,7 +272,7 @@ def format_comment_lines(
 
 
 def _write(slug: str, video_id: str, lines: list[str], out_dir: str, suffix: str = "") -> Path:
-    out_path = Path(out_dir) / f"{slug or 'video'}-{video_id}{suffix}.txt"
+    out_path = Path(out_dir) / f"{slug or 'video'}-{video_id}{suffix}.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return out_path
@@ -308,8 +308,8 @@ def run_batch(
     recycled. Returns a summary dict per target.
 
     Output modes: by default one file per product; ``unify`` writes one
-    ``<slug>-<id>.unified.txt`` per video instead; ``unify_all`` writes a single
-    ``unified-all.txt`` combining every video (the per-video files are skipped)."""
+    ``<slug>-<id>.unified.md`` per video instead; ``unify_all`` writes a single
+    ``unified-all.md`` combining every video (the per-video files are skipped)."""
     q: Queue[tuple[str, str]] = Queue()
     for t in targets:
         q.put(t)
@@ -411,11 +411,11 @@ def run_batch(
                     else:
                         if with_comments:
                             comment_file = str(_write(slug, vid, clines, out_dir))
-                        if tlines:  # don't create a 0-byte .transcript.txt
+                        if tlines:  # don't create a 0-byte .transcript.md
                             transcript_file = str(
                                 _write(slug, vid, tlines, out_dir, suffix=".transcript")
                             )
-                        if rlines:  # don't create a 0-byte .related.txt
+                        if rlines:  # don't create a 0-byte .related.md
                             related_file = str(
                                 _write(slug, vid, rlines, out_dir, suffix=".related")
                             )
@@ -490,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="viewlyt",
         description="Scrape YouTube comments (likes, dates, replies) and optional transcript "
-        "into out/<title-slug>-<video_id>.txt. Accepts many URLs and/or .txt/.csv files.",
+        "into out/<title-slug>-<video_id>.md. Accepts many URLs and/or .txt/.csv files.",
         epilog=_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -564,7 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-t",
         "--transcript",
         action="store_true",
-        help="collect the transcript -> out/<slug>-<id>.transcript.txt (skipped if the video has "
+        help="collect the transcript -> out/<slug>-<id>.transcript.md (skipped if the video has "
         "none, e.g. many music videos). Without -c this selects the transcript ONLY; add -c for "
         "both. NOTE: this changes the old meaning of --transcript, which also kept comments.",
     )
@@ -579,7 +579,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         metavar="N",
-        help="collect the first N related videos -> out/<slug>-<id>.related.txt "
+        help="collect the first N related videos -> out/<slug>-<id>.related.md "
         "(0 = off). Without -c this selects related ONLY; combine with -c/-t. "
         "Lists 'N. [<views> views. <title>](<url>)' — the sidebar exposes views, not likes.",
     )
@@ -587,8 +587,8 @@ def build_parser() -> argparse.ArgumentParser:
     unify_group.add_argument(
         "--unify",
         action="store_true",
-        help="write all of a video's products into ONE file out/<slug>-<id>.unified.txt "
-        "(instead of separate .txt/.transcript.txt/.related.txt). Alone (no -c/-t/-r) it "
+        help="write all of a video's products into ONE file out/<slug>-<id>.unified.md "
+        "(instead of separate .md/.transcript.md/.related.md). Alone (no -c/-t/-r) it "
         f"collects everything (comments + transcript + {_UNIFY_DEFAULT_RELATED} related; "
         "override the count with -r N); with selectors it unifies only those.",
     )
@@ -617,7 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--out-dir",
         default="out",
-        help="directory for <title-slug>-<video_id>.txt (default: out)",
+        help="directory for <title-slug>-<video_id>.md (default: out)",
     )
     p.add_argument("-q", "--quiet", action="store_true", help="only log warnings/errors")
     return p

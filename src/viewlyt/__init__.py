@@ -4,8 +4,8 @@ Library quickstart::
 
     from viewlyt import scrape_video
     r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True, related=10)
-    print("\\n".join(r.comment_lines()))   # same text as the CLI's .txt
-    r.write("out/")                         # .txt / .transcript.txt / .related.txt
+    print("\\n".join(r.comment_lines()))   # same text as the CLI's .md
+    r.write("out/")                         # .md / .transcript.md / .related.md
 
 Many videos on ONE reused browser (amortises Chrome startup)::
 

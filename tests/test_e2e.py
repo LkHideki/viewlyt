@@ -41,7 +41,7 @@ def test_e2e_cli_writes_file(tmp_path):
 
     out = tmp_path / "out_test"
     rc = main(["-o", str(out), "--limit", "5", "--no-replies", "--max-replies", "0", "-q", VIDEO])
-    files = list(out.glob("*.txt"))
+    files = list(out.glob("*.md"))
     if rc != 0 or not files:
         pytest.xfail("likely bot/consent wall (no output produced)")
     assert any(f.stat().st_size > 0 for f in files)

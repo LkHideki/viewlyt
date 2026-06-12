@@ -96,7 +96,7 @@ class ScrapeResult:
 
     def comment_lines(self, *, merge: bool = True, today: date | None = None) -> list[str]:
         """Comments as the CLI-formatted text block (merged by default) — identical
-        to viewlyt's ``out/<slug>-<id>.txt`` body (see
+        to viewlyt's ``out/<slug>-<id>.md`` body (see
         :func:`viewlyt.format_comment_lines`)."""
         return format_comment_lines(self._records, today=today, merge=merge)
 
@@ -132,9 +132,9 @@ class ScrapeResult:
     def write(self, out_dir: str, *, merge: bool = True, unify: bool = False) -> dict[str, Path]:
         """Write the scraped data to ``out_dir``.
 
-        Default — one file per product, exactly like the CLI: ``<slug>-<id>.txt``
-        (comments), ``.transcript.txt``, ``.related.txt`` (only non-empty ones).
-        With ``unify=True`` — a single ``<slug>-<id>.unified.txt`` with every
+        Default — one file per product, exactly like the CLI: ``<slug>-<id>.md``
+        (comments), ``.transcript.md``, ``.related.md`` (only non-empty ones).
+        With ``unify=True`` — a single ``<slug>-<id>.unified.md`` with every
         product instead. Returns a mapping of section name (or ``"unified"``) to
         the written :class:`pathlib.Path`.
         """
@@ -146,7 +146,7 @@ class ScrapeResult:
             lines = self.unified_lines(merge=merge)
             if lines:
                 base.mkdir(parents=True, exist_ok=True)
-                path = base / f"{base_name}.unified.txt"
+                path = base / f"{base_name}.unified.md"
                 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
                 written["unified"] = path
             return written
@@ -155,7 +155,7 @@ class ScrapeResult:
             if not lines:
                 continue
             base.mkdir(parents=True, exist_ok=True)
-            path = base / f"{base_name}{suffix}.txt"
+            path = base / f"{base_name}{suffix}.md"
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             written[kind] = path
         return written
