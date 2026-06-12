@@ -3,13 +3,24 @@
 Library quickstart::
 
     from viewlyt import scrape_video
-    r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True)
+    r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True, related=10)
+    print("\\n".join(r.comment_lines()))   # same text as the CLI's .txt
+    r.write("out/")                         # .txt / .transcript.txt / .related.txt
 
-The pure, dependency-free text helpers (``html_to_text``, ``format_transcript``,
+Many videos on ONE reused browser (amortises Chrome startup)::
+
+    from viewlyt import scrape_videos, Session
+    results = scrape_videos(urls, jobs=4)            # list aligned to input order
+    with Session() as s:                             # or drive it manually
+        a, b = s.scrape(url1), s.scrape(url2)
+
+The pure, dependency-free helpers (``html_to_text``, ``format_comment_lines``,
+``format_transcript``, ``format_related``, ``group_consecutive_comments``,
 ``parse_relative_date``, ``flatten_inline``, ``slugify``) and ``__version__`` are
-importable WITHOUT pulling in Selenium — ``import viewlyt`` stays lightweight.
-The Selenium-backed names (``scrape_video``, ``build_driver``, …) are loaded
-lazily on first access (PEP 562), so they cost nothing until you use them.
+importable WITHOUT pulling in Selenium — ``import viewlyt`` stays lightweight. The
+Selenium-backed names (``scrape_video``, ``scrape_videos``, ``Session``,
+``build_driver``, …) are loaded lazily on first access (PEP 562), so they cost
+nothing until you use them.
 """
 
 from __future__ import annotations
@@ -21,8 +32,10 @@ from typing import TYPE_CHECKING
 # Pure helpers: stdlib only, safe to import eagerly (no Selenium).
 from .htmltext import (
     flatten_inline,
+    format_comment_lines,
     format_related,
     format_transcript,
+    group_consecutive_comments,
     html_to_text,
     parse_relative_date,
     slugify,
@@ -36,6 +49,8 @@ except PackageNotFoundError:  # pragma: no cover - running from a source tree w/
 # Selenium-backed names resolved lazily via __getattr__, mapped to their module.
 _LAZY = {
     "scrape_video": "api",
+    "scrape_videos": "api",
+    "Session": "api",
     "ScrapeResult": "api",
     "Comment": "api",
     "RelatedVideo": "api",
@@ -48,7 +63,7 @@ _LAZY = {
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs see the real symbols
-    from .api import Comment, RelatedVideo, ScrapeResult, scrape_video
+    from .api import Comment, RelatedVideo, ScrapeResult, Session, scrape_video, scrape_videos
     from .driver import build_driver
     from .scraper import (
         BlockedError,
@@ -75,6 +90,8 @@ def __dir__() -> list[str]:
 __all__ = [
     # high-level (lazy)
     "scrape_video",
+    "scrape_videos",
+    "Session",
     "ScrapeResult",
     "Comment",
     "RelatedVideo",
@@ -87,8 +104,10 @@ __all__ = [
     "BlockedError",
     # pure text helpers (eager)
     "html_to_text",
+    "format_comment_lines",
     "format_transcript",
     "format_related",
+    "group_consecutive_comments",
     "parse_relative_date",
     "flatten_inline",
     "slugify",

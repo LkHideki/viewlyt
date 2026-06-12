@@ -591,9 +591,12 @@ def test_lazy_import_no_selenium() -> None:
         "import sys, viewlyt\n"
         "assert 'selenium' not in sys.modules, 'selenium imported by `import viewlyt`'\n"
         "viewlyt.slugify('x'); viewlyt.html_to_text('<b>x</b>'); _ = viewlyt.__version__\n"
+        "viewlyt.format_comment_lines([]); viewlyt.group_consecutive_comments([])\n"
         "assert 'selenium' not in sys.modules, 'selenium imported by a pure helper'\n"
-        "from viewlyt import scrape_video\n"  # this one is allowed to pull selenium
-        "assert 'selenium' in sys.modules, 'scrape_video should load selenium lazily'\n"
+        # these lazy names must resolve (a typo in _LAZY only fails at access time)
+        "from viewlyt import scrape_video, scrape_videos, Session\n"
+        "assert all((scrape_video, scrape_videos, Session)), 'lazy API names must resolve'\n"
+        "assert 'selenium' in sys.modules, 'the lazy API should load selenium on access'\n"
         "print('lazy-import OK')\n"
     )
     src = str(Path(__file__).resolve().parent.parent / "src")
