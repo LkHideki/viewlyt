@@ -604,6 +604,7 @@ def test_lazy_import_no_selenium() -> None:
         "assert 'selenium' not in sys.modules, 'selenium imported by `import viewlyt`'\n"
         "viewlyt.slugify('x'); viewlyt.html_to_text('<b>x</b>'); _ = viewlyt.__version__\n"
         "viewlyt.format_comment_lines([]); viewlyt.group_consecutive_comments([])\n"
+        "viewlyt.format_unified('t', []); viewlyt.join_unified([])\n"
         "assert 'selenium' not in sys.modules, 'selenium imported by a pure helper'\n"
         # these lazy names must resolve (a typo in _LAZY only fails at access time)
         "from viewlyt import scrape_video, scrape_videos, Session\n"
