@@ -408,6 +408,16 @@ def test_flag_plumbing() -> None:
     assert p.parse_args([]).related == 0
     assert p.parse_args(["-r", "17"]).related == 17
     assert p.parse_args(["--related", "23"]).related == 23
+    # --unify / --unify-all are mutually-exclusive store_true flags
+    assert p.parse_args([]).unify is False and p.parse_args([]).unify_all is False
+    assert p.parse_args(["--unify"]).unify is True
+    assert p.parse_args(["--unify-all"]).unify_all is True
+    try:  # mutually exclusive -> argparse exits (SystemExit) if both are given
+        p.parse_args(["--unify", "--unify-all"])
+    except SystemExit:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("expected --unify/--unify-all to be mutually exclusive")
     # new defaults are wired into the parser
     d = p.parse_args([])
     assert d.limit == 150 and d.max_replies == 5

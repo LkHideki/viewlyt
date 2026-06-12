@@ -37,6 +37,8 @@ from .htmltext import (
     convert_batch,
     format_related,
     format_transcript,
+    format_unified,
+    join_unified,
     slugify,
 )
 from .htmltext import format_comment_lines as _format_comment_lines
@@ -54,6 +56,12 @@ from .scraper import (
 )
 
 log = logging.getLogger("viewlyt")
+
+# When --unify/--unify-all is given with NO product selector, collect everything;
+# related needs a count, so default to this (overridable with -r N).
+_UNIFY_DEFAULT_RELATED = 20
+
+UNIFIED_ALL_FILENAME = "unified-all.txt"  # the single --unify-all output
 
 _EXAMPLES = """\
 exemplos:
@@ -288,17 +296,27 @@ def run_batch(
     with_related: bool,
     related_limit: int,
     merge_comments: bool,
+    unify: bool,
+    unify_all: bool,
     inner_progress: bool,
     quiet: bool,
 ) -> list[dict]:
     """Process every (video_id, url) using ``jobs`` worker threads, each owning a
     reused, primed driver. Failures are isolated per-video; a poisoned session is
-    recycled. Returns a summary dict per target."""
+    recycled. Returns a summary dict per target.
+
+    Output modes: by default one file per product; ``unify`` writes one
+    ``<slug>-<id>.unified.txt`` per video instead; ``unify_all`` writes a single
+    ``unified-all.txt`` combining every video (the per-video files are skipped)."""
     q: Queue[tuple[str, str]] = Queue()
     for t in targets:
         q.put(t)
 
     summaries: list[dict] = []
+    # --unify-all: each worker stashes its per-video unified block here; the whole
+    # document is joined and written once, in input order, after the pool drains.
+    unified_blocks: dict[str, list[str]] = {}
+    ub_lock = threading.Lock()
     s_lock = threading.Lock()
     bar = tqdm(
         total=len(targets), desc="vídeos", unit="vídeo", disable=(len(targets) == 1 or quiet)
@@ -356,32 +374,49 @@ def run_batch(
                         else:
                             raise
                     slug = slugify(title)
-                    comment_file, n_top, n_lines = None, 0, 0
-                    if with_comments:
-                        lines = format_comment_lines(
+                    # Format each selected product once; reused by every output mode.
+                    clines = (
+                        format_comment_lines(
                             records, progress=inner_progress, merge_comments=merge_comments
                         )
-                        comment_file = str(_write(slug, vid, lines, out_dir))
-                        # Count rendered top-level blocks (a non-blank line that isn't an
-                        # indented reply), so the summary matches the file after merging.
-                        n_top = sum(1 for ln in lines if ln and not ln.startswith(REPLY_INDENT))
-                        n_lines = len(lines)
-                    transcript_file, n_seg = None, 0
-                    if with_transcript and transcript:
-                        tlines = format_transcript(transcript)
+                        if with_comments
+                        else []
+                    )
+                    tlines = (
+                        format_transcript(transcript) if (with_transcript and transcript) else []
+                    )
+                    rlines = format_related(related) if (with_related and related) else []
+                    # Count rendered top-level blocks (a non-blank line that isn't an
+                    # indented reply), so the summary matches the file after merging.
+                    n_top = sum(1 for ln in clines if ln and not ln.startswith(REPLY_INDENT))
+                    n_lines, n_seg, n_related = len(clines), len(tlines), len(rlines)
+
+                    comment_file = transcript_file = related_file = unified_file = None
+                    if unify or unify_all:
+                        block = format_unified(
+                            title,
+                            [
+                                ("Comments", clines),
+                                ("Transcript", tlines),
+                                ("Related videos", rlines),
+                            ],
+                        )
+                        if unify_all:
+                            with ub_lock:
+                                unified_blocks[vid] = block
+                        elif block:  # --unify: one unified file per video
+                            unified_file = str(_write(slug, vid, block, out_dir, suffix=".unified"))
+                    else:
+                        if with_comments:
+                            comment_file = str(_write(slug, vid, clines, out_dir))
                         if tlines:  # don't create a 0-byte .transcript.txt
                             transcript_file = str(
                                 _write(slug, vid, tlines, out_dir, suffix=".transcript")
                             )
-                            n_seg = len(tlines)
-                    related_file, n_related = None, 0
-                    if with_related and related:
-                        rlines = format_related(related)
                         if rlines:  # don't create a 0-byte .related.txt
                             related_file = str(
                                 _write(slug, vid, rlines, out_dir, suffix=".related")
                             )
-                            n_related = len(rlines)
                     add(
                         {
                             "url": url,
@@ -398,6 +433,7 @@ def run_batch(
                             "with_related": with_related,
                             "related_file": related_file,
                             "related": n_related,
+                            "unified_file": unified_file,
                         }
                     )
                 except Exception as exc:  # isolate this video; recycle the session
@@ -418,6 +454,22 @@ def run_batch(
     # Restore input order in the summary.
     order = {vid: i for i, (vid, _u) in enumerate(targets)}
     summaries.sort(key=lambda s: order.get(s["video_id"], 1 << 30))
+
+    # --unify-all: join every per-video block (in input order) into one file and
+    # stamp its path on each successful summary so main can report it.
+    if unify_all and unified_blocks:
+        ordered = [
+            unified_blocks[v] for v in sorted(unified_blocks, key=lambda v: order.get(v, 1 << 30))
+        ]
+        doc = join_unified(ordered)
+        if doc:
+            path = Path(out_dir) / UNIFIED_ALL_FILENAME
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(doc) + "\n", encoding="utf-8")
+            gp = str(path)
+            for s in summaries:
+                if not s.get("error"):
+                    s["unified_file"] = gp
     return summaries
 
 
@@ -522,6 +574,21 @@ def build_parser() -> argparse.ArgumentParser:
         "(0 = off). Without -c this selects related ONLY; combine with -c/-t. "
         "Lists 'N. [<views> views. <title>](<url>)' — the sidebar exposes views, not likes.",
     )
+    unify_group = p.add_mutually_exclusive_group()
+    unify_group.add_argument(
+        "--unify",
+        action="store_true",
+        help="write all of a video's products into ONE file out/<slug>-<id>.unified.txt "
+        "(instead of separate .txt/.transcript.txt/.related.txt). Alone (no -c/-t/-r) it "
+        f"collects everything (comments + transcript + {_UNIFY_DEFAULT_RELATED} related; "
+        "override the count with -r N); with selectors it unifies only those.",
+    )
+    unify_group.add_argument(
+        "--unify-all",
+        action="store_true",
+        help=f"like --unify but combine ALL videos into a single out/{UNIFIED_ALL_FILENAME} "
+        "(no per-video files). Same collect-everything-when-alone rule as --unify.",
+    )
     p.add_argument(
         "--headed",
         action="store_true",
@@ -566,6 +633,14 @@ def main(argv: list[str] | None = None) -> int:
     with_comments, with_transcript, with_related = resolve_modes(
         args.comments, args.transcript, args.transcript_only, args.related
     )
+    related_limit = args.related
+    # --unify/--unify-all alone (no product selector) collects EVERY product;
+    # related needs a count, so default it (override with -r N).
+    if (args.unify or args.unify_all) and not (
+        args.comments or args.transcript or args.transcript_only or args.related > 0
+    ):
+        with_comments = with_transcript = with_related = True
+        related_limit = _UNIFY_DEFAULT_RELATED
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
     jobs = max(1, min(jobs, len(targets)))
@@ -586,8 +661,10 @@ def main(argv: list[str] | None = None) -> int:
         with_comments=with_comments,
         with_transcript=with_transcript,
         with_related=with_related,
-        related_limit=args.related,
+        related_limit=related_limit,
         merge_comments=args.merge_comments,
+        unify=args.unify,
+        unify_all=args.unify_all,
         inner_progress=inner_progress,
         quiet=args.quiet,
     )
@@ -600,20 +677,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     for s in ok:
         parts = []
-        if s.get("with_comments"):
-            parts.append(f"{s['comments']} comments, {s['lines']} lines -> {s['file']}")
-        if s.get("with_transcript"):
-            parts.append(
-                f"transcript: {s['segments']} segments -> {s['transcript_file']}"
-                if s.get("transcript_file")
-                else "transcript: unavailable"
-            )
-        if s.get("with_related"):
-            parts.append(
-                f"related: {s['related']} videos -> {s['related_file']}"
-                if s.get("related_file")
-                else "related: unavailable"
-            )
+        if args.unify or args.unify_all:
+            counts = []
+            if s.get("with_comments"):
+                counts.append(f"{s['comments']} comments")
+            if s.get("with_transcript"):
+                counts.append(f"{s['segments']} segments")
+            if s.get("with_related"):
+                counts.append(f"{s['related']} related")
+            parts.append(f"unified ({', '.join(counts) or 'empty'}) -> {s.get('unified_file')}")
+        else:
+            if s.get("with_comments"):
+                parts.append(f"{s['comments']} comments, {s['lines']} lines -> {s['file']}")
+            if s.get("with_transcript"):
+                parts.append(
+                    f"transcript: {s['segments']} segments -> {s['transcript_file']}"
+                    if s.get("transcript_file")
+                    else "transcript: unavailable"
+                )
+            if s.get("with_related"):
+                parts.append(
+                    f"related: {s['related']} videos -> {s['related_file']}"
+                    if s.get("related_file")
+                    else "related: unavailable"
+                )
         print(f"  {_color('✓', '32')} {s['video_id']}  " + " | ".join(parts))
     for s in failed:
         print(f"  {_color('✗', '31')} {s['video_id']}  {s['error']}", file=sys.stderr)

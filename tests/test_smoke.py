@@ -28,6 +28,8 @@ def test_help_flag_smoke():
         "--transcript-only",
         "--no-merge-comments",
         "--related",
+        "--unify",
+        "--unify-all",
         "-c",
         "-t",
     ):

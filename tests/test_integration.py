@@ -38,6 +38,8 @@ def _run_batch(targets, tmp_path, **overrides):
         with_related=False,
         related_limit=0,
         merge_comments=True,
+        unify=False,
+        unify_all=False,
         inner_progress=False,
         quiet=True,
     )
@@ -157,6 +159,72 @@ def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
     assert (tmp_path / f"{slugify('T')}-vid.related.txt").exists()
     assert sums[0]["file"] is None and sums[0]["comments"] == 0
     assert sums[0]["with_related"] is True and sums[0]["related"] == 1
+
+
+def test_run_batch_unify_per_video(monkeypatch, tmp_path):
+    recs = [_c("@a", "oi", likes="5")]
+    segs = [("0:00", "ola")]
+    rel = [
+        {
+            "video_id": "aaaaaaaaaaa",
+            "title": "Rel",
+            "views": "5 views",
+            "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        }
+    ]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, segs, rel))
+
+    sums = _run_batch(
+        [("vid", "id")],
+        tmp_path,
+        unify=True,
+        with_comments=True,
+        with_transcript=True,
+        with_related=True,
+        related_limit=3,
+    )
+
+    uf = tmp_path / f"{slugify('T')}-vid.unified.txt"
+    assert uf.exists()
+    # drift guard: the unified file == format_unified over the standalone formatters
+    expected = format_unified(
+        "T",
+        [
+            ("Comments", format_comment_lines(recs, progress=False, merge_comments=True)),
+            ("Transcript", format_transcript(segs)),
+            ("Related videos", format_related(rel)),
+        ],
+    )
+    assert uf.read_text(encoding="utf-8") == "\n".join(expected) + "\n"
+    # A3: the separate per-product files are NOT written
+    assert not (tmp_path / f"{slugify('T')}-vid.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.transcript.txt").exists()
+    assert not (tmp_path / f"{slugify('T')}-vid.related.txt").exists()
+    assert sums[0]["unified_file"] == str(uf)
+
+
+def test_run_batch_unify_all_global(monkeypatch, tmp_path):
+    table = {
+        "idA": ("vidA", "TA", [_c("@a", "xa")], [], []),
+        "idB": ("vidB", "TB", [_c("@b", "xb")], [], []),
+    }
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
+
+    sums = _run_batch(
+        [("vidA", "idA"), ("vidB", "idB")], tmp_path, jobs=2, unify_all=True, with_comments=True
+    )
+
+    gf = tmp_path / "unified-all.txt"
+    assert gf.exists()
+    body = gf.read_text(encoding="utf-8")
+    assert body.index("# TA") < body.index("# TB")  # input order preserved
+    assert "xa" in body and "xb" in body
+    # A2/A3: no per-video files, only the single global one
+    assert list(tmp_path.glob("*.txt")) == [gf]
+    # the global path is stamped on each successful summary
+    assert all(s["unified_file"] == str(gf) for s in sums)
 
 
 def test_run_batch_per_video_error_isolation(monkeypatch, tmp_path):
@@ -316,6 +384,92 @@ def test_main_related_flag_wiring(monkeypatch):
     assert rc == 0
     assert cap["kw"]["with_related"] is True and cap["kw"]["related_limit"] == 5
     assert cap["kw"]["with_comments"] is False  # -r alone -> related only
+
+
+def _fake_run_batch_capturing(cap, summary_extra):
+    def fake_run_batch(targets, **kw):
+        cap["kw"] = kw
+        return [
+            {
+                "video_id": t[0],
+                "error": None,
+                "comments": 1,
+                "lines": 1,
+                "segments": 1,
+                "related": 1,
+            }
+            | summary_extra
+            for t in targets
+        ]
+
+    return fake_run_batch
+
+
+def test_main_unify_alone_collects_all(monkeypatch):
+    cap = {}
+    monkeypatch.setattr(
+        cli,
+        "run_batch",
+        _fake_run_batch_capturing(
+            cap,
+            {
+                "with_comments": True,
+                "with_transcript": True,
+                "with_related": True,
+                "unified_file": "uf",
+            },
+        ),
+    )
+    rc = cli.main(["--unify", "dQw4w9WgXcQ"])
+    assert rc == 0
+    kw = cap["kw"]
+    assert kw["unify"] is True and kw["unify_all"] is False
+    assert kw["with_comments"] and kw["with_transcript"] and kw["with_related"]
+    assert kw["related_limit"] == 20  # _UNIFY_DEFAULT_RELATED, since no -r given
+
+
+def test_main_unify_respects_explicit_selectors(monkeypatch):
+    cap = {}
+    monkeypatch.setattr(
+        cli,
+        "run_batch",
+        _fake_run_batch_capturing(
+            cap,
+            {
+                "with_comments": True,
+                "with_transcript": True,
+                "with_related": False,
+                "unified_file": "uf",
+            },
+        ),
+    )
+    rc = cli.main(["-c", "-t", "--unify", "dQw4w9WgXcQ"])
+    assert rc == 0
+    kw = cap["kw"]
+    assert kw["unify"] is True
+    assert kw["with_comments"] and kw["with_transcript"] and not kw["with_related"]
+    assert kw["related_limit"] == 0  # NOT forced when selectors are given
+
+
+def test_main_unify_all_wiring(monkeypatch):
+    cap = {}
+    monkeypatch.setattr(
+        cli,
+        "run_batch",
+        _fake_run_batch_capturing(
+            cap,
+            {
+                "with_comments": True,
+                "with_transcript": True,
+                "with_related": True,
+                "unified_file": "unified-all.txt",
+            },
+        ),
+    )
+    rc = cli.main(["--unify-all", "dQw4w9WgXcQ", "abcdefghij_"])
+    assert rc == 0
+    assert cap["kw"]["unify_all"] is True and cap["kw"]["unify"] is False
+    assert cap["kw"]["related_limit"] == 20
 
 
 def test_main_all_failed_returns_one(monkeypatch, capsys):
