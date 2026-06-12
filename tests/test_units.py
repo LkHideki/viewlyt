@@ -228,6 +228,26 @@ def test_format_comment_lines() -> None:
     print("ok: format_comment_lines")
 
 
+def test_format_comment_lines_pure_matches_cli() -> None:
+    # The pure htmltext formatter (convert_batch loop) and the CLI wrapper
+    # (_convert_all/ThreadPool) MUST produce identical output — the converter
+    # injection must not silently diverge.
+    from viewlyt.htmltext import format_comment_lines as pure_fmt
+
+    recs = [
+        _c("@joao", "Olá <b>mundo</b>", likes="842", date_raw="2 days ago"),
+        _r("@maria", "@joao", "resposta<br>linha2", date_raw="1 day ago"),
+        _c("@joao", "segunda", likes="5"),  # consecutive same author -> merge candidate
+        _c("@ana", "<b>dup</b>", likes="1"),
+        _c("@ana", "dup", likes="9"),  # exact duplicate -> dropped when merging
+    ]
+    for merge in (True, False):
+        pure = pure_fmt(list(recs), today=TODAY, merge=merge)
+        cli = format_comment_lines(list(recs), today=TODAY, progress=False, merge_comments=merge)
+        assert pure == cli, (merge, pure, cli)
+    print("ok: format_comment_lines_pure_matches_cli")
+
+
 def test_merge_two_consecutive_same_author() -> None:
     # Two consecutive comments by the same author merge into one block; the FIRST
     # comment's likes+date are kept and the texts are concatenated (br -> space).
@@ -742,6 +762,7 @@ if __name__ == "__main__":
     test_parse_relative_date()
     test_convert_batch()
     test_format_comment_lines()
+    test_format_comment_lines_pure_matches_cli()
     test_merge_two_consecutive_same_author()
     test_merge_same_author_not_consecutive()
     test_merge_different_authors()

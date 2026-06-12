@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from datetime import date, timedelta
 from html.parser import HTMLParser
 
@@ -289,3 +290,79 @@ def slugify(text: str, max_len: int = 80) -> str:
     if len(text) > max_len:
         text = text[:max_len].rstrip("-")
     return text or "video"
+
+
+REPLY_INDENT = "    ↳ "  # 4 spaces + ↳; the reply-line prefix in the comment output
+
+
+def format_comment_lines(
+    records: list[dict],
+    *,
+    today: date | None = None,
+    merge: bool = True,
+    convert: Callable[[list[str]], list[str]] | None = None,
+) -> list[str]:
+    """Render comment records as text lines grouped into blocks (a top-level
+    comment followed by its replies), with a blank line between blocks. Replies
+    are indented and name their parent.
+
+    ``records`` is the flat dict stream the scraper produces (``kind``/``author``/
+    ``html``/``likes``/``date_raw``, plus ``parent_author`` on replies). When
+    ``merge`` is true (the default) consecutive same-real-author top-level
+    comments are merged and exact duplicates dropped via
+    :func:`group_consecutive_comments`.
+
+    ``convert`` maps the list of comment HTML fragments to plain text, in order;
+    it defaults to :func:`convert_batch` (a simple in-order loop). The CLI injects
+    a batched ``ThreadPoolExecutor`` variant for its progress bar — the output is
+    byte-for-byte identical (guaranteed by a test).
+    """
+    if not records:
+        return []
+    today = today or date.today()
+    convert = convert or convert_batch
+
+    if merge:
+        records = group_consecutive_comments(records)
+
+    texts = convert([r.get("html", "") for r in records])
+
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    seen: set[str] = set()
+    for r, text in zip(records, texts, strict=True):
+        message = flatten_inline(text)
+        author = r.get("author") or "unknown"
+        likes = r.get("likes") or "0"
+        when = parse_relative_date(r.get("date_raw", ""), today) or "unknown"
+
+        if r.get("kind") == "reply":
+            if not message:
+                continue
+            parent = r.get("parent_author") or "unknown"
+            line = (
+                f"{REPLY_INDENT}(in reply to {parent}) {author} [{likes} likes, {when}]: {message}"
+            )
+            if line in seen:  # belt-and-suspenders against any repeated element
+                continue
+            seen.add(line)
+            current.append(line)
+        else:
+            # comment boundary: flush the previous block, then start a fresh one
+            if current:
+                blocks.append(current)
+            current = []
+            if not message:
+                continue
+            line = f"{author} [{likes} likes, {when}]: {message}"
+            seen.add(line)
+            current.append(line)
+    if current:
+        blocks.append(current)
+
+    out: list[str] = []
+    for i, block in enumerate(blocks):
+        if i:
+            out.append("")  # blank line separating blocks
+        out.extend(block)
+    return out
