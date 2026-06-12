@@ -206,7 +206,9 @@ By default each product goes to its own file. To get **everything in one file**:
 Both **collect every product when used alone** (comments + transcript + 20
 related) — pass `-r N` to change the related count, or give explicit `-c`/`-t`
 to unify only those. Empty sections (e.g. a video with no transcript) are
-skipped, and headers are Markdown so the file renders nicely.
+skipped, and headers are Markdown so the file renders nicely. (Like the
+related-title caveat, third-party text that begins with `#`/`##` — a comment or
+title — renders as a fake heading; treat the file as plain text.)
 
 ## Getting past YouTube/Google blocks
 
