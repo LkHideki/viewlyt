@@ -15,6 +15,7 @@ uv run viewlyt --limit 150 --max-replies 5 '<url>'
 uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.txt
 uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
 uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)
+uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.txt (views, não likes)
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
@@ -31,10 +32,11 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 ## Estrutura
 
 - `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
-  data relativa, flatten, `convert_batch`, `format_transcript`). Mantenha sem dependências: roda
-  dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
+  data relativa, flatten, `convert_batch`, `format_transcript`, `format_related`). Mantenha sem
+  dependências: roda dentro de threads/subinterpretadores, então NUNCA pode importar Selenium.
 - `src/viewlyt/driver.py` — construtor do Chrome headless com stealth.
-- `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases, transcrição.
+- `src/viewlyt/scraper.py` — parsing de URL, bypass de consentimento/bot, coleta em duas fases,
+  transcrição, vídeos relacionados (`collect_related`, da barra lateral `#secondary`).
 - `src/viewlyt/cli.py` — argparse, orquestração, pool de instâncias, conversão paralela, escrita do arquivo.
 - `src/viewlyt/api.py` — API de biblioteca (`scrape_video`/`ScrapeResult`/`Comment`); depende só de
   `driver`/`scraper`/`htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API pública.
@@ -71,6 +73,14 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
     as respostas mantidas); duplicatas exatas (mesmo autor + texto) são descartadas. É uma etapa
     pura em `htmltext.group_consecutive_comments`, aplicada em `format_comment_lines`; desative
     com `--no-merge-comments` (alias `--prevent-comment-group`).
+- **Relacionados (`-r N`):** lê a barra lateral (`#secondary`, renderer `yt-lockup-view-model` — o
+  YouTube aposentou `ytd-compact-video-renderer`; Shorts usam outra tag, então são ignorados de
+  graça). Expõe **views, não likes** (likes só na página de cada vídeo). Roda DEPOIS dos comentários
+  e ANTES da transcrição (o painel de transcrição assume o `#secondary` e cobriria os lockups).
+  `collect_related` nunca levanta (retorna `[]`, como `fetch_transcript`); `format_related` (puro)
+  gera `N. [<views>. <título>](<url>)`. O modo espelha `-t`: `-r N` sozinho = só relacionados;
+  combine com `-c`/`-t`. **Seletores nunca podem usar `class`-substring** (`[class*=…]`) — o teste
+  `test_transcript_timestamp_exact_token` proíbe em todo o `scraper.py`; use tokens exatos.
 
 ## Git / commits
 

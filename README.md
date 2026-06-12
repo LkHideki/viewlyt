@@ -72,6 +72,9 @@ uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 # Transcript only (skips the comments — much faster):
 uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-only
 
+# First 17 related (sidebar) videos -> out/<slug>-<id>.related.txt:
+uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
+
 # Don't merge consecutive comments from the same author (merging is the default):
 uv run viewlyt --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
 
@@ -99,6 +102,7 @@ uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 | `-c, --comments` | off | Collects comments (the default when no selector is given; combine with `-t` for both) |
 | `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.txt`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
+| `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.txt` (`0` = off). Without `-c` it selects related ONLY; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
 | `--headed` | off | Uses a visible browser instead of headless |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
@@ -142,6 +146,29 @@ per line**:
 - Videos **without a transcript** (many music clips) are skipped gracefully —
   the final summary shows `transcript: unavailable` and no file is created.
 - For running text without timestamps: `sed 's/^\[[^]]*\] //' file.transcript.txt`.
+
+## Related videos
+
+With `-r`/`--related N` the collector reads the watch page's secondary column
+(the "related" / "up next" sidebar) and writes the first N videos to
+`out/<title-slug>-<video_id>.related.txt` as a numbered Markdown list:
+
+```
+1. [1.2B views. Michael Jackson - Smooth Criminal (Official Video)](https://www.youtube.com/watch?v=h_D3VFfhvs4)
+2. [20M views. RickRolled by an Ad...](https://www.youtube.com/watch?v=ci6ZtPAN0PM)
+```
+
+- The metric is **views, not likes**: the sidebar only exposes a view count
+  (likes live on each video's own page). The number is YouTube's own text, kept
+  **verbatim** (e.g. `1.2B views`, or `1,2 mi de visualizações` under another
+  locale) — nothing is recomputed.
+- **Shorts are skipped** (they use a different DOM node); every line is a real
+  video with a canonical `watch?v=` URL.
+- It is **opt-in** (`0` = off). Without `-c` it collects the related list ONLY
+  (fast); combine with `-c`/`-t` to also get comments/transcript.
+- **Known limitation:** a title containing `]` (e.g. `[Official Video]`,
+  `[4K Remaster]`) breaks the Markdown link syntactically — it's kept as-is by
+  design (the text stays readable). Treat the file as plain text.
 
 ## Getting past YouTube/Google blocks
 
@@ -203,8 +230,8 @@ src/viewlyt/
   api.py                  scrape_video / ScrapeResult / Comment (use as a library)
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
-  scraper.py              URL parsing, consent bypass, two-phase collection, transcript
-  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript (pure, tested)
+  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
+  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related (pure, tested)
 tests/test_units.py       browser-free tests for the pure functions
 ```
 
@@ -215,11 +242,14 @@ Besides the CLI, you can use viewlyt as a library:
 ```python
 from viewlyt import scrape_video
 
-r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True)
+r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True, related=5)
 print(r.title)
 for c in r.top_level:            # or r.comments / r.replies
     print(c.author, c.likes, c.date, c.text)
 print("\n".join(r.transcript_lines()))
+for v in r.related:              # RelatedVideo(video_id, title, views, url)
+    print(v.views, v.title, v.url)
+print("\n".join(r.related_lines()))
 ```
 
 `scrape_video` creates and closes its own Chrome and returns a `ScrapeResult`
@@ -227,8 +257,9 @@ print("\n".join(r.transcript_lines()))
 `[(timestamp, text)]`). It raises `viewlyt.BlockedError` if it hits the bot wall
 (try `headless=False` or `user_data_dir=` of a logged-in profile). The
 low-level building blocks (`build_driver`, `collect_comments`,
-`fetch_transcript`, `extract_video_id`) and the pure helpers (`html_to_text`,
-`format_transcript`, `parse_relative_date`, `slugify`) are also exposed. To use
+`collect_related`, `fetch_transcript`, `extract_video_id`) and the pure helpers
+(`html_to_text`, `format_transcript`, `format_related`, `parse_relative_date`,
+`slugify`) are also exposed. To use
 just the pure helpers **without importing Selenium**, do
 `from viewlyt.htmltext import html_to_text`.
 
