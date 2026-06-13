@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 from importlib.metadata import PackageNotFoundError, version
 
-from .llm import LLMConfig
+from .llm import LLMConfig, provider_base_url
 from .window import WindowConfig
 
 
@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8000,
         help="Dashboard port (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--provider",
+        choices=["lmstudio", "ollama", "openai", "openrouter", "groq"],
+        default="lmstudio",
+        help="LLM provider (sets the base URL; --base-url overrides) (default: %(default)s)",
     )
     parser.add_argument(
         "--base-url",
@@ -109,9 +115,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Resolve base_url: use explicit --base-url if different from default, else use provider
+    default_base_url = "http://localhost:1234/v1"
+    resolved_base_url = (
+        args.base_url if args.base_url != default_base_url else provider_base_url(args.provider)
+    )
+
     # Build config objects
     llm_cfg = LLMConfig(
-        base_url=args.base_url,
+        base_url=resolved_base_url,
         api_key=args.api_key,
         model=args.model,
     )

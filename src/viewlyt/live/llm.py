@@ -21,6 +21,19 @@ logger = logging.getLogger("viewlyt.live")
 
 _DEFAULT_BASE_URL = "http://localhost:1234/v1"  # LM Studio's default local server
 
+PROVIDERS: dict[str, str] = {
+    "lmstudio": "http://localhost:1234/v1",
+    "ollama": "http://localhost:11434/v1",
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
+
+def provider_base_url(provider: str) -> str:
+    """Return the canonical base_url for a provider key, or _DEFAULT_BASE_URL."""
+    return PROVIDERS.get(provider, _DEFAULT_BASE_URL)
+
 
 @dataclass(slots=True)
 class LLMConfig:
@@ -77,9 +90,18 @@ class LLMClient:
 
         self.cfg = cfg
         self.model = cfg.model
-        self._client = AsyncOpenAI(
-            base_url=cfg.base_url, api_key=cfg.api_key or "x", timeout=cfg.timeout
-        )
+        kwargs: dict = {
+            "base_url": cfg.base_url,
+            "api_key": cfg.api_key or "x",
+            "timeout": cfg.timeout,
+        }
+        if "openrouter" in cfg.base_url:
+            # OpenRouter's optional headers for model-usage ranking on their leaderboard.
+            kwargs["default_headers"] = {
+                "HTTP-Referer": "https://github.com/LkHideki/viewlyt",
+                "X-Title": "viewlyt",
+            }
+        self._client = AsyncOpenAI(**kwargs)
 
     async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
         system, user = probe.build_prompt(messages)
@@ -88,21 +110,29 @@ class LLMClient:
             {"role": "user", "content": user},
         ]
         schema = probe.output_schema()
-        try:
-            # Preferred: structured output via response_format=json_schema.
-            resp = await self._client.chat.completions.create(
-                model=self.model,
-                messages=msgs,
-                temperature=0,
-                response_format={"type": "json_schema", "json_schema": schema},
-            )
-            return parse_json_loose(resp.choices[0].message.content or "")
-        except Exception:
-            # Fallback: some local models reject json_schema — ask plainly, parse loosely.
-            resp = await self._client.chat.completions.create(
-                model=self.model, messages=msgs, temperature=0
-            )
-            return parse_json_loose(resp.choices[0].message.content or "")
+        # Structured-output fallback chain: try json_schema, then json_object; if both
+        # fail (provider doesn't support them) fall through to a plain call.
+        for rf in (
+            {"type": "json_schema", "json_schema": schema},
+            {"type": "json_object"},
+        ):
+            try:
+                resp = await self._client.chat.completions.create(
+                    model=self.model,
+                    messages=msgs,
+                    temperature=0,
+                    response_format=rf,
+                )
+                return parse_json_loose(resp.choices[0].message.content or "")
+            except Exception:
+                continue
+        # Plain call — intentionally unguarded so a real failure (endpoint down /
+        # bad key / network error) propagates up to run_probes, which surfaces it
+        # in the dashboard error banner rather than silently returning {}.
+        resp = await self._client.chat.completions.create(
+            model=self.model, messages=msgs, temperature=0
+        )
+        return parse_json_loose(resp.choices[0].message.content or "")
 
 
 async def run_probes(
