@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30"]
+live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30", "cryptography>=42"]
 live-serverside = ["chat-downloader>=0.2"]
 
 [project.urls]

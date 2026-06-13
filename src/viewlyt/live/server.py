@@ -25,6 +25,7 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import persistence
 from .llm import LLMClient, LLMConfig, LLMRunner, run_probes
 from .messages import clean_chat, message_from_ingest
 from .probes import Probe, probe_from_dict
@@ -96,11 +97,27 @@ class LiveServer:
         }
 
 
+async def persist(server: LiveServer) -> None:
+    """Snapshot the server's persisted state to disk off the event loop."""
+    await asyncio.to_thread(
+        persistence.save_state,
+        server.window.to_dict(),
+        {
+            "base_url": server.llm_cfg.base_url,
+            "model": server.llm_cfg.model,
+            "api_key": server.llm_cfg.api_key,
+        },
+        [p.to_dict() for p in server.probes.values()],
+    )
+
+
 async def apply_control(server: LiveServer, data: dict) -> None:
     """Apply one control op to ``server``, then rebroadcast the new state.
 
     A malformed op is logged and swallowed so a bad frame never tears down the
-    control socket; the fresh ``state`` frame always goes out at the end.
+    control socket; the fresh ``state`` frame always goes out at the end. State-
+    changing ops (probes/window/model) are also persisted to disk before the
+    broadcast; the transient ops (pause/resume/clear) are not.
     """
     try:
         op = data.get("op")
@@ -134,6 +151,8 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.buffer = WindowBuffer()
     except Exception:
         logger.exception("control op failed: %r", data)
+    if op in {"upsert_probe", "remove_probe", "set_window", "set_model"}:
+        await persist(server)
     await server.dash.broadcast(server.state_message())
 
 
@@ -154,7 +173,9 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     probes = list(server.probes.values())
     if not probes:
         return
-    cleaned = clean_chat(window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors)
+    cleaned = clean_chat(
+        window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors
+    )
     window = cleaned[-server.window.n :]
     results = await run_probes(server.client(), probes, window)
     for r in results:
@@ -460,6 +481,32 @@ def run(
     import uvicorn
 
     server = LiveServer(llm_cfg or LLMConfig(), window or WindowConfig())
+    st = persistence.load_state()
+    if st:
+        server.window = WindowConfig.from_dict(st["window"])
+        server.buffer = WindowBuffer(maxlen=server.window.capacity)
+        m = st["model"]
+        server.llm_cfg = LLMConfig(
+            base_url=m["base_url"], api_key=m.get("api_key", ""), model=m["model"]
+        )
+        server._client = None
+        for pd in st.get("probes", []):
+            try:
+                p = probe_from_dict(pd)
+                server.probes[p.id] = p
+            except Exception:
+                logger.warning("skipping unrestorable saved probe: %r", pd, exc_info=True)
+    else:
+        # No saved state yet: seed the file with the current config.
+        persistence.save_state(
+            server.window.to_dict(),
+            {
+                "base_url": server.llm_cfg.base_url,
+                "model": server.llm_cfg.model,
+                "api_key": server.llm_cfg.api_key,
+            },
+            [p.to_dict() for p in server.probes.values()],
+        )
     app = create_app(server)
     if open_browser:
         try:
