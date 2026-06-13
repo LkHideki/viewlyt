@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gap",
         type=float,
-        default=10.0,
+        default=15.0,
         help="Refresh interval in seconds (time/hybrid modes, default: %(default)s)",
     )
     parser.add_argument(
@@ -81,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["count", "time", "hybrid"],
         default="time",
         help="Snapshot policy (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--capacity",
+        type=int,
+        default=2000,
+        help="Max messages kept in the rolling sample buffer (default: %(default)s)",
     )
     parser.add_argument(
         "--no-open",
@@ -132,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         overlap=args.overlap,
         gap=args.gap,
         mode=args.mode,
+        capacity=args.capacity,
     )
 
     # Display dashboard URL

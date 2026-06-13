@@ -23,8 +23,9 @@ from .messages import ChatMessage
 class WindowConfig:
     n: int = 40
     overlap: int = 0
-    gap: float = 10.0  # seconds; time-based refresh interval (time / hybrid)
+    gap: float = 15.0  # seconds; time-based refresh interval (time / hybrid)
     mode: str = "time"  # "count" | "time" | "hybrid"
+    capacity: int = 2000  # max messages kept in the rolling sample buffer
     dedupe: bool = True  # drop a user's near-duplicate (spam) messages
     merge_authors: bool = True  # concatenate consecutive same-author messages
 
@@ -38,6 +39,7 @@ class WindowConfig:
             "overlap": self.overlap,
             "gap": self.gap,
             "mode": self.mode,
+            "capacity": self.capacity,
             "dedupe": self.dedupe,
             "merge_authors": self.merge_authors,
         }
@@ -50,6 +52,7 @@ class WindowConfig:
             overlap=max(0, int(d.get("overlap", cur.overlap))),
             gap=max(0.0, float(d.get("gap", cur.gap))),
             mode=str(d.get("mode", cur.mode)),
+            capacity=max(100, int(d.get("capacity", cur.capacity))),
             dedupe=bool(d.get("dedupe", cur.dedupe)),
             merge_authors=bool(d.get("merge_authors", cur.merge_authors)),
         )
