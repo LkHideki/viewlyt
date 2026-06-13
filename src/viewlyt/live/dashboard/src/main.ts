@@ -16,7 +16,6 @@ interface StateMsg {
   type: "state";
   window: {
     n: number;
-    overlap: number;
     gap: number;
     mode: string;
     dedupe?: boolean;
@@ -53,8 +52,7 @@ interface ErrorMsg {
 
 interface ChatFeedMsg {
   type: "chat";
-  author: string;
-  text: string;
+  items: { author: string; text: string }[];
 }
 
 interface ProbeDescriptor {
@@ -289,18 +287,22 @@ function showError(message: string): void {
 // Live chat feed
 // ---------------------------------------------------------------------------
 
-function appendFeed(author: string, text: string): void {
+function appendFeed(items: { author: string; text: string }[]): void {
   const feed = document.getElementById("feed");
   if (!feed) return;
-  const line = document.createElement("div");
-  const a = document.createElement("span");
-  a.textContent = author + ": ";
-  a.style.fontWeight = "600";
-  a.style.color = "#4c8bf5";
-  line.appendChild(a);
-  line.appendChild(document.createTextNode(text));
-  feed.appendChild(line);
-  while (feed.childElementCount > 200 && feed.firstChild) {
+  const frag = document.createDocumentFragment();
+  for (const { author, text } of items) {
+    const line = document.createElement("div");
+    const a = document.createElement("span");
+    a.textContent = author + ": ";
+    a.style.fontWeight = "600";
+    a.style.color = "#4c8bf5";
+    line.appendChild(a);
+    line.appendChild(document.createTextNode(text));
+    frag.appendChild(line);
+  }
+  feed.appendChild(frag);
+  while (feed.childElementCount > 120 && feed.firstChild) {
     feed.removeChild(feed.firstChild);
   }
   feed.scrollTop = feed.scrollHeight;
@@ -313,7 +315,6 @@ function appendFeed(author: string, text: string): void {
 function handleState(msg: StateMsg): void {
   // Window inputs
   setInputVal("n", msg.window.n);
-  setInputVal("overlap", msg.window.overlap);
   setInputVal("gap", msg.window.gap);
   el<HTMLSelectElement>("mode").value = msg.window.mode;
   if (typeof msg.window.dedupe === "boolean")
@@ -382,7 +383,7 @@ function connectDashboard(): void {
         showError(msg.message);
         break;
       case "chat":
-        appendFeed(msg.author, msg.text);
+        appendFeed(msg.items);
         break;
     }
   };
@@ -444,7 +445,6 @@ function wireButtons(): void {
     send({
       op: "set_window",
       n: Number(inputVal("n")),
-      overlap: Number(inputVal("overlap")),
       gap: Number(inputVal("gap")),
       mode: el<HTMLSelectElement>("mode").value,
       dedupe: el<HTMLInputElement>("dedupe").checked,
@@ -535,9 +535,6 @@ async function loadSnippet(): Promise<void> {
     const r = await fetch("/snippet.js");
     const text = await r.text();
     el<HTMLTextAreaElement>("snippet").value = text;
-    // Also expose it as a draggable bookmarklet (avoids the console "allow pasting" prompt).
-    const bm = document.getElementById("bookmarklet") as HTMLAnchorElement | null;
-    if (bm) bm.href = "javascript:" + encodeURIComponent(text);
   } catch {
     el<HTMLTextAreaElement>("snippet").value =
       "// Could not load snippet.js from server.";
