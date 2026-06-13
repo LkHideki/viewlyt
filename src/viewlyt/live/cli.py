@@ -61,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-n",
         type=int,
-        default=40,
+        default=230,
         help="Window size (number of messages, default: %(default)s)",
     )
     parser.add_argument(
@@ -73,19 +73,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gap",
         type=float,
-        default=15.0,
+        default=45.0,
         help="Refresh interval in seconds (time/hybrid modes, default: %(default)s)",
     )
     parser.add_argument(
         "--mode",
         choices=["count", "time", "hybrid"],
-        default="time",
+        default="hybrid",
         help="Snapshot policy (default: %(default)s)",
     )
     parser.add_argument(
         "--capacity",
         type=int,
-        default=2000,
+        default=3000,
         help="Max messages kept in the rolling sample buffer (default: %(default)s)",
     )
     parser.add_argument(
