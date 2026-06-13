@@ -254,6 +254,8 @@ async def worker(server: LiveServer) -> None:
 
 
 SNIPPET_JS = """(function () {
+  if (window.__viewlyt_running) { console.warn("[viewlyt] already capturing on this page; ignoring a second injection."); return; }
+  window.__viewlyt_running = true;
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
   var ws, sent = 0, captured = 0, connected = false, pinger, flusher, scrollTimer, lastCapMs = 0, outbox = [];
   var badge = document.createElement("div");
@@ -312,7 +314,7 @@ MANIFEST_JSON = """{
   "version": "1.0",
   "description": "Stream a YouTube live chat to your local viewlyt server",
   "content_scripts": [
-    { "matches": ["https://www.youtube.com/live_chat*"], "js": ["content.js"], "run_at": "document_idle", "all_frames": true }
+    { "matches": ["https://www.youtube.com/live_chat*"], "js": ["content.js"], "run_at": "document_idle" }
   ]
 }"""
 
