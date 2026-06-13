@@ -8,6 +8,7 @@ is flattened to a single line.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ..htmltext import flatten_inline, html_to_text
@@ -52,3 +53,85 @@ def message_from_ingest(payload: dict) -> ChatMessage | None:
         ts=_normalize_ts(payload.get("ts")),
         id=str(payload.get("id") or ""),
     )
+
+
+# --- spam hygiene -----------------------------------------------------------
+# A user spamming a window with identical/near-identical lines (or one person
+# splitting a thought across many messages) skews the sample. We collapse that
+# the same way the VOD path does in htmltext.group_consecutive_comments: drop a
+# user's near-duplicates, then concatenate their consecutive messages.
+
+_ANON_AUTHORS = {"", "unknown"}
+_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_RUN_RE = re.compile(r"(.)\1{2,}")
+
+
+def _norm(text: str) -> str:
+    """Normalized key for near-duplicate ("semantic-lite") comparison.
+
+    Casefolds, strips punctuation/emoji separators, caps long character runs
+    ("loool" -> "lool") and collapses whitespace — enough to fold a user spamming
+    the same line in slightly different forms without an embedding model.
+    """
+    t = _PUNCT_RE.sub("", text.casefold())
+    t = _RUN_RE.sub(r"\1\1", t)
+    return " ".join(t.split())
+
+
+def drop_duplicates(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Drop spammy near-duplicates, keeping the first of each (author, normalized text).
+
+    The key is per-author (like the VOD rule), so one user repeating a line
+    collapses to one occurrence, while two different people reacting with the same
+    word both survive. Emoji-only messages (empty normalized text) are always kept.
+    Does not mutate the input.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[ChatMessage] = []
+    for m in messages:
+        norm = _norm(m.text)
+        if norm and (m.author, norm) in seen:
+            continue
+        if norm:
+            seen.add((m.author, norm))
+        out.append(m)
+    return out
+
+
+def merge_consecutive(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Concatenate consecutive messages from the same real author into one.
+
+    Keeps the first message's author/ts/id and joins texts in order with " / ".
+    Anonymous authors ("" / "unknown") are never merged — two unknowns aren't the
+    same person — matching the VOD merge. Does not mutate the input (the head of a
+    run is copied before its text grows).
+    """
+    out: list[ChatMessage] = []
+    for m in messages:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and m.author == prev.author
+            and m.author.casefold() not in _ANON_AUTHORS
+        ):
+            prev.text = f"{prev.text} / {m.text}"
+        else:
+            out.append(ChatMessage(author=m.author, text=m.text, ts=m.ts, id=m.id))
+    return out
+
+
+def clean_chat(
+    messages: list[ChatMessage], *, dedupe: bool = True, merge_authors: bool = True
+) -> list[ChatMessage]:
+    """Spam hygiene for a sampled window: drop near-duplicates, then merge author runs.
+
+    The order matches the intent: first collapse a user's repeated/identical spam,
+    then concatenate what remains from the same author so one person counts once.
+    Either step can be disabled. Pure; does not mutate the input.
+    """
+    out = messages
+    if dedupe:
+        out = drop_duplicates(out)
+    if merge_authors:
+        out = merge_consecutive(out)
+    return out

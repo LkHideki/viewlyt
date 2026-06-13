@@ -11,7 +11,13 @@ Run it with the ``viewlyt-live`` console script — see ``how-to.md`` at the rep
 
 from __future__ import annotations
 
-from .messages import ChatMessage, message_from_ingest
+from .messages import (
+    ChatMessage,
+    clean_chat,
+    drop_duplicates,
+    merge_consecutive,
+    message_from_ingest,
+)
 from .probes import (
     PROBE_REGISTRY,
     ClassificationProbe,
@@ -25,6 +31,9 @@ from .window import WindowBuffer, WindowConfig
 __all__ = [
     "ChatMessage",
     "message_from_ingest",
+    "clean_chat",
+    "drop_duplicates",
+    "merge_consecutive",
     "WindowBuffer",
     "WindowConfig",
     "Probe",
