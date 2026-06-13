@@ -149,6 +149,16 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.paused = False
         elif op == "clear":
             server.buffer = WindowBuffer()
+        elif op == "reset_state":
+            server.probes.clear()
+            server.window = WindowConfig()
+            server.llm_cfg = LLMConfig()
+            server.buffer = WindowBuffer(maxlen=server.window.capacity)
+            server._client = None
+            try:
+                persistence.STATE_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
     except Exception:
         logger.exception("control op failed: %r", data)
     if op in {"upsert_probe", "remove_probe", "set_window", "set_model"}:

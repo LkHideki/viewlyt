@@ -106,11 +106,13 @@ class ClassificationProbe(Probe):
         question: str,
         categories: list[str],
         ema_alpha: float = 0.0,
+        chart: str = "bars",
     ) -> None:
         super().__init__(id, label)
         self.question = question
         self.categories = [c.strip() for c in categories if c.strip()]
         self.ema_alpha = float(ema_alpha)
+        self.chart = str(chart) if chart else "bars"
         self._ema: dict[str, float] | None = None
 
     def build_prompt(self, messages: list[ChatMessage]) -> tuple[str, str]:
@@ -189,6 +191,7 @@ class ClassificationProbe(Probe):
             question=self.question,
             categories=self.categories,
             ema_alpha=self.ema_alpha,
+            chart=self.chart,
         )
         return d
 
@@ -208,6 +211,7 @@ class ClassificationProbe(Probe):
             question=question,
             categories=list(d.get("categories") or []),
             ema_alpha=float(d.get("ema_alpha") or 0.0),
+            chart=str(d.get("chart") or "bars"),
         )
 
 
