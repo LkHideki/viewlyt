@@ -251,7 +251,7 @@ async def worker(server: LiveServer) -> None:
 
 SNIPPET_JS = """(function () {
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, outbox = [];
+  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, scrollTimer, outbox = [];
   var badge = document.createElement("div");
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
@@ -272,10 +272,12 @@ SNIPPET_JS = """(function () {
   function handle(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (m && m.innerHTML) emit(node); else setTimeout(function () { emit(node); }, 0); }
   function backfill(root) { var ex = root.querySelectorAll("yt-live-chat-text-message-renderer, yt-live-chat-paid-message-renderer, yt-live-chat-membership-item-renderer"); for (var j = Math.max(0, ex.length - 50); j < ex.length; j++) emit(ex[j]); }
   function diag() { if (captured > 0) return; var it = locate(); var here = document.querySelectorAll("yt-live-chat-text-message-renderer").length; var cd = chatDoc(); var inFrame = cd ? cd.querySelectorAll("yt-live-chat-text-message-renderer").length : -1; console.warn("[viewlyt] captured 0. items=" + (it ? it.tagName + " children=" + it.childElementCount : "NULL") + " | renderers_here=" + here + " | renderers_in_chat_iframe=" + inFrame + " | location=" + location.pathname + " -- If renderers>0 but captured 0, send this line to the dev. If all 0/NULL, this page has no live chat: open the POPOUT (live_chat?is_popout=1) of a CURRENTLY-LIVE stream."); paint("captured 0 - open console for diagnostics", "#7f1d1d"); }
-  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout (live_chat?is_popout=1)", "#7f1d1d"); console.warn("[viewlyt] live chat not found on this page. Open the chat POPOUT and run this there (console or bookmarklet)."); setTimeout(diag, 1000); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); console.log("[viewlyt] attached to chat; backfilled " + captured + " existing messages"); status(); setTimeout(diag, 4000); setTimeout(diag, 12000); }
+  function stickBottom(doc) { try { var sc = doc.querySelector("#item-scroller"); if (!sc) { var it = doc.querySelector("yt-live-chat-item-list-renderer #items"); sc = it && it.parentElement; } if (sc) sc.scrollTop = sc.scrollHeight + 99999; } catch (e) {} }
+  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout (live_chat?is_popout=1)", "#7f1d1d"); console.warn("[viewlyt] live chat not found on this page. Open the chat POPOUT and run this there (console or bookmarklet)."); setTimeout(diag, 1000); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); var d = items.ownerDocument || document; if (scrollTimer) clearInterval(scrollTimer); scrollTimer = setInterval(function () { stickBottom(d); }, 3000); stickBottom(d); console.log("[viewlyt] attached to chat; backfilled " + captured + " existing messages"); status(); setTimeout(diag, 4000); setTimeout(diag, 12000); }
   connect();
   flusher = setInterval(flush, 500);
-  attach(locate());
+  var tries = 0;
+  (function waitForChat() { var it = locate(); if (it) { attach(it); } else if (++tries > 60) { attach(null); } else { setTimeout(waitForChat, 1000); } })();
 })();"""
 
 
@@ -306,7 +308,7 @@ MANIFEST_JSON = """{
   "version": "1.0",
   "description": "Stream a YouTube live chat to your local viewlyt server",
   "content_scripts": [
-    { "matches": ["https://www.youtube.com/live_chat*"], "js": ["content.js"], "run_at": "document_idle" }
+    { "matches": ["https://www.youtube.com/live_chat*"], "js": ["content.js"], "run_at": "document_idle", "all_frames": true }
   ]
 }"""
 
