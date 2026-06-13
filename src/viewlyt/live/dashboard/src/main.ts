@@ -63,6 +63,7 @@ interface StateMsg {
   model: { base_url: string; model: string };
   paused: boolean;
   ingested: number;
+  latency_ms?: number | null;
   probes: ProbeDescriptor[];
 }
 
@@ -84,6 +85,12 @@ interface StatMsg {
   window: number;
 }
 
+interface ProcMsg {
+  type: "proc";
+  active: boolean;
+  latency_ms?: number;
+}
+
 interface ErrorMsg {
   type: "error";
   message: string;
@@ -103,7 +110,7 @@ interface ProbeDescriptor {
   instruction?: string;
 }
 
-type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg | ChatFeedMsg;
+type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg | ChatFeedMsg | ProcMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -428,6 +435,17 @@ function appendFeed(items: { author: string; text: string }[]): void {
 // State message handler
 // ---------------------------------------------------------------------------
 
+function setProc(active: boolean, latencyMs?: number | null): void {
+  const e = el<HTMLSpanElement>("proc");
+  if (active) {
+    e.textContent = "analyzing…";
+    e.style.color = "#fbbf24";
+  } else {
+    e.textContent = latencyMs != null ? `${latencyMs} ms` : "idle";
+    e.style.color = "";
+  }
+}
+
 function handleState(msg: StateMsg): void {
   // Window inputs
   setInputVal("n", msg.window.n);
@@ -456,6 +474,7 @@ function handleState(msg: StateMsg): void {
 
   // Stats
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
+  setProc(false, msg.latency_ms);
 
   // Probes
   probeState.clear();
@@ -511,6 +530,9 @@ function connectDashboard(): void {
         break;
       case "chat":
         appendFeed(msg.items);
+        break;
+      case "proc":
+        setProc(msg.active, msg.latency_ms);
         break;
     }
   };

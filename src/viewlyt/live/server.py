@@ -70,6 +70,7 @@ class LiveServer:
         self.probes: dict[str, Probe] = {}
         self.paused = False
         self.processing = False
+        self.last_latency_ms: int | None = None
         self.ingested = 0
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
@@ -90,6 +91,7 @@ class LiveServer:
             "model": self.llm_cfg.to_public_dict(),
             "paused": self.paused,
             "ingested": self.ingested,
+            "latency_ms": self.last_latency_ms,
             "probes": [p.to_dict() for p in self.probes.values()],
         }
 
@@ -174,11 +176,21 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
 
 
 async def _run_window(server: LiveServer, window: list, now_wall: float) -> None:
-    """Run one snapshot through the probes, always clearing the ``processing`` guard."""
+    """Run one snapshot through the probes, always clearing the ``processing`` guard.
+
+    Brackets the analysis with ``proc`` frames so the dashboard can show a live
+    'analyzing…' indicator and the latency of the last batch.
+    """
+    await server.dash.broadcast({"type": "proc", "active": True})
+    t0 = time.monotonic()
     try:
         await process_window(server, window, now_wall)
     finally:
         server.processing = False
+        server.last_latency_ms = round((time.monotonic() - t0) * 1000)
+        await server.dash.broadcast(
+            {"type": "proc", "active": False, "latency_ms": server.last_latency_ms}
+        )
 
 
 async def worker(server: LiveServer) -> None:
