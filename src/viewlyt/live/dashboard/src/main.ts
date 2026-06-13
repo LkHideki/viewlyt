@@ -1037,6 +1037,13 @@ function updateProbeFieldVisibility(): void {
 
 let probeCounter = 0;
 
+// ---------------------------------------------------------------------------
+// Ask-bar kind state
+// ---------------------------------------------------------------------------
+
+type AskKind = "open" | "classify";
+let askKind: AskKind = "open";
+
 function labelToId(label: string): string {
   const slug = label
     .toLowerCase()
@@ -1159,6 +1166,98 @@ function wireButtons(): void {
     renderProbes();
     el<HTMLTextAreaElement>("probe-json").value = "";
     statusEl.textContent = added > 0 ? `Imported ${added} probe(s).` : "No probes found.";
+  });
+
+  // ---- Ask-bar ----
+
+  function setAskKind(kind: AskKind): void {
+    askKind = kind;
+    el<HTMLButtonElement>("ask-open").classList.toggle("ask-chip-active", kind === "open");
+    el<HTMLButtonElement>("ask-classify").classList.toggle("ask-chip-active", kind === "classify");
+    const catsEl = el<HTMLInputElement>("ask-categories");
+    if (kind === "classify") {
+      catsEl.classList.remove("hidden");
+    } else {
+      catsEl.classList.add("hidden");
+    }
+  }
+
+  el("ask-open").addEventListener("click", () => setAskKind("open"));
+  el("ask-classify").addEventListener("click", () => setAskKind("classify"));
+
+  function submitAskBar(): void {
+    const text = el<HTMLInputElement>("ask-text").value.trim();
+    if (!text) return;
+
+    const id = `probe-${++probeCounter}`;
+    let probe: ProbeDescriptor;
+
+    if (askKind === "classify") {
+      const cats = el<HTMLInputElement>("ask-categories").value
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      probe = { kind: "classification", id, label: "", question: text, categories: cats };
+    } else {
+      probe = { kind: "open", id, label: "", instruction: text };
+    }
+
+    send({ op: "upsert_probe", probe });
+    probeState.set(id, probe);
+    renderProbes();
+
+    el<HTMLInputElement>("ask-text").value = "";
+    el<HTMLInputElement>("ask-categories").value = "";
+  }
+
+  el("ask-send").addEventListener("click", submitAskBar);
+
+  el<HTMLInputElement>("ask-text").addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submitAskBar();
+    }
+  });
+
+  // ---- JSON batch file upload ----
+
+  el<HTMLInputElement>("probe-json-file").addEventListener("change", (e: Event) => {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev: ProgressEvent<FileReader>) => {
+      const text = ev.target?.result;
+      if (typeof text === "string") {
+        el<HTMLTextAreaElement>("probe-json").value = text;
+        el<HTMLButtonElement>("import-json").click();
+      }
+    };
+    reader.readAsText(file);
+    // Reset file input so the same file can be re-uploaded if needed.
+    input.value = "";
+  });
+
+  // ---- Reset button ----
+
+  el("reset-state").addEventListener("click", () => {
+    if (
+      window.confirm("Forget the saved setup (probes, model, window) and reset to defaults?")
+    ) {
+      send({ op: "reset_state" });
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith("viewlyt.")) keysToRemove.push(k);
+        }
+        for (const k of keysToRemove) {
+          localStorage.removeItem(k);
+        }
+      } catch {
+        // Storage may be unavailable; ignore.
+      }
+    }
   });
 
   el("probe-kind").addEventListener("change", updateProbeFieldVisibility);

@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-Crsk8Ohj.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BVt55flS.css">
+    <script type="module" crossorigin src="./assets/index-BRhpWs-n.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DP8HHdB-.css">
   </head>
   <body>
     <header>
@@ -28,6 +28,17 @@
           <span class="stat-label">LLM</span>
           <span id="proc" class="stat-value">idle</span>
         </div>
+      </section>
+
+      <!-- Quick ask-bar — always-visible probe composer -->
+      <section class="ask-bar">
+        <div class="ask-chips">
+          <button type="button" id="ask-open" class="ask-chip ask-chip-active">Open</button>
+          <button type="button" id="ask-classify" class="ask-chip">Classify</button>
+        </div>
+        <input type="text" id="ask-text" placeholder="Ask the audience… e.g. How are they feeling?" autocomplete="off" />
+        <input type="text" id="ask-categories" class="hidden" placeholder="categories (CSV) — for Classify" autocomplete="off" />
+        <button type="button" id="ask-send" class="btn-primary ask-send-btn">Add</button>
       </section>
 
       <!-- Live results — the visual star, always visible at the top.
@@ -122,6 +133,9 @@
               <div class="button-row">
                 <button id="apply-model" class="btn-primary">Apply</button>
               </div>
+              <div class="button-row reset-row">
+                <button id="reset-state" class="btn-danger btn-small">Reset / forget saved</button>
+              </div>
             </section>
           </div>
         </div>
@@ -169,7 +183,25 @@
             <!-- Bulk import via JSON -->
             <div class="field-group" style="margin-top:0.75rem">
               <label for="probe-json">Import JSON <span class="hint">(array or single object; missing label/kind are filled in)</span></label>
-              <textarea id="probe-json" rows="3" placeholder='[{"kind":"classification","question":"...","categories":["a","b"]},{"kind":"open","instruction":"..."}]'></textarea>
+              <pre class="schema">Array of probe objects — each one of:
+
+open:
+  { "kind": "open", "instruction": "Summarize the main themes.", "label"?: "Themes", "max_words"?: 60 }
+
+classification:
+  { "kind": "classification", "question": "What is the overall sentiment?",
+    "categories": ["positive", "negative", "neutral"],
+    "label"?: "Sentiment", "chart"?: "bars|stacked|donut|lines|delta" }
+
+Notes:
+  • "label" is optional — auto-generated from the text when omitted.
+  • "kind" defaults to "open" when omitted.
+  • "chart" applies only to classification probes.</pre>
+              <div class="field-group" style="margin-top:0.5rem">
+                <label for="probe-json-file">Upload JSON file</label>
+                <input type="file" id="probe-json-file" accept=".json,application/json" />
+              </div>
+              <textarea id="probe-json" rows="3" placeholder="paste or upload a JSON array of probes"></textarea>
             </div>
             <div class="button-row">
               <button id="import-json" class="btn-secondary">Import JSON</button>
