@@ -173,12 +173,13 @@ async def worker(server: LiveServer) -> None:
     iteration is guarded so a transient failure (e.g. the LLM endpoint) self-heals
     instead of killing the loop.
     """
-    last_stat = 0.0
+    pending: list[dict] = []
+    last_flush = 0.0
     last_ingested = -1
     while True:
         try:
             try:
-                msg = await asyncio.wait_for(server.queue.get(), timeout=1.0)
+                msg = await asyncio.wait_for(server.queue.get(), timeout=0.5)
                 got = True
             except TimeoutError:
                 got = False
@@ -186,21 +187,30 @@ async def worker(server: LiveServer) -> None:
                 server.ingested += 1
                 server.buffer.add(msg)
                 # Mirror every message to the dashboard so the bridge is visibly working,
-                # independent of windowing or the LLM.
-                await server.dash.broadcast(
-                    {"type": "chat", "author": msg.author, "text": msg.text}
-                )
+                # independent of windowing or the LLM — but batched (flushed below) so the
+                # dashboard gets at most ~2 feed frames per second regardless of chat speed.
+                pending.append({"author": msg.author, "text": msg.text})
+                if len(pending) > 300:
+                    pending = pending[-300:]
             if server.paused:
                 continue
             now = time.monotonic()
             if server.buffer.due(server.window, now):
                 w = server.buffer.emit(server.window, now)
                 await process_window(server, w, time.time())
-                last_stat, last_ingested = now, server.ingested
-            elif now - last_stat >= 0.25 and server.ingested != last_ingested:
-                # Settle the counters in real time (and after a burst, once the chat quiets).
-                await broadcast_stat(server)
-                last_stat, last_ingested = now, server.ingested
+                if pending:
+                    await server.dash.broadcast({"type": "chat", "items": pending})
+                    pending = []
+                last_flush, last_ingested = now, server.ingested
+            elif now - last_flush >= 0.5:
+                # Flush the batched feed + settle the counters at most twice a second.
+                if pending:
+                    await server.dash.broadcast({"type": "chat", "items": pending})
+                    pending = []
+                if server.ingested != last_ingested:
+                    await broadcast_stat(server)
+                    last_ingested = server.ingested
+                last_flush = now
         except Exception:
             logger.exception("worker iteration failed")
             continue
@@ -208,7 +218,7 @@ async def worker(server: LiveServer) -> None:
 
 SNIPPET_JS = """(function () {
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, queue = [], sent = 0, captured = 0, connected = false, pinger;
+  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, outbox = [];
   var badge = document.createElement("div");
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
@@ -216,11 +226,12 @@ SNIPPET_JS = """(function () {
   function status() { paint("connected | captured " + captured + " | sent " + sent, "#14532d"); }
   function connect() {
     try { ws = new WebSocket(WS_URL); } catch (e) { paint("cannot open socket", "#7f1d1d"); return; }
-    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); while (queue.length && ws.readyState === 1) { ws.send(queue.shift()); sent++; } status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
+    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
     ws.onclose = function () { connected = false; if (pinger) clearInterval(pinger); paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
     ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + WS_URL + " failed. Usual causes: (1) accept Chrome's one-time 'local network' permission; (2) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
   }
-  function send(obj) { var s = JSON.stringify(obj); if (ws && ws.readyState === 1) { ws.send(s); sent++; } else { queue.push(s); if (queue.length > 2000) queue.shift(); } if (connected) status(); }
+  function send(obj) { outbox.push(obj); if (outbox.length > 3000) outbox.shift(); }
+  function flush() { if (!outbox.length || !ws || ws.readyState !== 1) return; var n = outbox.length; ws.send(JSON.stringify(outbox.splice(0, n))); sent += n; if (connected) status(); }
   function findItems(doc) { try { return doc.querySelector("yt-live-chat-item-list-renderer #items") || doc.querySelector("yt-live-chat-renderer #items") || doc.querySelector("#chat #items") || null; } catch (e) { return null; } }
   function chatDoc() { try { var f = document.querySelector("iframe#chatframe, iframe[src*='live_chat']"); if (f && f.contentDocument) return f.contentDocument; } catch (e) {} return null; }
   function locate() { var it = findItems(document); if (it) return it; var cd = chatDoc(); return cd ? findItems(cd) : null; }
@@ -230,6 +241,7 @@ SNIPPET_JS = """(function () {
   function diag() { if (captured > 0) return; var it = locate(); var here = document.querySelectorAll("yt-live-chat-text-message-renderer").length; var cd = chatDoc(); var inFrame = cd ? cd.querySelectorAll("yt-live-chat-text-message-renderer").length : -1; console.warn("[viewlyt] captured 0. items=" + (it ? it.tagName + " children=" + it.childElementCount : "NULL") + " | renderers_here=" + here + " | renderers_in_chat_iframe=" + inFrame + " | location=" + location.pathname + " -- If renderers>0 but captured 0, send this line to the dev. If all 0/NULL, this page has no live chat: open the POPOUT (live_chat?is_popout=1) of a CURRENTLY-LIVE stream."); paint("captured 0 - open console for diagnostics", "#7f1d1d"); }
   function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout (live_chat?is_popout=1)", "#7f1d1d"); console.warn("[viewlyt] live chat not found on this page. Open the chat POPOUT and run this there (console or bookmarklet)."); setTimeout(diag, 1000); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); console.log("[viewlyt] attached to chat; backfilled " + captured + " existing messages"); status(); setTimeout(diag, 4000); setTimeout(diag, 12000); }
   connect();
+  flusher = setInterval(flush, 500);
   attach(locate());
 })();"""
 
@@ -237,6 +249,22 @@ SNIPPET_JS = """(function () {
 def render_snippet(host: str, port: int) -> str:
     """Bind the snippet template to a concrete ``host``/``port``."""
     return SNIPPET_JS.replace("%HOST%", host).replace("%PORT%", str(port))
+
+
+def render_userscript(host: str, port: int) -> str:
+    """Wrap the snippet in a Tampermonkey/Violentmonkey metadata block (reliable injection)."""
+    meta = (
+        "// ==UserScript==\n"
+        "// @name         viewlyt capture\n"
+        "// @namespace    viewlyt.live\n"
+        "// @version      1.0\n"
+        "// @description  Stream this YouTube live chat to your local viewlyt server\n"
+        "// @match        https://www.youtube.com/live_chat*\n"
+        "// @grant        none\n"
+        "// @run-at       document-idle\n"
+        "// ==/UserScript==\n"
+    )
+    return meta + "\n" + render_snippet(host, port)
 
 
 _NOT_BUILT_HTML = """<!doctype html>
@@ -284,6 +312,12 @@ def create_app(server: LiveServer) -> FastAPI:
         port = request.url.port or 8000
         return Response(render_snippet(host, port), media_type="application/javascript")
 
+    @app.get("/viewlyt.user.js")
+    async def viewlyt_user_js(request: Request) -> Response:
+        host = request.url.hostname or "127.0.0.1"
+        port = request.url.port or 8000
+        return Response(render_userscript(host, port), media_type="application/javascript")
+
     @app.get("/")
     async def index() -> HTMLResponse:
         page = STATIC_DIR / "index.html"
@@ -301,12 +335,14 @@ def create_app(server: LiveServer) -> FastAPI:
                     data = json.loads(raw)
                 except Exception:
                     continue  # skip one malformed frame instead of tearing down the bridge
-                m = message_from_ingest(data)
-                if m is not None:
-                    try:
-                        server.queue.put_nowait(m)
-                    except asyncio.QueueFull:
-                        pass
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    m = message_from_ingest(item)
+                    if m is not None:
+                        try:
+                            server.queue.put_nowait(m)
+                        except asyncio.QueueFull:
+                            pass
         except WebSocketDisconnect:
             return
         except Exception:
