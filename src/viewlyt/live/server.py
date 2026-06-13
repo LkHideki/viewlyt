@@ -12,10 +12,12 @@ the pure modules. No Selenium anywhere.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import time
 import webbrowser
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -67,8 +69,9 @@ class LiveServer:
         self.window = window
         self.probes: dict[str, Probe] = {}
         self.paused = False
+        self.processing = False
         self.ingested = 0
-        self.buffer = WindowBuffer()
+        self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
         self._client: LLMRunner | None = None
@@ -105,11 +108,15 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         elif op == "remove_probe":
             server.probes.pop(str(data.get("id")), None)
         elif op == "set_window":
+            old_capacity = server.window.capacity
             merge = dict(server.window.to_dict())
-            for k in ("n", "overlap", "gap", "mode", "dedupe", "merge_authors"):
+            for k in ("n", "overlap", "gap", "mode", "capacity", "dedupe", "merge_authors"):
                 if k in data:
                     merge[k] = data[k]
             server.window = WindowConfig.from_dict(merge)
+            if server.window.capacity != old_capacity:
+                # Capacity changed: a fresh rolling buffer with the new maxlen.
+                server.buffer = WindowBuffer(maxlen=server.window.capacity)
         elif op == "set_model":
             server.llm_cfg = LLMConfig(
                 base_url=data.get("base_url") or server.llm_cfg.base_url,
@@ -166,9 +173,20 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     await broadcast_stat(server, len(window))
 
 
+async def _run_window(server: LiveServer, window: list, now_wall: float) -> None:
+    """Run one snapshot through the probes, always clearing the ``processing`` guard."""
+    try:
+        await process_window(server, window, now_wall)
+    finally:
+        server.processing = False
+
+
 async def worker(server: LiveServer) -> None:
     """Forever: drain the queue, feed the buffer, and emit snapshots when due.
 
+    The LLM call is fired off as a background task (guarded by ``server.processing``
+    so at most one probe batch runs at a time), so the drain/flush loop keeps mirroring
+    the feed and settling the counters every ~0.25s even while an analysis is in flight.
     Window timing uses the monotonic clock; result timestamps use wall time. Each
     iteration is guarded so a transient failure (e.g. the LLM endpoint) self-heals
     instead of killing the loop.
@@ -179,7 +197,7 @@ async def worker(server: LiveServer) -> None:
     while True:
         try:
             try:
-                msg = await asyncio.wait_for(server.queue.get(), timeout=0.5)
+                msg = await asyncio.wait_for(server.queue.get(), timeout=0.25)
                 got = True
             except TimeoutError:
                 got = False
@@ -188,22 +206,25 @@ async def worker(server: LiveServer) -> None:
                 server.buffer.add(msg)
                 # Mirror every message to the dashboard so the bridge is visibly working,
                 # independent of windowing or the LLM — but batched (flushed below) so the
-                # dashboard gets at most ~2 feed frames per second regardless of chat speed.
+                # dashboard gets at most ~4 feed frames per second regardless of chat speed.
                 pending.append({"author": msg.author, "text": msg.text})
-                if len(pending) > 300:
-                    pending = pending[-300:]
-            if server.paused:
-                continue
+                if len(pending) > 5000:
+                    # Safety bound only; normal operation flushes every 0.25s, never near this.
+                    pending = pending[-5000:]
+                now = time.monotonic()
+                if (
+                    not server.paused
+                    and not server.processing
+                    and server.buffer.due(server.window, now)
+                ):
+                    w = server.buffer.emit(server.window, now)
+                    server.processing = True
+                    # NON-BLOCKING: the LLM call runs in the background so the loop keeps
+                    # draining the queue and flushing the feed while it works.
+                    asyncio.create_task(_run_window(server, w, time.time()))
             now = time.monotonic()
-            if server.buffer.due(server.window, now):
-                w = server.buffer.emit(server.window, now)
-                await process_window(server, w, time.time())
-                if pending:
-                    await server.dash.broadcast({"type": "chat", "items": pending})
-                    pending = []
-                last_flush, last_ingested = now, server.ingested
-            elif now - last_flush >= 0.5:
-                # Flush the batched feed + settle the counters at most twice a second.
+            if now - last_flush >= 0.25:
+                # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:
                     await server.dash.broadcast({"type": "chat", "items": pending})
                     pending = []
@@ -267,6 +288,26 @@ def render_userscript(host: str, port: int) -> str:
     return meta + "\n" + render_snippet(host, port)
 
 
+MANIFEST_JSON = """{
+  "manifest_version": 3,
+  "name": "viewlyt capture",
+  "version": "1.0",
+  "description": "Stream a YouTube live chat to your local viewlyt server",
+  "content_scripts": [
+    { "matches": ["https://www.youtube.com/live_chat*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}"""
+
+
+def build_extension_zip(host: str, port: int) -> bytes:
+    """Pack the MV3 extension (manifest + content.js) into an in-memory zip."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", MANIFEST_JSON)
+        zf.writestr("content.js", render_snippet(host, port))
+    return buf.getvalue()
+
+
 _NOT_BUILT_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>viewlyt.live</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; line-height: 1.5;">
@@ -317,6 +358,16 @@ def create_app(server: LiveServer) -> FastAPI:
         host = request.url.hostname or "127.0.0.1"
         port = request.url.port or 8000
         return Response(render_userscript(host, port), media_type="application/javascript")
+
+    @app.get("/viewlyt-extension.zip")
+    async def viewlyt_extension_zip(request: Request) -> Response:
+        host = request.url.hostname or "127.0.0.1"
+        port = request.url.port or 8000
+        return Response(
+            build_extension_zip(host, port),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="viewlyt-extension.zip"'},
+        )
 
     @app.get("/")
     async def index() -> HTMLResponse:
