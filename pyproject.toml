@@ -36,6 +36,10 @@ dependencies = [
     "tqdm>=4.66.3",  # >=4.66.3 clears CVE-2024-34062 (we use only the progress API)
 ]
 
+[project.optional-dependencies]
+live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30"]
+live-serverside = ["chat-downloader>=0.2"]
+
 [project.urls]
 Homepage = "https://github.com/LkHideki/viewlyt"
 Repository = "https://github.com/LkHideki/viewlyt"
@@ -43,6 +47,7 @@ Issues = "https://github.com/LkHideki/viewlyt/issues"
 
 [project.scripts]
 viewlyt = "viewlyt.cli:main"
+viewlyt-live = "viewlyt.live.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -50,6 +55,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/viewlyt"]
+exclude = ["src/viewlyt/live/dashboard/node_modules", "src/viewlyt/live/dashboard/dist"]
 
 [dependency-groups]
 dev = [
