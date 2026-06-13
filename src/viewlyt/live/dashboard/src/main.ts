@@ -653,9 +653,20 @@ function upsertResultCard(msg: ResultMsg): void {
         opt.textContent = t;
         select.appendChild(opt);
       }
-      select.value = chartType.get(msg.probe_id) ?? "bars";
+      // Initialise chart type: prefer the in-memory map, then localStorage, then default.
+      if (!chartType.has(msg.probe_id)) {
+        const stored = lsGet("viewlyt.chart." + msg.probe_id);
+        const initial: ChartType =
+          stored !== null && (CHART_TYPES as readonly string[]).includes(stored)
+            ? (stored as ChartType)
+            : "bars";
+        chartType.set(msg.probe_id, initial);
+      }
+      select.value = chartType.get(msg.probe_id)!;
       select.addEventListener("change", () => {
-        chartType.set(msg.probe_id, select.value as ChartType);
+        const chosen = select.value as ChartType;
+        chartType.set(msg.probe_id, chosen);
+        lsSet("viewlyt.chart." + msg.probe_id, chosen);
         const latest = lastClassResult.get(msg.probe_id);
         const bodyEl = cardEl.querySelector<HTMLDivElement>(".class-body");
         if (latest && bodyEl) {
@@ -1103,6 +1114,26 @@ async function loadSnippet(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// localStorage helpers (guarded against restricted contexts)
+// ---------------------------------------------------------------------------
+
+function lsGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function lsSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Ignore — storage may be disabled (private mode, sandboxed iframe, etc.)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Collapsible group wiring
 // ---------------------------------------------------------------------------
 
@@ -1111,9 +1142,27 @@ function wireGroups(): void {
   headers.forEach((btn) => {
     const group = btn.closest<HTMLElement>(".group");
     if (!group) return;
-    // All groups start expanded — no class needed; just wire the toggle.
+
+    // Restore collapsed state from localStorage when the group has an id.
+    if (group.id) {
+      const stored = lsGet("viewlyt.collapsed." + group.id);
+      if (stored === "1") {
+        group.classList.add("collapsed");
+      } else {
+        // Explicitly remove in case the class was set in HTML — default is expanded.
+        group.classList.remove("collapsed");
+      }
+    }
+
     btn.addEventListener("click", () => {
       group.classList.toggle("collapsed");
+      // Persist the new state when the group has an id.
+      if (group.id) {
+        lsSet(
+          "viewlyt.collapsed." + group.id,
+          group.classList.contains("collapsed") ? "1" : "0",
+        );
+      }
     });
   });
 }
