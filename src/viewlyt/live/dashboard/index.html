@@ -137,6 +137,15 @@
           <div class="button-row">
             <button id="add-probe" class="btn-primary">Add Probe</button>
           </div>
+          <!-- Bulk import via JSON -->
+          <div class="field-group" style="margin-top:0.75rem">
+            <label for="probe-json">Import JSON <span class="hint">(array or single object; missing label/kind are filled in)</span></label>
+            <textarea id="probe-json" rows="3" placeholder='[{"kind":"classification","question":"...","categories":["a","b"]},{"kind":"open","instruction":"..."}]'></textarea>
+          </div>
+          <div class="button-row">
+            <button id="import-json" class="btn-secondary">Import JSON</button>
+            <span id="import-json-status" class="hint"></span>
+          </div>
         </section>
       </div>
 

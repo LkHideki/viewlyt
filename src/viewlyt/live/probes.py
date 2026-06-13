@@ -49,6 +49,18 @@ class ProbeResult:
         return d
 
 
+def _auto_label(text: str) -> str:
+    """Derive a short human label from a prompt string.
+
+    Collapses whitespace, takes the first ~6 words, caps at ~40 chars,
+    strips trailing punctuation/colons. Returns 'probe' if nothing usable remains.
+    """
+    text = " ".join(text.split())[:40]
+    words = text.split()[:6]
+    label = " ".join(words).rstrip(":.!?,;")
+    return label.strip() or "probe"
+
+
 def _numbered(messages: list[ChatMessage]) -> str:
     return "\n".join(f"{i}. {m.text}" for i, m in enumerate(messages, 1))
 
@@ -182,10 +194,18 @@ class ClassificationProbe(Probe):
 
     @classmethod
     def from_dict(cls, d: dict) -> ClassificationProbe:
+        question = str(d.get("question") or "")
+        label = str(d.get("label") or "").strip()
+        if not label:
+            if question:
+                label = _auto_label(question)
+            else:
+                categories = list(d.get("categories") or [])
+                label = _auto_label(", ".join(categories)) if categories else str(d["id"])
         return cls(
             id=str(d["id"]),
-            label=str(d.get("label") or d["id"]),
-            question=str(d.get("question") or ""),
+            label=label,
+            question=question,
             categories=list(d.get("categories") or []),
             ema_alpha=float(d.get("ema_alpha") or 0.0),
         )
@@ -242,10 +262,14 @@ class OpenSummaryProbe(Probe):
 
     @classmethod
     def from_dict(cls, d: dict) -> OpenSummaryProbe:
+        instruction = str(d.get("instruction") or "")
+        label = str(d.get("label") or "").strip()
+        if not label:
+            label = _auto_label(instruction) if instruction else str(d["id"])
         return cls(
             id=str(d["id"]),
-            label=str(d.get("label") or d["id"]),
-            instruction=str(d.get("instruction") or ""),
+            label=label,
+            instruction=instruction,
             max_words=int(d.get("max_words") or 60),
         )
 

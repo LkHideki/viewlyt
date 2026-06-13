@@ -324,6 +324,29 @@ const HISTORY_MAX = 20;
 const SPARK_MAX = 24;
 const classificationHistory = new Map<string, Map<string, number[]>>();
 
+// ---------------------------------------------------------------------------
+// Per-probe chart type + latest result (so a card can re-render on type change)
+// ---------------------------------------------------------------------------
+
+type ChartType = "bars" | "stacked" | "donut" | "lines";
+const CHART_TYPES: ChartType[] = ["bars", "stacked", "donut", "lines"];
+const chartType = new Map<string, ChartType>();
+const lastClassResult = new Map<string, ResultMsg>();
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Create a namespaced SVG element with the given attributes. */
+function svg<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string | number>,
+): SVGElementTagNameMap[K] {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    node.setAttribute(k, String(v));
+  }
+  return node;
+}
+
 /** Map a 0–100 value to one of the 8 unicode block characters. */
 function sparkline(values: number[]): string {
   const blocks = "▁▂▃▄▅▆▇█";
@@ -351,20 +374,48 @@ function pushSparkValue(probeId: string, category: string, pct: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// Classification card body builder (update-in-place)
+// Classification card body builder (update-in-place, multiple chart types)
 // ---------------------------------------------------------------------------
 
-function buildClassificationBody(msg: ResultMsg): HTMLElement {
-  const probeHist = classificationHistory.get(msg.probe_id);
-  const body = document.createElement("div");
-  body.className = "entry-body";
+/** Clamp a percentage into the 0–100 range. */
+function clampPct(pct: number): number {
+  return Math.max(0, Math.min(100, pct));
+}
 
-  if (!msg.pct) return body;
+/** Shared color-swatch legend used by the stacked / donut / lines charts. */
+function buildLegend(entries: [string, number][]): HTMLElement {
+  const legend = document.createElement("div");
+  legend.className = "legend";
+  entries.forEach(([cat, pct], i) => {
+    const item = document.createElement("div");
+    item.className = "legend-item";
 
+    const swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.backgroundColor = getCategoryColor(i);
+
+    const name = document.createElement("span");
+    name.textContent = cat;
+
+    const pctEl = document.createElement("span");
+    pctEl.className = "legend-pct";
+    pctEl.textContent = `${pct.toFixed(1)}%`;
+
+    item.appendChild(swatch);
+    item.appendChild(name);
+    item.appendChild(pctEl);
+    legend.appendChild(item);
+  });
+  return legend;
+}
+
+/** Default: horizontal % bars + per-category sparkline. */
+function renderBars(entries: [string, number][], probeId: string): HTMLElement {
+  const probeHist = classificationHistory.get(probeId);
   const barsEl = document.createElement("div");
   barsEl.className = "bars";
 
-  Object.entries(msg.pct).forEach(([cat, pct], i) => {
+  entries.forEach(([cat, pct], i) => {
     const row = document.createElement("div");
     row.className = "bar-row";
 
@@ -377,7 +428,7 @@ function buildClassificationBody(msg: ResultMsg): HTMLElement {
 
     const fill = document.createElement("div");
     fill.className = "bar-fill";
-    fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    fill.style.width = `${clampPct(pct)}%`;
     fill.style.backgroundColor = getCategoryColor(i);
 
     const pctLabel = document.createElement("span");
@@ -397,7 +448,145 @@ function buildClassificationBody(msg: ResultMsg): HTMLElement {
     barsEl.appendChild(row);
   });
 
-  body.appendChild(barsEl);
+  return barsEl;
+}
+
+/** Single full-width bar split into colored segments + legend. */
+function renderStacked(entries: [string, number][]): HTMLElement {
+  const wrap = document.createElement("div");
+
+  const bar = document.createElement("div");
+  bar.className = "stacked-bar";
+  entries.forEach(([cat, pct], i) => {
+    const seg = document.createElement("div");
+    seg.className = "stacked-seg";
+    seg.style.flexBasis = `${clampPct(pct)}%`;
+    seg.style.backgroundColor = getCategoryColor(i);
+    seg.title = `${cat}: ${pct.toFixed(1)}%`;
+    bar.appendChild(seg);
+  });
+
+  wrap.appendChild(bar);
+  wrap.appendChild(buildLegend(entries));
+  return wrap;
+}
+
+/** Inline SVG donut — one arc per category, sized to its pct, + legend. */
+function renderDonut(entries: [string, number][]): HTMLElement {
+  const wrap = document.createElement("div");
+
+  const size = 140;
+  const cx = size / 2;
+  const cy = size / 2;
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+
+  const root = svg("svg", {
+    class: "chart-svg chart-donut",
+    viewBox: `0 0 ${size} ${size}`,
+    role: "img",
+  });
+
+  const total = entries.reduce((acc, [, pct]) => acc + Math.max(0, pct), 0);
+  let offset = 0;
+  if (total > 0) {
+    entries.forEach(([, pct], i) => {
+      const frac = Math.max(0, pct) / total;
+      const dash = frac * circumference;
+      const seg = svg("circle", {
+        cx,
+        cy,
+        r: radius,
+        fill: "none",
+        stroke: getCategoryColor(i),
+        "stroke-width": 18,
+        "stroke-dasharray": `${dash} ${circumference - dash}`,
+        // Start at 12 o'clock and walk clockwise from the running offset.
+        "stroke-dashoffset": -offset,
+        transform: `rotate(-90 ${cx} ${cy})`,
+      });
+      root.appendChild(seg);
+      offset += dash;
+    });
+  }
+
+  wrap.appendChild(root);
+  wrap.appendChild(buildLegend(entries));
+  return wrap;
+}
+
+/** Inline SVG multi-line chart over classificationHistory + legend. */
+function renderLines(entries: [string, number][], probeId: string): HTMLElement {
+  const wrap = document.createElement("div");
+
+  const width = 320;
+  const height = 120;
+  const padX = 4;
+  const padY = 6;
+  const probeHist = classificationHistory.get(probeId);
+
+  const root = svg("svg", {
+    class: "chart-svg chart-lines",
+    viewBox: `0 0 ${width} ${height}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+
+  // Faint baseline at y = 0%.
+  root.appendChild(
+    svg("line", {
+      class: "chart-baseline",
+      x1: padX,
+      y1: height - padY,
+      x2: width - padX,
+      y2: height - padY,
+    }),
+  );
+
+  const plotW = width - 2 * padX;
+  const plotH = height - 2 * padY;
+  const xFor = (idx: number, len: number): number =>
+    len <= 1 ? padX + plotW : padX + (idx / (len - 1)) * plotW;
+  const yFor = (pct: number): number => padY + (1 - clampPct(pct) / 100) * plotH;
+
+  entries.forEach(([cat], i) => {
+    const series = probeHist?.get(cat) ?? [];
+    if (series.length === 0) return;
+    const pts = series
+      .map((v, idx) => `${xFor(idx, series.length).toFixed(1)},${yFor(v).toFixed(1)}`)
+      .join(" ");
+    root.appendChild(
+      svg("polyline", { class: "chart-line", stroke: getCategoryColor(i), points: pts }),
+    );
+  });
+
+  wrap.appendChild(root);
+  wrap.appendChild(buildLegend(entries));
+  return wrap;
+}
+
+function buildClassificationBody(msg: ResultMsg): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "entry-body";
+
+  if (!msg.pct) return body;
+  const entries = Object.entries(msg.pct);
+  const type = chartType.get(msg.probe_id) ?? "bars";
+
+  switch (type) {
+    case "stacked":
+      body.appendChild(renderStacked(entries));
+      break;
+    case "donut":
+      body.appendChild(renderDonut(entries));
+      break;
+    case "lines":
+      body.appendChild(renderLines(entries, msg.probe_id));
+      break;
+    default:
+      body.appendChild(renderBars(entries, msg.probe_id));
+      break;
+  }
   return body;
 }
 
@@ -436,6 +625,7 @@ function upsertResultCard(msg: ResultMsg): void {
 
   if (!card) {
     card = document.createElement("div");
+    const cardEl = card; // stable non-null ref for closures below
     card.className = "result-card";
     card.dataset["probeId"] = msg.probe_id;
 
@@ -449,7 +639,37 @@ function upsertResultCard(msg: ResultMsg): void {
     const metaEl = document.createElement("span");
     metaEl.className = "result-meta";
     header.appendChild(labelEl);
-    header.appendChild(metaEl);
+
+    if (msg.kind === "classification") {
+      // Classification header carries a chart-type selector beside the meta.
+      const right = document.createElement("div");
+      right.className = "result-header-right";
+
+      const select = document.createElement("select");
+      select.className = "chart-select";
+      for (const t of CHART_TYPES) {
+        const opt = document.createElement("option");
+        opt.value = t;
+        opt.textContent = t;
+        select.appendChild(opt);
+      }
+      select.value = chartType.get(msg.probe_id) ?? "bars";
+      select.addEventListener("change", () => {
+        chartType.set(msg.probe_id, select.value as ChartType);
+        const latest = lastClassResult.get(msg.probe_id);
+        const bodyEl = cardEl.querySelector<HTMLDivElement>(".class-body");
+        if (latest && bodyEl) {
+          bodyEl.innerHTML = "";
+          bodyEl.appendChild(buildClassificationBody(latest));
+        }
+      });
+
+      right.appendChild(select);
+      right.appendChild(metaEl);
+      header.appendChild(right);
+    } else {
+      header.appendChild(metaEl);
+    }
     card.appendChild(header);
 
     if (msg.kind === "classification") {
@@ -480,6 +700,8 @@ function upsertResultCard(msg: ResultMsg): void {
         pushSparkValue(msg.probe_id, cat, pct);
       }
     }
+    // Remember the latest result so a chart-type change can re-render.
+    lastClassResult.set(msg.probe_id, msg);
     // Replace the classification body in place.
     const bodyEl = card.querySelector<HTMLDivElement>(".class-body");
     if (bodyEl) {
@@ -747,11 +969,9 @@ function wireButtons(): void {
 
   el("add-probe").addEventListener("click", () => {
     const kind = el<HTMLSelectElement>("probe-kind").value;
+    // Label is optional: slug it when present, else generate a counter id.
+    // The server auto-generates a label from the prompt when it is empty.
     const label = inputVal("probe-label");
-    if (!label) {
-      el<HTMLInputElement>("probe-label").focus();
-      return;
-    }
     const id = labelToId(label);
 
     let probe: Record<string, unknown>;
@@ -787,6 +1007,44 @@ function wireButtons(): void {
     setInputVal("probe-question", "");
     setInputVal("probe-categories", "");
     setInputVal("probe-instruction", "");
+  });
+
+  el("import-json").addEventListener("click", () => {
+    const statusEl = el<HTMLSpanElement>("import-json-status");
+    const raw = el<HTMLTextAreaElement>("probe-json").value.trim();
+    if (!raw) {
+      statusEl.textContent = "Paste some JSON first.";
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      statusEl.textContent =
+        "Invalid JSON: " + (err instanceof Error ? err.message : "parse error");
+      return;
+    }
+
+    // Accept a single object or an array of probe objects.
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    let added = 0;
+    for (const item of items) {
+      if (typeof item !== "object" || item === null) continue;
+      const probe = item as Record<string, unknown>;
+      if (typeof probe["kind"] !== "string") probe["kind"] = "open";
+      if (typeof probe["id"] !== "string" || probe["id"] === "") {
+        const lbl = typeof probe["label"] === "string" ? probe["label"] : "";
+        probe["id"] = labelToId(lbl);
+      }
+      send({ op: "upsert_probe", probe });
+      probeState.set(probe["id"] as string, probe as unknown as ProbeDescriptor);
+      added += 1;
+    }
+
+    renderProbes();
+    el<HTMLTextAreaElement>("probe-json").value = "";
+    statusEl.textContent = added > 0 ? `Imported ${added} probe(s).` : "No probes found.";
   });
 
   el("probe-kind").addEventListener("change", updateProbeFieldVisibility);
