@@ -37,9 +37,9 @@ def provider_base_url(provider: str) -> str:
 
 @dataclass(slots=True)
 class LLMConfig:
-    base_url: str = _DEFAULT_BASE_URL
-    api_key: str = "lm-studio"  # local servers ignore it; just needs to be non-empty
-    model: str = "local-model"  # the id loaded in LM Studio, or a cloud model name
+    base_url: str = "https://openrouter.ai/api/v1"
+    api_key: str = ""  # empty by default; provide via --api-key or OPENROUTER_API_KEY env var
+    model: str = "google/gemini-3.1-flash-lite"  # OpenRouter model (or override with --model)
     timeout: float = 60.0
 
     def to_public_dict(self) -> dict:

@@ -40,22 +40,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         choices=["lmstudio", "ollama", "openai", "openrouter", "groq"],
-        default="lmstudio",
+        default="openrouter",
         help="LLM provider (sets the base URL; --base-url overrides) (default: %(default)s)",
     )
     parser.add_argument(
         "--base-url",
         default="http://localhost:1234/v1",
-        help="LLM base URL (default: %(default)s)",
+        help="LLM base URL (default: sentinel for provider-based resolution)",
     )
     parser.add_argument(
         "--api-key",
-        default="lm-studio",
-        help="LLM API key (default: %(default)s)",
+        default="",
+        help="LLM API key (default: empty; required for cloud providers)",
     )
     parser.add_argument(
         "--model",
-        default="local-model",
+        default="google/gemini-3.1-flash-lite",
         help="LLM model name (default: %(default)s)",
     )
     parser.add_argument(
