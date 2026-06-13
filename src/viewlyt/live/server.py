@@ -127,6 +127,18 @@ async def apply_control(server: LiveServer, data: dict) -> None:
     await server.dash.broadcast(server.state_message())
 
 
+async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
+    """Push the live counters to every dashboard — called in real time as messages arrive."""
+    await server.dash.broadcast(
+        {
+            "type": "stat",
+            "ingested": server.ingested,
+            "buffer": len(server.buffer),
+            "window": window_n,
+        }
+    )
+
+
 async def process_window(server: LiveServer, window: list, now_wall: float) -> None:
     """Run all probes over one snapshot and broadcast each result plus a stat frame."""
     probes = list(server.probes.values())
@@ -139,14 +151,18 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     for r in results:
         r.ts = now_wall
         await server.dash.broadcast(r.to_dict())
-    await server.dash.broadcast(
-        {
-            "type": "stat",
-            "ingested": server.ingested,
-            "buffer": len(server.buffer),
-            "window": len(window),
-        }
-    )
+    if not results:
+        # Every probe errored — almost always the LLM endpoint is unreachable.
+        await server.dash.broadcast(
+            {
+                "type": "error",
+                "message": (
+                    "All probes failed for this batch — is the LLM reachable at "
+                    f"{server.llm_cfg.base_url} (model '{server.llm_cfg.model}')? Check the server log."
+                ),
+            }
+        )
+    await broadcast_stat(server, len(window))
 
 
 async def worker(server: LiveServer) -> None:
@@ -156,6 +172,7 @@ async def worker(server: LiveServer) -> None:
     iteration is guarded so a transient failure (e.g. the LLM endpoint) self-heals
     instead of killing the loop.
     """
+    last_stat = 0.0
     while True:
         try:
             try:
@@ -172,6 +189,12 @@ async def worker(server: LiveServer) -> None:
             if server.buffer.due(server.window, now):
                 w = server.buffer.emit(server.window, now)
                 await process_window(server, w, time.time())
+                last_stat = now
+            elif got and now - last_stat >= 0.25:
+                # Real-time feedback so the dashboard's counters climb as messages arrive,
+                # not only once a whole window is processed.
+                await broadcast_stat(server)
+                last_stat = now
         except Exception:
             logger.exception("worker iteration failed")
             continue
@@ -195,7 +218,8 @@ SNIPPET_JS = """(function () {
   function findItems(doc) { return doc.querySelector("yt-live-chat-item-list-renderer #items") || doc.querySelector("#items"); }
   function emit(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (!m || !m.innerHTML) return; var a = node.querySelector("#author-name"); captured++; send({ type: "msg", author: a ? a.textContent.trim() : "", html: m.innerHTML, ts: Date.now() }); }
   function handle(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (m && m.innerHTML) emit(node); else setTimeout(function () { emit(node); }, 0); }
-  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout", "#7f1d1d"); console.warn("[viewlyt] chat #items not found. Open the chat POPOUT (live_chat?is_popout=1) and run this in ITS console, or use the bookmarklet."); return; } new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); paint("observing... connecting", "#1e3a8a"); }
+  function backfill(items) { var ex = items.querySelectorAll("yt-live-chat-text-message-renderer, yt-live-chat-paid-message-renderer"); for (var j = Math.max(0, ex.length - 50); j < ex.length; j++) emit(ex[j]); }
+  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout", "#7f1d1d"); console.warn("[viewlyt] chat #items not found. Open the chat POPOUT (live_chat?is_popout=1) and run this in ITS console, or use the bookmarklet."); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); console.log("[viewlyt] attached; backfilled " + captured + " existing messages"); status(); }
   connect();
   var items = findItems(document);
   if (!items) { try { var f = document.querySelector("#chatframe"); if (f && f.contentDocument) items = findItems(f.contentDocument); } catch (e) {} }

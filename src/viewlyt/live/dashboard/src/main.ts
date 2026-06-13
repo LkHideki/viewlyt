@@ -46,6 +46,11 @@ interface StatMsg {
   window: number;
 }
 
+interface ErrorMsg {
+  type: "error";
+  message: string;
+}
+
 interface ProbeDescriptor {
   id: string;
   kind: string;
@@ -55,7 +60,7 @@ interface ProbeDescriptor {
   instruction?: string;
 }
 
-type InboundMsg = StateMsg | ResultMsg | StatMsg;
+type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -256,6 +261,25 @@ function upsertResultCard(msg: ResultMsg): void {
 }
 
 // ---------------------------------------------------------------------------
+// Error banner
+// ---------------------------------------------------------------------------
+
+function showError(message: string): void {
+  const container = el<HTMLDivElement>("results");
+  const hint = container.querySelector(".empty-hint");
+  if (hint) hint.remove();
+  let card = container.querySelector<HTMLDivElement>('[data-error="1"]');
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "result-card";
+    card.dataset["error"] = "1";
+    card.style.borderLeft = "3px solid #ea4335";
+    container.prepend(card);
+  }
+  card.textContent = "⚠ " + message;
+}
+
+// ---------------------------------------------------------------------------
 // State message handler
 // ---------------------------------------------------------------------------
 
@@ -326,6 +350,9 @@ function connectDashboard(): void {
       case "stat":
         el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
         el<HTMLSpanElement>("buffer").textContent = String(msg.buffer);
+        break;
+      case "error":
+        showError(msg.message);
         break;
     }
   };
