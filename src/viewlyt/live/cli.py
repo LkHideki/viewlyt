@@ -55,25 +55,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-n",
         type=int,
-        default=80,
+        default=40,
         help="Window size (number of messages, default: %(default)s)",
     )
     parser.add_argument(
         "--overlap",
         type=int,
-        default=20,
+        default=0,
         help="Window overlap (default: %(default)s)",
     )
     parser.add_argument(
         "--gap",
         type=float,
-        default=15.0,
-        help="Time gap for snapshot (seconds, default: %(default)s)",
+        default=10.0,
+        help="Refresh interval in seconds (time/hybrid modes, default: %(default)s)",
     )
     parser.add_argument(
         "--mode",
         choices=["count", "time", "hybrid"],
-        default="count",
+        default="time",
         help="Snapshot policy (default: %(default)s)",
     )
     parser.add_argument(

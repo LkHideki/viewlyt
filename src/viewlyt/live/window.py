@@ -21,10 +21,10 @@ from .messages import ChatMessage
 
 @dataclass(slots=True)
 class WindowConfig:
-    n: int = 80
-    overlap: int = 20
-    gap: float = 15.0  # seconds (time / hybrid)
-    mode: str = "count"  # "count" | "time" | "hybrid"
+    n: int = 40
+    overlap: int = 0
+    gap: float = 10.0  # seconds; time-based refresh interval (time / hybrid)
+    mode: str = "time"  # "count" | "time" | "hybrid"
     dedupe: bool = True  # drop a user's near-duplicate (spam) messages
     merge_authors: bool = True  # concatenate consecutive same-author messages
 
