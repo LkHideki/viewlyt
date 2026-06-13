@@ -49,6 +49,14 @@
               <option value="hybrid">hybrid</option>
             </select>
           </div>
+          <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
+            <input type="checkbox" id="dedupe" checked />
+            <label for="dedupe" style="margin:0">Drop spam duplicates</label>
+          </div>
+          <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
+            <input type="checkbox" id="merge_authors" checked />
+            <label for="merge_authors" style="margin:0">Merge same author</label>
+          </div>
           <div class="button-row">
             <button id="apply-window" class="btn-primary">Apply</button>
             <button id="pause" class="btn-secondary">Pause</button>
@@ -133,11 +141,25 @@
 
       <!-- Console snippet -->
       <section class="panel full-width snippet-section">
-        <h2>Chat Popout Snippet</h2>
+        <h2>Capture the chat</h2>
         <p class="hint">
-          Open the YouTube live chat popout in a separate tab, open the browser
-          DevTools console, paste the snippet below, and press Enter. It will
-          forward chat messages to this dashboard automatically.
+          Open the live chat <strong>popout</strong>
+          (<code>youtube.com/live_chat?is_popout=1&amp;v=&hellip;</code>) in its
+          own window, then start the capture there with <em>one</em> of the two
+          methods below. A small <strong>viewlyt</strong> badge appears in the
+          popout showing connected / captured / sent counts.
+        </p>
+        <p class="hint">
+          <strong>Easiest &mdash; bookmarklet (no "allow pasting"):</strong> drag
+          this to your bookmarks bar, then click it while on the popout tab:
+          <a id="bookmarklet" href="#" draggable="true"
+             style="display:inline-block;padding:2px 10px;margin-left:6px;border-radius:6px;background:#1e3a8a;color:#fff;text-decoration:none;font-weight:600;cursor:grab"
+             >&#9654; viewlyt capture</a>
+        </p>
+        <p class="hint">
+          <strong>Or paste in the console:</strong> on the popout, open DevTools
+          (F12) &rarr; Console, paste the snippet below, press Enter. If Chrome
+          blocks the paste, type <code>allow pasting</code> there first.
         </p>
         <textarea id="snippet" readonly rows="6" spellcheck="false"></textarea>
         <div class="button-row">

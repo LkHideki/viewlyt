@@ -14,7 +14,14 @@ const wsBase =
 
 interface StateMsg {
   type: "state";
-  window: { n: number; overlap: number; gap: number; mode: string };
+  window: {
+    n: number;
+    overlap: number;
+    gap: number;
+    mode: string;
+    dedupe?: boolean;
+    merge_authors?: boolean;
+  };
   model: { base_url: string; model: string };
   paused: boolean;
   ingested: number;
@@ -258,6 +265,10 @@ function handleState(msg: StateMsg): void {
   setInputVal("overlap", msg.window.overlap);
   setInputVal("gap", msg.window.gap);
   el<HTMLSelectElement>("mode").value = msg.window.mode;
+  if (typeof msg.window.dedupe === "boolean")
+    el<HTMLInputElement>("dedupe").checked = msg.window.dedupe;
+  if (typeof msg.window.merge_authors === "boolean")
+    el<HTMLInputElement>("merge_authors").checked = msg.window.merge_authors;
 
   // Model inputs
   setInputVal("base_url", msg.model.base_url);
@@ -379,6 +390,8 @@ function wireButtons(): void {
       overlap: Number(inputVal("overlap")),
       gap: Number(inputVal("gap")),
       mode: el<HTMLSelectElement>("mode").value,
+      dedupe: el<HTMLInputElement>("dedupe").checked,
+      merge_authors: el<HTMLInputElement>("merge_authors").checked,
     });
   });
 
@@ -465,6 +478,9 @@ async function loadSnippet(): Promise<void> {
     const r = await fetch("/snippet.js");
     const text = await r.text();
     el<HTMLTextAreaElement>("snippet").value = text;
+    // Also expose it as a draggable bookmarklet (avoids the console "allow pasting" prompt).
+    const bm = document.getElementById("bookmarklet") as HTMLAnchorElement | null;
+    if (bm) bm.href = "javascript:" + encodeURIComponent(text);
   } catch {
     el<HTMLTextAreaElement>("snippet").value =
       "// Could not load snippet.js from server.";

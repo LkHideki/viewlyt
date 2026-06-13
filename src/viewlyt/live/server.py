@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from .llm import LLMClient, LLMConfig, LLMRunner, run_probes
-from .messages import message_from_ingest
+from .messages import clean_chat, message_from_ingest
 from .probes import Probe, probe_from_dict
 from .window import WindowBuffer, WindowConfig
 
@@ -105,7 +105,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.probes.pop(str(data.get("id")), None)
         elif op == "set_window":
             merge = dict(server.window.to_dict())
-            for k in ("n", "overlap", "gap", "mode"):
+            for k in ("n", "overlap", "gap", "mode", "dedupe", "merge_authors"):
                 if k in data:
                     merge[k] = data[k]
             server.window = WindowConfig.from_dict(merge)
@@ -132,6 +132,9 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     probes = list(server.probes.values())
     if not probes:
         return
+    window = clean_chat(
+        window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors
+    )
     results = await run_probes(server.client(), probes, window)
     for r in results:
         r.ts = now_wall
@@ -176,17 +179,23 @@ async def worker(server: LiveServer) -> None:
 
 SNIPPET_JS = """(function () {
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, queue = [];
+  var ws, queue = [], sent = 0, captured = 0, connected = false;
+  var badge = document.createElement("div");
+  badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
+  function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
+  (document.body || document.documentElement).appendChild(badge);
+  function status() { paint("connected | captured " + captured + " | sent " + sent, "#14532d"); }
   function connect() {
-    try { ws = new WebSocket(WS_URL); } catch (e) { console.warn("[viewlyt] ws failed", e); return; }
-    ws.onopen = function () { console.log("[viewlyt] connected", WS_URL); while (queue.length && ws.readyState === 1) ws.send(queue.shift()); };
-    ws.onclose = function () { console.log("[viewlyt] disconnected; retrying in 2s"); setTimeout(connect, 2000); };
-    ws.onerror = function () { console.warn("[viewlyt] ws error (accept the local-network permission prompt if Chrome shows one)"); };
+    try { ws = new WebSocket(WS_URL); } catch (e) { paint("cannot open socket", "#7f1d1d"); return; }
+    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); while (queue.length && ws.readyState === 1) { ws.send(queue.shift()); sent++; } status(); };
+    ws.onclose = function () { connected = false; paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
+    ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + WS_URL + " failed. Usual causes: (1) accept Chrome's one-time 'local network' permission; (2) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
   }
-  function send(obj) { var s = JSON.stringify(obj); if (ws && ws.readyState === 1) ws.send(s); else { queue.push(s); if (queue.length > 1000) queue.shift(); } }
+  function send(obj) { var s = JSON.stringify(obj); if (ws && ws.readyState === 1) { ws.send(s); sent++; } else { queue.push(s); if (queue.length > 2000) queue.shift(); } if (connected) status(); }
   function findItems(doc) { return doc.querySelector("yt-live-chat-item-list-renderer #items") || doc.querySelector("#items"); }
-  function extract(node) { if (!node || !node.querySelector) return null; var a = node.querySelector("#author-name"); var m = node.querySelector("#message"); if (!m) return null; return { type: "msg", author: a ? a.textContent.trim() : "", html: m.innerHTML, ts: Date.now() }; }
-  function attach(items) { if (!items) { console.warn("[viewlyt] chat #items not found. Open the chat POPOUT (live_chat?is_popout=1) and paste this in ITS console."); return; } var obs = new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) { var msg = extract(mut.addedNodes[i]); if (msg && msg.html) send(msg); } }); }); obs.observe(items, { childList: true }); console.log("[viewlyt] observing live chat."); }
+  function emit(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (!m || !m.innerHTML) return; var a = node.querySelector("#author-name"); captured++; send({ type: "msg", author: a ? a.textContent.trim() : "", html: m.innerHTML, ts: Date.now() }); }
+  function handle(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (m && m.innerHTML) emit(node); else setTimeout(function () { emit(node); }, 0); }
+  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout", "#7f1d1d"); console.warn("[viewlyt] chat #items not found. Open the chat POPOUT (live_chat?is_popout=1) and run this in ITS console, or use the bookmarklet."); return; } new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); paint("observing... connecting", "#1e3a8a"); }
   connect();
   var items = findItems(document);
   if (!items) { try { var f = document.querySelector("#chatframe"); if (f && f.contentDocument) items = findItems(f.contentDocument); } catch (e) {} }
