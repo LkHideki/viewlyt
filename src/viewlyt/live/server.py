@@ -206,6 +206,7 @@ async def worker(server: LiveServer) -> None:
     pending: list[dict] = []
     last_flush = 0.0
     last_ingested = -1
+    last_analyzed = -1
     while True:
         try:
             try:
@@ -223,18 +224,21 @@ async def worker(server: LiveServer) -> None:
                 if len(pending) > 5000:
                     # Safety bound only; normal operation flushes every 0.25s, never near this.
                     pending = pending[-5000:]
-                now = time.monotonic()
-                if (
-                    not server.paused
-                    and not server.processing
-                    and server.buffer.due(server.window, now)
-                ):
-                    w = server.buffer.emit(server.window, now)
-                    server.processing = True
-                    # NON-BLOCKING: the LLM call runs in the background so the loop keeps
-                    # draining the queue and flushing the feed while it works.
-                    asyncio.create_task(_run_window(server, w, time.time()))
             now = time.monotonic()
+            # Emit a window only when it is due AND new messages arrived since the last
+            # analysis — so an idle/quiet chat never triggers a paid LLM request.
+            if (
+                not server.paused
+                and not server.processing
+                and server.ingested != last_analyzed
+                and server.buffer.due(server.window, now)
+            ):
+                w = server.buffer.emit(server.window, now)
+                last_analyzed = server.ingested
+                server.processing = True
+                # NON-BLOCKING: the LLM call runs in the background so the loop keeps
+                # draining the queue and flushing the feed while it works.
+                asyncio.create_task(_run_window(server, w, time.time()))
             if now - last_flush >= 0.25:
                 # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:
@@ -251,7 +255,7 @@ async def worker(server: LiveServer) -> None:
 
 SNIPPET_JS = """(function () {
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, scrollTimer, outbox = [];
+  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, scrollTimer, lastCapMs = 0, outbox = [];
   var badge = document.createElement("div");
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
@@ -268,12 +272,12 @@ SNIPPET_JS = """(function () {
   function findItems(doc) { try { return doc.querySelector("yt-live-chat-item-list-renderer #items") || doc.querySelector("yt-live-chat-renderer #items") || doc.querySelector("#chat #items") || null; } catch (e) { return null; } }
   function chatDoc() { try { var f = document.querySelector("iframe#chatframe, iframe[src*='live_chat']"); if (f && f.contentDocument) return f.contentDocument; } catch (e) {} return null; }
   function locate() { var it = findItems(document); if (it) return it; var cd = chatDoc(); return cd ? findItems(cd) : null; }
-  function emit(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message") || node.querySelector("yt-formatted-string#message") || node.querySelector("#content #message"); if (!m || !m.innerHTML) return; var a = node.querySelector("#author-name"); captured++; send({ type: "msg", author: a ? a.textContent.trim() : "", html: m.innerHTML, ts: Date.now() }); }
+  function emit(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message") || node.querySelector("yt-formatted-string#message") || node.querySelector("#content #message"); if (!m || !m.innerHTML) return; var a = node.querySelector("#author-name"); captured++; lastCapMs = Date.now(); send({ type: "msg", author: a ? a.textContent.trim() : "", html: m.innerHTML, ts: Date.now() }); }
   function handle(node) { if (!node || !node.querySelector) return; var m = node.querySelector("#message"); if (m && m.innerHTML) emit(node); else setTimeout(function () { emit(node); }, 0); }
   function backfill(root) { var ex = root.querySelectorAll("yt-live-chat-text-message-renderer, yt-live-chat-paid-message-renderer, yt-live-chat-membership-item-renderer"); for (var j = Math.max(0, ex.length - 50); j < ex.length; j++) emit(ex[j]); }
   function diag() { if (captured > 0) return; var it = locate(); var here = document.querySelectorAll("yt-live-chat-text-message-renderer").length; var cd = chatDoc(); var inFrame = cd ? cd.querySelectorAll("yt-live-chat-text-message-renderer").length : -1; console.warn("[viewlyt] captured 0. items=" + (it ? it.tagName + " children=" + it.childElementCount : "NULL") + " | renderers_here=" + here + " | renderers_in_chat_iframe=" + inFrame + " | location=" + location.pathname + " -- If renderers>0 but captured 0, send this line to the dev. If all 0/NULL, this page has no live chat: open the POPOUT (live_chat?is_popout=1) of a CURRENTLY-LIVE stream."); paint("captured 0 - open console for diagnostics", "#7f1d1d"); }
   function stickBottom(doc) { try { var sc = doc.querySelector("#item-scroller"); if (!sc) { var it = doc.querySelector("yt-live-chat-item-list-renderer #items"); sc = it && it.parentElement; } if (sc) sc.scrollTop = sc.scrollHeight + 99999; } catch (e) {} }
-  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout (live_chat?is_popout=1)", "#7f1d1d"); console.warn("[viewlyt] live chat not found on this page. Open the chat POPOUT and run this there (console or bookmarklet)."); setTimeout(diag, 1000); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); var d = items.ownerDocument || document; if (scrollTimer) clearInterval(scrollTimer); scrollTimer = setInterval(function () { stickBottom(d); }, 3000); stickBottom(d); console.log("[viewlyt] attached to chat; backfilled " + captured + " existing messages"); status(); setTimeout(diag, 4000); setTimeout(diag, 12000); }
+  function attach(items) { if (!items) { paint("CHAT NOT FOUND - use the popout (live_chat?is_popout=1)", "#7f1d1d"); console.warn("[viewlyt] live chat not found on this page. Open the chat POPOUT and run this there (console or bookmarklet)."); setTimeout(diag, 1000); return; } backfill(items); new MutationObserver(function (muts) { muts.forEach(function (mut) { for (var i = 0; i < mut.addedNodes.length; i++) handle(mut.addedNodes[i]); }); }).observe(items, { childList: true }); var d = items.ownerDocument || document; if (scrollTimer) clearInterval(scrollTimer); scrollTimer = setInterval(function () { if (Date.now() - lastCapMs > 4000) stickBottom(d); }, 3000); stickBottom(d); console.log("[viewlyt] attached to chat; backfilled " + captured + " existing messages"); status(); setTimeout(diag, 4000); setTimeout(diag, 12000); }
   connect();
   flusher = setInterval(flush, 500);
   var tries = 0;
