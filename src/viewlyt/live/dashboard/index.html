@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>viewlyt.live — Control Panel</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>viewlyt<span class="accent">.live</span></h1>
+      <span id="status" class="status disconnected">Disconnected</span>
+    </header>
+
+    <main>
+      <!-- Stats bar -->
+      <section class="stats-bar">
+        <div class="stat">
+          <span class="stat-label">Ingested</span>
+          <span id="ingested" class="stat-value">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Buffer</span>
+          <span id="buffer" class="stat-value">0</span>
+        </div>
+      </section>
+
+      <div class="panels">
+        <!-- Window controls -->
+        <section class="panel">
+          <h2>Window</h2>
+          <div class="field-group">
+            <label for="n">Size (n)</label>
+            <input type="number" id="n" min="1" value="80" />
+          </div>
+          <div class="field-group">
+            <label for="overlap">Overlap</label>
+            <input type="number" id="overlap" min="0" value="20" />
+          </div>
+          <div class="field-group">
+            <label for="gap">Gap (s)</label>
+            <input type="number" id="gap" min="0" step="0.5" value="15" />
+          </div>
+          <div class="field-group">
+            <label for="mode">Mode</label>
+            <select id="mode">
+              <option value="count">count</option>
+              <option value="time">time</option>
+              <option value="hybrid">hybrid</option>
+            </select>
+          </div>
+          <div class="button-row">
+            <button id="apply-window" class="btn-primary">Apply</button>
+            <button id="pause" class="btn-secondary">Pause</button>
+            <button id="resume" class="btn-secondary">Resume</button>
+            <button id="clear" class="btn-danger">Clear</button>
+          </div>
+        </section>
+
+        <!-- Model controls -->
+        <section class="panel">
+          <h2>Model</h2>
+          <div class="field-group">
+            <label for="base_url">Base URL</label>
+            <input type="text" id="base_url" value="http://localhost:1234/v1" />
+          </div>
+          <div class="field-group">
+            <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
+            <input type="password" id="api_key" placeholder="lm-studio" />
+          </div>
+          <div class="field-group">
+            <label for="model">Model ID</label>
+            <input type="text" id="model" value="local-model" />
+          </div>
+          <div class="button-row">
+            <button id="apply-model" class="btn-primary">Apply</button>
+          </div>
+        </section>
+
+        <!-- Add probe -->
+        <section class="panel">
+          <h2>Add Probe</h2>
+          <div class="field-group">
+            <label for="probe-kind">Kind</label>
+            <select id="probe-kind">
+              <option value="classification">classification</option>
+              <option value="open">open</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="probe-label">Label</label>
+            <input type="text" id="probe-label" placeholder="e.g. Sentiment" />
+          </div>
+          <!-- classification-only fields -->
+          <div id="classification-fields">
+            <div class="field-group">
+              <label for="probe-question">Question</label>
+              <input type="text" id="probe-question" placeholder="What is the overall sentiment?" />
+            </div>
+            <div class="field-group">
+              <label for="probe-categories">Categories <span class="hint">(CSV)</span></label>
+              <input type="text" id="probe-categories" placeholder="positive, negative, neutral" />
+            </div>
+          </div>
+          <!-- open-only fields -->
+          <div id="open-fields" class="hidden">
+            <div class="field-group">
+              <label for="probe-instruction">Instruction</label>
+              <input type="text" id="probe-instruction" placeholder="Summarize the main themes." />
+            </div>
+          </div>
+          <div class="button-row">
+            <button id="add-probe" class="btn-primary">Add Probe</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Active probes -->
+      <section class="panel full-width">
+        <h2>Active Probes</h2>
+        <div id="probes" class="probe-list">
+          <p class="empty-hint">No probes configured yet.</p>
+        </div>
+      </section>
+
+      <!-- Live results -->
+      <section class="panel full-width">
+        <h2>Live Results</h2>
+        <div id="results" class="results-list">
+          <p class="empty-hint">Waiting for results…</p>
+        </div>
+      </section>
+
+      <!-- Console snippet -->
+      <section class="panel full-width snippet-section">
+        <h2>Chat Popout Snippet</h2>
+        <p class="hint">
+          Open the YouTube live chat popout in a separate tab, open the browser
+          DevTools console, paste the snippet below, and press Enter. It will
+          forward chat messages to this dashboard automatically.
+        </p>
+        <textarea id="snippet" readonly rows="6" spellcheck="false"></textarea>
+        <div class="button-row">
+          <button id="copy-snippet" class="btn-secondary">Copy Snippet</button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
