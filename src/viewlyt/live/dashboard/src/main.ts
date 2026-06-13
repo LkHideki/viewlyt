@@ -51,6 +51,12 @@ interface ErrorMsg {
   message: string;
 }
 
+interface ChatFeedMsg {
+  type: "chat";
+  author: string;
+  text: string;
+}
+
 interface ProbeDescriptor {
   id: string;
   kind: string;
@@ -60,7 +66,7 @@ interface ProbeDescriptor {
   instruction?: string;
 }
 
-type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg;
+type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg | ChatFeedMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -280,6 +286,27 @@ function showError(message: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Live chat feed
+// ---------------------------------------------------------------------------
+
+function appendFeed(author: string, text: string): void {
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  const line = document.createElement("div");
+  const a = document.createElement("span");
+  a.textContent = author + ": ";
+  a.style.fontWeight = "600";
+  a.style.color = "#4c8bf5";
+  line.appendChild(a);
+  line.appendChild(document.createTextNode(text));
+  feed.appendChild(line);
+  while (feed.childElementCount > 200 && feed.firstChild) {
+    feed.removeChild(feed.firstChild);
+  }
+  feed.scrollTop = feed.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
 // State message handler
 // ---------------------------------------------------------------------------
 
@@ -353,6 +380,9 @@ function connectDashboard(): void {
         break;
       case "error":
         showError(msg.message);
+        break;
+      case "chat":
+        appendFeed(msg.author, msg.text);
         break;
     }
   };
