@@ -364,6 +364,15 @@ button:active {
   padding: 0.75rem 1rem;
 }
 
+/* Latest result accent — make the most recent card stand out. */
+.result-card.is-latest {
+  border-color: rgba(76, 139, 245, 0.55);
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    0 0 0 1px rgba(76, 139, 245, 0.25),
+    0 0 18px rgba(76, 139, 245, 0.12);
+}
+
 .result-header {
   display: flex;
   align-items: baseline;
@@ -395,7 +404,7 @@ button:active {
 
 .bar-row {
   display: grid;
-  grid-template-columns: 120px 1fr 52px auto;
+  grid-template-columns: 120px 1fr 52px auto auto;
   align-items: center;
   gap: 0.5rem;
 }
@@ -543,6 +552,102 @@ button:active {
   stroke-linecap: round;
 }
 
+/* -------------------------------------------------------------------------
+   Delta badges (change vs the previous snapshot)
+   ------------------------------------------------------------------------- */
+
+.delta-badge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.delta-up {
+  color: var(--success);
+}
+
+.delta-down {
+  color: var(--danger);
+}
+
+.delta-zero {
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+/* -------------------------------------------------------------------------
+   Delta chart — diverging horizontal bars vs the previous snapshot
+   ------------------------------------------------------------------------- */
+
+.delta-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.delta-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 52px;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.delta-label {
+  font-size: 0.8rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Centered zero axis: two equal halves with a divider line in the middle. */
+.delta-track {
+  display: flex;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.delta-half {
+  flex: 1 1 0;
+  display: flex;
+  height: 100%;
+}
+
+.delta-half-neg {
+  justify-content: flex-end;
+  border-right: 1px solid var(--border);
+}
+
+.delta-half-pos {
+  justify-content: flex-start;
+}
+
+.delta-bar {
+  height: 100%;
+  min-width: 0;
+  transition: width 0.4s ease;
+}
+
+.delta-bar-pos {
+  background: var(--success);
+  border-radius: 0 3px 3px 0;
+}
+
+.delta-bar-neg {
+  background: var(--danger);
+  border-radius: 3px 0 0 3px;
+}
+
+.delta-value {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-align: right;
+}
+
 /* Open summary */
 
 .result-text {
@@ -566,6 +671,34 @@ button:active {
 .result-entry:first-child {
   border-top: none;
   padding-top: 0.15rem;
+}
+
+/* Open timeline: latest entry prominent (larger, accent), previous dimmed. */
+.result-entry.is-latest {
+  border-left: 3px solid var(--accent);
+  background: rgba(76, 139, 245, 0.06);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.result-entry.is-latest .result-text {
+  font-size: 0.95rem;
+  color: #fff;
+}
+
+.result-entry.is-latest .entry-time {
+  color: var(--accent);
+}
+
+.result-entry.is-previous {
+  opacity: 0.6;
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+}
+
+.result-entry.is-previous .result-text {
+  font-size: 0.82rem;
 }
 
 .entry-time {
@@ -614,6 +747,70 @@ button:active {
   color: var(--accent);
   margin-bottom: 1rem;
   text-transform: uppercase;
+}
+
+/* Two columns: Live Results (wide) + Live Chat (narrow, own scroll). */
+.results-cols {
+  display: flex;
+  gap: var(--gap);
+  align-items: stretch;
+}
+
+.results-col {
+  min-width: 0; /* let flex children shrink instead of overflowing */
+}
+
+.results-col-main {
+  flex: 2.5 1 0;
+}
+
+.results-col-chat {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  padding-left: var(--gap);
+}
+
+.results-col-chat h2 {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+
+/* Live chat feed — its own scroll inside the chat column. */
+#feed {
+  flex: 1 1 auto;
+  max-height: 480px;
+  min-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+#feed > div {
+  padding: 0.05rem 0;
+  word-break: break-word;
+}
+
+/* Narrow screens: stack the two columns vertically. */
+@media (max-width: 860px) {
+  .results-cols {
+    flex-direction: column;
+  }
+
+  .results-col-chat {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: var(--gap);
+  }
+
+  #feed {
+    max-height: 300px;
+  }
 }
 
 /* -------------------------------------------------------------------------

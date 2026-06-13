@@ -108,6 +108,7 @@ interface ProbeDescriptor {
   question?: string;
   categories?: string[];
   instruction?: string;
+  chart?: string;
 }
 
 type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg | ChatFeedMsg | ProcMsg;
@@ -328,10 +329,40 @@ const classificationHistory = new Map<string, Map<string, number[]>>();
 // Per-probe chart type + latest result (so a card can re-render on type change)
 // ---------------------------------------------------------------------------
 
-type ChartType = "bars" | "stacked" | "donut" | "lines";
-const CHART_TYPES: ChartType[] = ["bars", "stacked", "donut", "lines"];
-const chartType = new Map<string, ChartType>();
+type ChartType = "bars" | "stacked" | "donut" | "lines" | "delta";
+const CHART_TYPES: ChartType[] = ["bars", "stacked", "donut", "lines", "delta"];
 const lastClassResult = new Map<string, ResultMsg>();
+
+/** Read a probe's persisted chart type (server-side), defaulting to "bars". */
+function probeChart(probeId: string): ChartType {
+  const stored = probeState.get(probeId)?.chart;
+  return stored !== undefined && (CHART_TYPES as readonly string[]).includes(stored)
+    ? (stored as ChartType)
+    : "bars";
+}
+
+/** Delta of the latest value vs the immediately-previous snapshot for a category. */
+function categoryDelta(probeId: string, category: string): number | null {
+  const arr = classificationHistory.get(probeId)?.get(category);
+  if (!arr || arr.length < 2) return null;
+  return arr[arr.length - 1] - arr[arr.length - 2];
+}
+
+/** Small delta badge: ▲ +x.x (green) / ▼ -x.x (red) / 0 (dim) vs previous. */
+function buildDeltaBadge(delta: number | null): HTMLElement {
+  const badge = document.createElement("span");
+  if (delta === null || Math.abs(delta) < 0.05) {
+    badge.className = "delta-badge delta-zero";
+    badge.textContent = "0";
+  } else if (delta > 0) {
+    badge.className = "delta-badge delta-up";
+    badge.textContent = `▲ +${delta.toFixed(1)}`;
+  } else {
+    badge.className = "delta-badge delta-down";
+    badge.textContent = `▼ ${delta.toFixed(1)}`;
+  }
+  return badge;
+}
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -409,7 +440,7 @@ function buildLegend(entries: [string, number][]): HTMLElement {
   return legend;
 }
 
-/** Default: horizontal % bars + per-category sparkline. */
+/** Default: horizontal % bars + delta badge vs previous + per-category sparkline. */
 function renderBars(entries: [string, number][], probeId: string): HTMLElement {
   const probeHist = classificationHistory.get(probeId);
   const barsEl = document.createElement("div");
@@ -435,6 +466,9 @@ function renderBars(entries: [string, number][], probeId: string): HTMLElement {
     pctLabel.className = "bar-pct";
     pctLabel.textContent = `${pct.toFixed(1)}%`;
 
+    // Delta vs the immediately-previous snapshot, beside the pct.
+    const deltaBadge = buildDeltaBadge(categoryDelta(probeId, cat));
+
     const sparkEl = document.createElement("span");
     sparkEl.className = "spark";
     const history = probeHist?.get(cat) ?? [];
@@ -444,6 +478,7 @@ function renderBars(entries: [string, number][], probeId: string): HTMLElement {
     row.appendChild(catLabel);
     row.appendChild(track);
     row.appendChild(pctLabel);
+    row.appendChild(deltaBadge);
     row.appendChild(sparkEl);
     barsEl.appendChild(row);
   });
@@ -565,13 +600,68 @@ function renderLines(entries: [string, number][], probeId: string): HTMLElement 
   return wrap;
 }
 
+/** Diverging horizontal bars: change vs previous snapshot (right=green, left=red). */
+function renderDelta(entries: [string, number][], probeId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "delta-chart";
+
+  // Symmetric scale from the largest absolute delta (min 1 so flat data shows).
+  const deltas = entries.map(([cat]) => categoryDelta(probeId, cat) ?? 0);
+  const maxAbs = Math.max(1, ...deltas.map((d) => Math.abs(d)));
+
+  entries.forEach(([cat], i) => {
+    const delta = deltas[i];
+    const row = document.createElement("div");
+    row.className = "delta-row";
+
+    const label = document.createElement("span");
+    label.className = "delta-label";
+    label.textContent = cat;
+
+    // Track with a centered zero axis; one half fills per sign.
+    const track = document.createElement("div");
+    track.className = "delta-track";
+
+    const neg = document.createElement("div");
+    neg.className = "delta-half delta-half-neg";
+    const pos = document.createElement("div");
+    pos.className = "delta-half delta-half-pos";
+
+    const bar = document.createElement("div");
+    bar.className = delta >= 0 ? "delta-bar delta-bar-pos" : "delta-bar delta-bar-neg";
+    bar.style.width = `${(Math.abs(delta) / maxAbs) * 100}%`;
+
+    if (delta >= 0) pos.appendChild(bar);
+    else neg.appendChild(bar);
+    track.appendChild(neg);
+    track.appendChild(pos);
+
+    const value = document.createElement("span");
+    value.className =
+      delta > 0.05
+        ? "delta-value delta-up"
+        : delta < -0.05
+          ? "delta-value delta-down"
+          : "delta-value delta-zero";
+    value.textContent =
+      delta > 0.05 ? `+${delta.toFixed(1)}` : delta < -0.05 ? delta.toFixed(1) : "0";
+
+    row.appendChild(label);
+    row.appendChild(track);
+    row.appendChild(value);
+    wrap.appendChild(row);
+  });
+
+  return wrap;
+}
+
 function buildClassificationBody(msg: ResultMsg): HTMLElement {
   const body = document.createElement("div");
   body.className = "entry-body";
 
   if (!msg.pct) return body;
   const entries = Object.entries(msg.pct);
-  const type = chartType.get(msg.probe_id) ?? "bars";
+  const type = probeChart(msg.probe_id);
 
   switch (type) {
     case "stacked":
@@ -582,6 +672,9 @@ function buildClassificationBody(msg: ResultMsg): HTMLElement {
       break;
     case "lines":
       body.appendChild(renderLines(entries, msg.probe_id));
+      break;
+    case "delta":
+      body.appendChild(renderDelta(entries, msg.probe_id));
       break;
     default:
       body.appendChild(renderBars(entries, msg.probe_id));
@@ -626,7 +719,9 @@ function upsertResultCard(msg: ResultMsg): void {
   if (!card) {
     card = document.createElement("div");
     const cardEl = card; // stable non-null ref for closures below
-    card.className = "result-card";
+    // Each probe shows a single card whose body always reflects the latest
+    // result — give it the 'is-latest' accent so the current state stands out.
+    card.className = "result-card is-latest";
     card.dataset["probeId"] = msg.probe_id;
 
     const header = document.createElement("div");
@@ -653,21 +748,18 @@ function upsertResultCard(msg: ResultMsg): void {
         opt.textContent = t;
         select.appendChild(opt);
       }
-      // Initialise chart type: prefer the in-memory map, then localStorage, then default.
-      if (!chartType.has(msg.probe_id)) {
-        const stored = lsGet("viewlyt.chart." + msg.probe_id);
-        const initial: ChartType =
-          stored !== null && (CHART_TYPES as readonly string[]).includes(stored)
-            ? (stored as ChartType)
-            : "bars";
-        chartType.set(msg.probe_id, initial);
-      }
-      select.value = chartType.get(msg.probe_id)!;
+      // Chart type is server-persisted on the probe descriptor.
+      select.value = probeChart(msg.probe_id);
       select.addEventListener("change", () => {
         const chosen = select.value as ChartType;
-        chartType.set(msg.probe_id, chosen);
-        lsSet("viewlyt.chart." + msg.probe_id, chosen);
-        const latest = lastClassResult.get(msg.probe_id);
+        // Persist server-side by re-upserting the existing probe descriptor.
+        const existing = probeState.get(cardEl.dataset["probeId"] ?? "");
+        const probe: ProbeDescriptor = existing
+          ? { ...existing, chart: chosen }
+          : { id: cardEl.dataset["probeId"] ?? "", kind: "classification", label: "", chart: chosen };
+        send({ op: "upsert_probe", probe });
+        probeState.set(probe.id, probe);
+        const latest = lastClassResult.get(probe.id);
         const bodyEl = cardEl.querySelector<HTMLDivElement>(".class-body");
         if (latest && bodyEl) {
           bodyEl.innerHTML = "";
@@ -713,6 +805,9 @@ function upsertResultCard(msg: ResultMsg): void {
     }
     // Remember the latest result so a chart-type change can re-render.
     lastClassResult.set(msg.probe_id, msg);
+    // Keep the selector in sync with the server-persisted chart type.
+    const selectEl = card.querySelector<HTMLSelectElement>(".chart-select");
+    if (selectEl) selectEl.value = probeChart(msg.probe_id);
     // Replace the classification body in place.
     const bodyEl = card.querySelector<HTMLDivElement>(".class-body");
     if (bodyEl) {
@@ -736,6 +831,14 @@ function upsertResultCard(msg: ResultMsg): void {
     entry.appendChild(buildOpenBody(msg));
 
     historyEl.prepend(entry);
+
+    // Re-tag the timeline: newest entry is prominent ('is-latest'), the one
+    // right under it is dimmed ('is-previous') so the two compare at a glance.
+    const entries = historyEl.children;
+    for (let i = 0; i < entries.length; i++) {
+      entries[i].classList.toggle("is-latest", i === 0);
+      entries[i].classList.toggle("is-previous", i === 1);
+    }
 
     // Cap to HISTORY_MAX entries.
     while (historyEl.children.length > HISTORY_MAX) {
