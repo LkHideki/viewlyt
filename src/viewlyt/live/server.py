@@ -154,9 +154,8 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     probes = list(server.probes.values())
     if not probes:
         return
-    window = clean_chat(
-        window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors
-    )
+    cleaned = clean_chat(window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors)
+    window = cleaned[-server.window.n :]
     results = await run_probes(server.client(), probes, window)
     for r in results:
         r.ts = now_wall
@@ -233,12 +232,13 @@ async def worker(server: LiveServer) -> None:
                 and server.ingested != last_analyzed
                 and server.buffer.due(server.window, now)
             ):
-                w = server.buffer.emit(server.window, now)
+                server.buffer.emit(server.window, now)  # reset windowing timers only
+                raw = server.buffer.snapshot()
                 last_analyzed = server.ingested
                 server.processing = True
                 # NON-BLOCKING: the LLM call runs in the background so the loop keeps
                 # draining the queue and flushing the feed while it works.
-                asyncio.create_task(_run_window(server, w, time.time()))
+                asyncio.create_task(_run_window(server, raw, time.time()))
             if now - last_flush >= 0.25:
                 # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:

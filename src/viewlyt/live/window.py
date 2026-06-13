@@ -94,6 +94,10 @@ class WindowBuffer:
         self._last_emit = now
         return self._window(cfg)
 
+    def snapshot(self) -> list[ChatMessage]:
+        """Return all buffered messages without mutating the buffer."""
+        return list(self._buf)
+
     def offer(self, msg: ChatMessage, cfg: WindowConfig, now: float) -> list[ChatMessage] | None:
         """Add a message; return the window if this makes a snapshot due, else ``None``."""
         self.add(msg)
