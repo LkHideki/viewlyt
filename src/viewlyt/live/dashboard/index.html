@@ -29,184 +29,202 @@
         </div>
       </section>
 
-      <div class="panels">
-        <!-- Window controls -->
-        <section class="panel">
-          <h2>Window</h2>
-          <div class="field-group">
-            <label for="n">Sample (comments)</label>
-            <input type="number" id="n" min="1" value="230" />
-          </div>
-          <div class="field-group">
-            <label for="gap">Refresh (s)</label>
-            <input type="number" id="gap" min="0" step="0.5" value="45" />
-          </div>
-          <div class="field-group">
-            <label for="capacity">Buffer (max)</label>
-            <input type="number" id="capacity" min="100" value="3000" />
-          </div>
-          <div class="field-group">
-            <label for="mode">Mode</label>
-            <select id="mode">
-              <option value="count">count</option>
-              <option value="time">time</option>
-              <option value="hybrid" selected>hybrid</option>
-            </select>
-          </div>
-          <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
-            <input type="checkbox" id="dedupe" checked />
-            <label for="dedupe" style="margin:0">Drop spam duplicates</label>
-          </div>
-          <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
-            <input type="checkbox" id="merge_authors" checked />
-            <label for="merge_authors" style="margin:0">Merge same author</label>
-          </div>
-          <div class="button-row">
-            <button id="apply-window" class="btn-primary">Apply</button>
-            <button id="pause" class="btn-secondary">Pause</button>
-            <button id="resume" class="btn-secondary">Resume</button>
-            <button id="clear" class="btn-danger">Clear</button>
-          </div>
-        </section>
-
-        <!-- Model controls -->
-        <section class="panel">
-          <h2>Model</h2>
-          <div class="field-group">
-            <label for="provider">Provider</label>
-            <select id="provider">
-              <option value="openrouter" selected>OpenRouter</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="ollama">Ollama</option>
-              <option value="openai">OpenAI</option>
-              <option value="groq">Groq</option>
-            </select>
-          </div>
-          <div class="field-group">
-            <label for="base_url">Base URL</label>
-            <input type="text" id="base_url" value="https://openrouter.ai/api/v1" />
-          </div>
-          <div class="field-group">
-            <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
-            <div style="flex-direction:row;align-items:center;gap:8px;display:flex">
-              <input type="password" id="api_key" placeholder="sk-or-..." style="flex:1" />
-              <button type="button" id="toggle-key" class="btn-secondary">show</button>
-            </div>
-          </div>
-          <div class="field-group">
-            <label for="model">Model ID</label>
-            <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
-          </div>
-          <div class="button-row">
-            <button id="apply-model" class="btn-primary">Apply</button>
-          </div>
-        </section>
-
-        <!-- Add probe -->
-        <section class="panel">
-          <h2>Add Probe</h2>
-          <div class="field-group">
-            <label for="probe-kind">Kind</label>
-            <select id="probe-kind">
-              <option value="open">open</option>
-              <option value="classification">classification</option>
-            </select>
-          </div>
-          <div class="field-group">
-            <label for="probe-label">Label</label>
-            <input type="text" id="probe-label" placeholder="e.g. Sentiment" />
-          </div>
-          <!-- open-only fields -->
-          <div id="open-fields">
-            <div class="field-group">
-              <label for="probe-instruction">Instruction</label>
-              <textarea id="probe-instruction" rows="4" placeholder="Summarize the main themes."></textarea>
-            </div>
-          </div>
-          <!-- classification-only fields -->
-          <div id="classification-fields" class="hidden">
-            <div class="field-group">
-              <label for="probe-question">Question</label>
-              <input type="text" id="probe-question" placeholder="What is the overall sentiment?" />
-            </div>
-            <div class="field-group">
-              <label for="probe-categories">Categories <span class="hint">(CSV)</span></label>
-              <input type="text" id="probe-categories" placeholder="positive, negative, neutral" />
-            </div>
-          </div>
-          <div class="button-row">
-            <button id="add-probe" class="btn-primary">Add Probe</button>
-          </div>
-          <!-- Bulk import via JSON -->
-          <div class="field-group" style="margin-top:0.75rem">
-            <label for="probe-json">Import JSON <span class="hint">(array or single object; missing label/kind are filled in)</span></label>
-            <textarea id="probe-json" rows="3" placeholder='[{"kind":"classification","question":"...","categories":["a","b"]},{"kind":"open","instruction":"..."}]'></textarea>
-          </div>
-          <div class="button-row">
-            <button id="import-json" class="btn-secondary">Import JSON</button>
-            <span id="import-json-status" class="hint"></span>
-          </div>
-        </section>
-      </div>
-
-      <!-- Live chat feed (raw bridge) -->
-      <section class="panel full-width">
-        <h2>Live Chat <span class="hint">— raw feed from the popout (proves the bridge)</span></h2>
-        <div id="feed" style="max-height:260px;overflow:auto;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace"></div>
-      </section>
-
-      <!-- Active probes -->
-      <section class="panel full-width">
-        <h2>Active Probes</h2>
-        <div id="probes" class="probe-list">
-          <p class="empty-hint">No probes configured yet.</p>
-        </div>
-      </section>
-
-      <!-- Live results -->
-      <section class="panel full-width">
+      <!-- Live results — the visual star, always visible at the top -->
+      <section class="panel full-width results-star">
         <h2>Live Results</h2>
         <div id="results" class="results-list">
           <p class="empty-hint">Waiting for results…</p>
         </div>
       </section>
 
-      <!-- Console snippet -->
-      <section class="panel full-width snippet-section">
-        <h2>Capture the chat</h2>
-        <p class="hint">
-          Open the live chat <strong>popout</strong>
-          (<code>youtube.com/live_chat?is_popout=1&amp;v=&hellip;</code>) in its
-          own window, then start the capture there with <em>one</em> of the two
-          methods below. A small <strong>viewlyt</strong> badge appears in the
-          popout showing connected / captured / sent counts.
-        </p>
-        <p class="hint">
-          <strong>Browser extension (works in Chrome and Vivaldi, set-and-forget):</strong>
-          <a id="ext-link" href="/viewlyt-extension.zip">Download viewlyt extension (.zip)</a>
-          &mdash; unzip it and load the folder via your browser&rsquo;s Extensions page
-          (Developer mode &rarr; Load unpacked). It auto-runs on every chat popout.
-        </p>
-        <p class="hint">
-          <strong>Bookmark &mdash; set up once, no extension</strong>
-          (bookmarklets are blocked in some browsers like Vivaldi &mdash; use the extension or console there):
-          right-click your bookmarks bar &rarr; <em>Add page&hellip;</em> (or open the
-          Bookmark Manager), name it <code>viewlyt</code>, and paste the code below as
-          its <strong>URL</strong>. Then, on the chat popout, click the
-          <code>viewlyt</code> bookmark.
-        </p>
-        <textarea id="bookmarklet" readonly rows="3" spellcheck="false"></textarea>
-        <div class="button-row">
-          <button id="copy-bookmarklet" class="btn-primary">Copy bookmark code</button>
+      <!-- Group: Configs -->
+      <section class="group" id="group-configs">
+        <button type="button" class="group-header">Configs <span class="caret">&#x25be;</span></button>
+        <div class="group-body">
+          <div class="panels">
+            <!-- Window controls -->
+            <section class="panel">
+              <h2>Window</h2>
+              <div class="field-group">
+                <label for="n">Sample (comments)</label>
+                <input type="number" id="n" min="1" value="230" />
+              </div>
+              <div class="field-group">
+                <label for="gap">Refresh (s)</label>
+                <input type="number" id="gap" min="0" step="0.5" value="45" />
+              </div>
+              <div class="field-group">
+                <label for="capacity">Buffer (max)</label>
+                <input type="number" id="capacity" min="100" value="3000" />
+              </div>
+              <div class="field-group">
+                <label for="mode">Mode</label>
+                <select id="mode">
+                  <option value="count">count</option>
+                  <option value="time">time</option>
+                  <option value="hybrid" selected>hybrid</option>
+                </select>
+              </div>
+              <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
+                <input type="checkbox" id="dedupe" checked />
+                <label for="dedupe" style="margin:0">Drop spam duplicates</label>
+              </div>
+              <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
+                <input type="checkbox" id="merge_authors" checked />
+                <label for="merge_authors" style="margin:0">Merge same author</label>
+              </div>
+              <div class="button-row">
+                <button id="apply-window" class="btn-primary">Apply</button>
+                <button id="pause" class="btn-secondary">Pause</button>
+                <button id="resume" class="btn-secondary">Resume</button>
+                <button id="clear" class="btn-danger">Clear</button>
+              </div>
+            </section>
+
+            <!-- Model controls -->
+            <section class="panel">
+              <h2>Model</h2>
+              <div class="field-group">
+                <label for="provider">Provider</label>
+                <select id="provider">
+                  <option value="openrouter" selected>OpenRouter</option>
+                  <option value="lmstudio">LM Studio</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="groq">Groq</option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label for="base_url">Base URL</label>
+                <input type="text" id="base_url" value="https://openrouter.ai/api/v1" />
+              </div>
+              <div class="field-group">
+                <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
+                <div style="flex-direction:row;align-items:center;gap:8px;display:flex">
+                  <input type="password" id="api_key" placeholder="sk-or-..." style="flex:1" />
+                  <button type="button" id="toggle-key" class="btn-secondary">show</button>
+                </div>
+              </div>
+              <div class="field-group">
+                <label for="model">Model ID</label>
+                <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
+              </div>
+              <div class="button-row">
+                <button id="apply-model" class="btn-primary">Apply</button>
+              </div>
+            </section>
+          </div>
         </div>
-        <p class="hint">
-          <strong>Or paste in the console:</strong> on the popout, open DevTools
-          (F12) &rarr; Console, paste the snippet below, press Enter. If Chrome
-          blocks the paste, type <code>allow pasting</code> there first.
-        </p>
-        <textarea id="snippet" readonly rows="6" spellcheck="false"></textarea>
-        <div class="button-row">
-          <button id="copy-snippet" class="btn-secondary">Copy Snippet</button>
+      </section>
+
+      <!-- Group: Probes -->
+      <section class="group" id="group-probes">
+        <button type="button" class="group-header">Probes <span class="caret">&#x25be;</span></button>
+        <div class="group-body">
+          <!-- Add probe -->
+          <section class="panel full-width">
+            <h2>Add Probe</h2>
+            <div class="field-group">
+              <label for="probe-kind">Kind</label>
+              <select id="probe-kind">
+                <option value="open">open</option>
+                <option value="classification">classification</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label for="probe-label">Label</label>
+              <input type="text" id="probe-label" placeholder="e.g. Sentiment" />
+            </div>
+            <!-- open-only fields -->
+            <div id="open-fields">
+              <div class="field-group">
+                <label for="probe-instruction">Instruction</label>
+                <textarea id="probe-instruction" rows="4" placeholder="Summarize the main themes."></textarea>
+              </div>
+            </div>
+            <!-- classification-only fields -->
+            <div id="classification-fields" class="hidden">
+              <div class="field-group">
+                <label for="probe-question">Question</label>
+                <input type="text" id="probe-question" placeholder="What is the overall sentiment?" />
+              </div>
+              <div class="field-group">
+                <label for="probe-categories">Categories <span class="hint">(CSV)</span></label>
+                <input type="text" id="probe-categories" placeholder="positive, negative, neutral" />
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="add-probe" class="btn-primary">Add Probe</button>
+            </div>
+            <!-- Bulk import via JSON -->
+            <div class="field-group" style="margin-top:0.75rem">
+              <label for="probe-json">Import JSON <span class="hint">(array or single object; missing label/kind are filled in)</span></label>
+              <textarea id="probe-json" rows="3" placeholder='[{"kind":"classification","question":"...","categories":["a","b"]},{"kind":"open","instruction":"..."}]'></textarea>
+            </div>
+            <div class="button-row">
+              <button id="import-json" class="btn-secondary">Import JSON</button>
+              <span id="import-json-status" class="hint"></span>
+            </div>
+          </section>
+
+          <!-- Active probes -->
+          <section class="panel full-width">
+            <h2>Active Probes</h2>
+            <div id="probes" class="probe-list">
+              <p class="empty-hint">No probes configured yet.</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <!-- Group: Capture & feed -->
+      <section class="group" id="group-capture">
+        <button type="button" class="group-header">Capture &amp; feed <span class="caret">&#x25be;</span></button>
+        <div class="group-body">
+          <!-- Live chat feed (raw bridge) -->
+          <section class="panel full-width">
+            <h2>Live Chat <span class="hint">— raw feed from the popout (proves the bridge)</span></h2>
+            <div id="feed" style="max-height:260px;overflow:auto;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace"></div>
+          </section>
+
+          <!-- Console snippet -->
+          <section class="panel full-width snippet-section">
+            <h2>Capture the chat</h2>
+            <p class="hint">
+              Open the live chat <strong>popout</strong>
+              (<code>youtube.com/live_chat?is_popout=1&amp;v=&hellip;</code>) in its
+              own window, then start the capture there with <em>one</em> of the two
+              methods below. A small <strong>viewlyt</strong> badge appears in the
+              popout showing connected / captured / sent counts.
+            </p>
+            <p class="hint">
+              <strong>Browser extension (works in Chrome and Vivaldi, set-and-forget):</strong>
+              <a id="ext-link" href="/viewlyt-extension.zip">Download viewlyt extension (.zip)</a>
+              &mdash; unzip it and load the folder via your browser&rsquo;s Extensions page
+              (Developer mode &rarr; Load unpacked). It auto-runs on every chat popout.
+            </p>
+            <p class="hint">
+              <strong>Bookmark &mdash; set up once, no extension</strong>
+              (bookmarklets are blocked in some browsers like Vivaldi &mdash; use the extension or console there):
+              right-click your bookmarks bar &rarr; <em>Add page&hellip;</em> (or open the
+              Bookmark Manager), name it <code>viewlyt</code>, and paste the code below as
+              its <strong>URL</strong>. Then, on the chat popout, click the
+              <code>viewlyt</code> bookmark.
+            </p>
+            <textarea id="bookmarklet" readonly rows="3" spellcheck="false"></textarea>
+            <div class="button-row">
+              <button id="copy-bookmarklet" class="btn-primary">Copy bookmark code</button>
+            </div>
+            <p class="hint">
+              <strong>Or paste in the console:</strong> on the popout, open DevTools
+              (F12) &rarr; Console, paste the snippet below, press Enter. If Chrome
+              blocks the paste, type <code>allow pasting</code> there first.
+            </p>
+            <textarea id="snippet" readonly rows="6" spellcheck="false"></textarea>
+            <div class="button-row">
+              <button id="copy-snippet" class="btn-secondary">Copy Snippet</button>
+            </div>
+          </section>
         </div>
       </section>
     </main>

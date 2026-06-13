@@ -1103,11 +1103,28 @@ async function loadSnippet(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Collapsible group wiring
+// ---------------------------------------------------------------------------
+
+function wireGroups(): void {
+  const headers = document.querySelectorAll<HTMLButtonElement>(".group-header");
+  headers.forEach((btn) => {
+    const group = btn.closest<HTMLElement>(".group");
+    if (!group) return;
+    // All groups start expanded — no class needed; just wire the toggle.
+    btn.addEventListener("click", () => {
+      group.classList.toggle("collapsed");
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 updateProbeFieldVisibility();
 wireButtons();
+wireGroups();
 connectDashboard();
 connectControl();
 loadSnippet();

@@ -597,6 +597,92 @@ button:active {
 }
 
 /* -------------------------------------------------------------------------
+   Results star — prominent top section (not collapsible)
+   ------------------------------------------------------------------------- */
+
+.results-star {
+  border-left: 4px solid var(--accent);
+  padding: 1.25rem 1.5rem;
+  min-height: 220px;
+  margin-bottom: var(--gap);
+}
+
+.results-star h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-bottom: 1rem;
+  text-transform: uppercase;
+}
+
+/* -------------------------------------------------------------------------
+   Collapsible groups
+   ------------------------------------------------------------------------- */
+
+.group {
+  display: block;
+  margin-bottom: var(--gap);
+}
+
+.group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  /* override button reset */
+  text-align: left;
+}
+
+.group-header:hover {
+  background: var(--surface-2);
+  border-color: var(--accent);
+}
+
+.group-header:active {
+  filter: brightness(0.9);
+}
+
+.caret {
+  display: inline-block;
+  font-style: normal;
+  transition: transform 0.2s ease;
+  line-height: 1;
+  color: var(--text-dim);
+}
+
+.group.collapsed .caret {
+  transform: rotate(-90deg);
+}
+
+.group-body {
+  padding-top: var(--gap);
+}
+
+.group.collapsed .group-body {
+  display: none;
+}
+
+/* panels grid inside a group-body keeps its own margin */
+.group-body > .panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+/* -------------------------------------------------------------------------
    Scrollbar (optional cosmetic tweak)
    ------------------------------------------------------------------------- */
 
