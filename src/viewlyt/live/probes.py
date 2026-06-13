@@ -52,13 +52,57 @@ class ProbeResult:
 def _auto_label(text: str) -> str:
     """Derive a short human label from a prompt string.
 
-    Collapses whitespace, takes the first ~6 words, caps at ~40 chars,
-    strips trailing punctuation/colons. Returns 'probe' if nothing usable remains.
+    Takes the first non-blank line, strips leading question openers (PT/EN),
+    collapses whitespace, caps at 8 words and 48 chars, removes trailing
+    punctuation. Returns 'probe' if nothing usable remains.
     """
-    text = " ".join(text.split())[:40]
-    words = text.split()[:6]
-    label = " ".join(words).rstrip(":.!?,;")
-    return label.strip() or "probe"
+    import re
+
+    # 1. Take first non-blank line
+    lines = text.split("\n")
+    first_line = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped:
+            first_line = stripped
+            break
+    if not first_line:
+        return "probe"
+
+    # 2. Strip trailing punctuation
+    text_clean = first_line.rstrip("?:.,;!")
+
+    # 3. Remove leading filler/question openers (PT and EN), case-insensitive
+    patterns = [
+        r"^(quais|qual)\s+(s[ãa]o\s+|[ée]\s+)?(os|as|o|a)\s+",
+        r"^como\s+(est[ãa]o?|anda[m]?)\s+(os|as|o|a)\s+",
+        r"^o que\s+",
+        r"^(me\s+diga|liste|gere)\s+",
+        r"^(what|which)\s+(are|is)\s+the\s+",
+        r"^how\s+(are|is)\s+the\s+",
+        r"^(summari[sz]e|list|tell\s+me)\s+(the\s+)?",
+    ]
+    for pattern in patterns:
+        text_clean = re.sub(pattern, "", text_clean, count=1, flags=re.IGNORECASE)
+        if text_clean != first_line.rstrip("?:.,;!"):
+            break
+
+    # 4. Collapse internal whitespace
+    text_clean = " ".join(text_clean.split()).strip()
+
+    # 5. Cap to 8 words and 48 chars, trim trailing partial word and punctuation
+    words = text_clean.split()[:8]
+    label = " ".join(words)
+    if len(label) > 48:
+        label = label[:48].rsplit(" ", 1)[0].rstrip("?:.,;!")
+    else:
+        label = label.rstrip("?:.,;!")
+
+    # 6. Capitalize first character
+    label = label.strip()
+    if label:
+        label = label[0].upper() + label[1:]
+    return label or "probe"
 
 
 def _numbered(messages: list[ChatMessage]) -> str:
