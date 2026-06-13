@@ -36,7 +36,12 @@ snippet:      http://127.0.0.1:8000/snippet.js  (or copy it from the dashboard)
 
 **A — the live video** — watch it in any browser tab (optional, for context).
 
-**B — the chat popout** — open `https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID`, then open DevTools (`F12`), go to the **Console** tab, and paste the snippet you copied from the dashboard. If Chrome shows a one-time "Allow access to local network?" prompt, click **Allow**.
+**B — the chat popout** — open `https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID` in its own window, then start the capture there with **either**:
+
+- **Bookmarklet (easiest — no "allow pasting"):** on the dashboard, drag the **▶ viewlyt capture** button to your bookmarks bar, then click it while on the popout tab.
+- **Console:** open DevTools (`F12`) → **Console**, paste the snippet from the dashboard, press Enter. If Chrome blocks the paste, type `allow pasting` there first.
+
+A small **viewlyt** badge appears in the popout (bottom-right) showing `connected | captured | sent`. Accept Chrome's one-time "Allow access to local network?" prompt if it appears.
 
 > Always use the popout URL. The snippet cannot reach the server from a regular embedded chat frame.
 
@@ -72,4 +77,7 @@ You can also swap the model live from the dashboard's **Model** panel (Base URL 
 
 ## Troubleshooting
 
-If the snippet cannot reach the server: accept the local-network prompt in Chrome, confirm you are using the popout URL (not the embedded chat), and check that the server is running on `127.0.0.1` (not `0.0.0.0` or a remote host).
+- **Badge says `CANNOT REACH SERVER` (or the counts stay at 0):** accept Chrome's one-time *local network* prompt; make sure you used the **popout** (not the embedded chat); keep the server on `127.0.0.1`. If you run an **ad blocker**, allow this page to reach `127.0.0.1` — uBlock Origin's *"Block outsider intrusion into LAN"* filter blocks exactly this, so disable it or allowlist the site.
+- **A red `youtubei/v1/player/ad_break … net::ERR_BLOCKED_BY_CLIENT` line in the console:** that is your **ad blocker** blocking YouTube's ad telemetry. It is unrelated to viewlyt and does **not** affect chat capture — ignore it.
+- **`allow pasting`:** Chrome's console refuses pasted code until you type `allow pasting` once. Use the **bookmarklet** to skip this entirely.
+- **Spam / repeated messages:** the server drops a user's near-duplicate messages and merges their consecutive messages before sampling, so one spammer counts once (toggle in the **Window** panel).
