@@ -35,7 +35,11 @@
           </div>
           <div class="field-group">
             <label for="gap">Refresh (s)</label>
-            <input type="number" id="gap" min="0" step="0.5" value="10" />
+            <input type="number" id="gap" min="0" step="0.5" value="15" />
+          </div>
+          <div class="field-group">
+            <label for="capacity">Buffer (max)</label>
+            <input type="number" id="capacity" min="100" value="2000" />
           </div>
           <div class="field-group">
             <label for="mode">Mode</label>
@@ -165,7 +169,14 @@
           popout showing connected / captured / sent counts.
         </p>
         <p class="hint">
-          <strong>Bookmark (recommended &mdash; set up once, no extension):</strong>
+          <strong>Browser extension (works in Chrome and Vivaldi, set-and-forget):</strong>
+          <a id="ext-link" href="/viewlyt-extension.zip">Download viewlyt extension (.zip)</a>
+          &mdash; unzip it and load the folder via your browser&rsquo;s Extensions page
+          (Developer mode &rarr; Load unpacked). It auto-runs on every chat popout.
+        </p>
+        <p class="hint">
+          <strong>Bookmark &mdash; set up once, no extension</strong>
+          (bookmarklets are blocked in some browsers like Vivaldi &mdash; use the extension or console there):
           right-click your bookmarks bar &rarr; <em>Add page&hellip;</em> (or open the
           Bookmark Manager), name it <code>viewlyt</code>, and paste the code below as
           its <strong>URL</strong>. Then, on the chat popout, click the

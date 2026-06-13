@@ -58,6 +58,7 @@ interface StateMsg {
     mode: string;
     dedupe?: boolean;
     merge_authors?: boolean;
+    capacity?: number;
   };
   model: { base_url: string; model: string };
   paused: boolean;
@@ -211,6 +212,83 @@ function renderProbes(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Markdown-lite renderer (safe — escapes HTML first, no raw injection)
+// ---------------------------------------------------------------------------
+
+function renderMarkdown(src: string): string {
+  // 1. Escape HTML entities so source text is never interpreted as markup.
+  const escaped = src
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  // 2. Process line-by-line for block constructs, then apply inline transforms.
+  const lines = escaped.split("\n");
+  const out: string[] = [];
+  let inUl = false;
+  let inOl = false;
+
+  const closeList = (): void => {
+    if (inUl) { out.push("</ul>"); inUl = false; }
+    if (inOl) { out.push("</ol>"); inOl = false; }
+  };
+
+  const applyInline = (text: string): string =>
+    text
+      // Headings already handled at line level; inline bold/italic/code:
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      .replace(/_(.+?)_/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  for (const line of lines) {
+    // Headings: 1–6 hashes at start of line.
+    const headingMatch = /^(#{1,6}) (.+)$/.exec(line);
+    if (headingMatch) {
+      closeList();
+      out.push(`<strong>${applyInline(headingMatch[2])}</strong>`);
+      continue;
+    }
+    // Unordered list: lines starting with '- ' or '* '.
+    const ulMatch = /^[*-] (.+)$/.exec(line);
+    if (ulMatch) {
+      if (!inUl) { if (inOl) { out.push("</ol>"); inOl = false; } out.push("<ul>"); inUl = true; }
+      out.push(`<li>${applyInline(ulMatch[1])}</li>`);
+      continue;
+    }
+    // Ordered list: lines starting with 'N. '.
+    const olMatch = /^\d+\. (.+)$/.exec(line);
+    if (olMatch) {
+      if (!inOl) { if (inUl) { out.push("</ul>"); inUl = false; } out.push("<ol>"); inOl = true; }
+      out.push(`<li>${applyInline(olMatch[1])}</li>`);
+      continue;
+    }
+    // Regular line: close any open list, emit with inline transforms.
+    closeList();
+    out.push(applyInline(line));
+  }
+  closeList();
+
+  // 3. Join lines: list tags get no separator; other lines get <br>.
+  let html = "";
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i];
+    html += cur;
+    if (i < out.length - 1) {
+      const next = out[i + 1];
+      // Don't add <br> between/around block-level list tags.
+      const curIsBlock = /^<\/?(?:ul|ol|li)/.test(cur);
+      const nextIsBlock = /^<\/?(?:ul|ol|li)/.test(next);
+      if (!curIsBlock && !nextIsBlock) {
+        html += "<br>";
+      }
+    }
+  }
+  return html;
+}
+
+// ---------------------------------------------------------------------------
 // Result cards
 // ---------------------------------------------------------------------------
 
@@ -297,7 +375,7 @@ function upsertResultCard(msg: ResultMsg): void {
   } else if (msg.kind === "open" && msg.text) {
     const textEl = document.createElement("p");
     textEl.className = "result-text";
-    textEl.textContent = msg.text;
+    textEl.innerHTML = renderMarkdown(msg.text);
     card.appendChild(textEl);
   }
 }
@@ -340,7 +418,7 @@ function appendFeed(items: { author: string; text: string }[]): void {
     frag.appendChild(line);
   }
   feed.appendChild(frag);
-  while (feed.childElementCount > 120 && feed.firstChild) {
+  while (feed.childElementCount > 400 && feed.firstChild) {
     feed.removeChild(feed.firstChild);
   }
   feed.scrollTop = feed.scrollHeight;
@@ -359,6 +437,8 @@ function handleState(msg: StateMsg): void {
     el<HTMLInputElement>("dedupe").checked = msg.window.dedupe;
   if (typeof msg.window.merge_authors === "boolean")
     el<HTMLInputElement>("merge_authors").checked = msg.window.merge_authors;
+  if (typeof msg.window.capacity === "number")
+    setInputVal("capacity", msg.window.capacity);
 
   // Model inputs
   setInputVal("base_url", msg.model.base_url);
@@ -496,6 +576,7 @@ function wireButtons(): void {
       mode: el<HTMLSelectElement>("mode").value,
       dedupe: el<HTMLInputElement>("dedupe").checked,
       merge_authors: el<HTMLInputElement>("merge_authors").checked,
+      capacity: Number(inputVal("capacity")),
     });
   });
 

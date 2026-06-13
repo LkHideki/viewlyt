@@ -193,13 +193,20 @@ textarea {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  color: var(--text);
+  color: #f1f5f9;
   font-family: var(--font-sans);
   font-size: 0.88rem;
   padding: 0.4rem 0.6rem;
   outline: none;
   transition: border-color 0.15s;
   width: 100%;
+}
+
+input[type="text"]::placeholder,
+input[type="number"]::placeholder,
+input[type="password"]::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
 }
 
 input[type="text"]:focus,
@@ -220,7 +227,6 @@ textarea {
   font-size: 0.78rem;
   resize: vertical;
   line-height: 1.5;
-  color: var(--text-dim);
 }
 
 textarea[readonly] {
