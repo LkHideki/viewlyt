@@ -12,6 +12,7 @@ the pure modules. No Selenium anywhere.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import webbrowser
@@ -173,6 +174,7 @@ async def worker(server: LiveServer) -> None:
     instead of killing the loop.
     """
     last_stat = 0.0
+    last_ingested = -1
     while True:
         try:
             try:
@@ -183,18 +185,22 @@ async def worker(server: LiveServer) -> None:
             if got:
                 server.ingested += 1
                 server.buffer.add(msg)
+                # Mirror every message to the dashboard so the bridge is visibly working,
+                # independent of windowing or the LLM.
+                await server.dash.broadcast(
+                    {"type": "chat", "author": msg.author, "text": msg.text}
+                )
             if server.paused:
                 continue
             now = time.monotonic()
             if server.buffer.due(server.window, now):
                 w = server.buffer.emit(server.window, now)
                 await process_window(server, w, time.time())
-                last_stat = now
-            elif got and now - last_stat >= 0.25:
-                # Real-time feedback so the dashboard's counters climb as messages arrive,
-                # not only once a whole window is processed.
+                last_stat, last_ingested = now, server.ingested
+            elif now - last_stat >= 0.25 and server.ingested != last_ingested:
+                # Settle the counters in real time (and after a burst, once the chat quiets).
                 await broadcast_stat(server)
-                last_stat = now
+                last_stat, last_ingested = now, server.ingested
         except Exception:
             logger.exception("worker iteration failed")
             continue
@@ -202,7 +208,7 @@ async def worker(server: LiveServer) -> None:
 
 SNIPPET_JS = """(function () {
   var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, queue = [], sent = 0, captured = 0, connected = false;
+  var ws, queue = [], sent = 0, captured = 0, connected = false, pinger;
   var badge = document.createElement("div");
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
@@ -210,8 +216,8 @@ SNIPPET_JS = """(function () {
   function status() { paint("connected | captured " + captured + " | sent " + sent, "#14532d"); }
   function connect() {
     try { ws = new WebSocket(WS_URL); } catch (e) { paint("cannot open socket", "#7f1d1d"); return; }
-    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); while (queue.length && ws.readyState === 1) { ws.send(queue.shift()); sent++; } status(); };
-    ws.onclose = function () { connected = false; paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
+    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); while (queue.length && ws.readyState === 1) { ws.send(queue.shift()); sent++; } status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
+    ws.onclose = function () { connected = false; if (pinger) clearInterval(pinger); paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
     ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + WS_URL + " failed. Usual causes: (1) accept Chrome's one-time 'local network' permission; (2) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
   }
   function send(obj) { var s = JSON.stringify(obj); if (ws && ws.readyState === 1) { ws.send(s); sent++; } else { queue.push(s); if (queue.length > 2000) queue.shift(); } if (connected) status(); }
@@ -256,6 +262,21 @@ def create_app(server: LiveServer) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
 
+    @app.middleware("http")
+    async def _allow_private_network(request: Request, call_next):
+        # Let a page on https://youtube.com reach this loopback server: answer the
+        # Private Network Access preflight and tag responses so Chrome is less likely
+        # to block the ws://127.0.0.1 connection.
+        if request.method == "OPTIONS":
+            resp: Response = Response(status_code=200)
+        else:
+            resp = await call_next(request)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+        resp.headers["Access-Control-Allow-Methods"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "*"
+        return resp
+
     @app.get("/snippet.js")
     async def snippet_js(request: Request) -> Response:
         host = request.url.hostname or "127.0.0.1"
@@ -274,14 +295,21 @@ def create_app(server: LiveServer) -> FastAPI:
         await ws.accept()
         try:
             while True:
-                data = await ws.receive_json()
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    continue  # skip one malformed frame instead of tearing down the bridge
                 m = message_from_ingest(data)
                 if m is not None:
                     try:
                         server.queue.put_nowait(m)
                     except asyncio.QueueFull:
                         pass
-        except (WebSocketDisconnect, Exception):
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            logger.exception("ingest socket error")
             return
 
     @app.websocket("/dashboard")
