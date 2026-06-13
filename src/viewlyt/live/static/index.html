@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-C93LkdrG.js"></script>
+    <script type="module" crossorigin src="./assets/index-BvT8Ec3w.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-1cxn33G2.css">
   </head>
   <body>
@@ -66,12 +66,25 @@
         <section class="panel">
           <h2>Model</h2>
           <div class="field-group">
+            <label for="provider">Provider</label>
+            <select id="provider">
+              <option value="lmstudio">LM Studio</option>
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="groq">Groq</option>
+            </select>
+          </div>
+          <div class="field-group">
             <label for="base_url">Base URL</label>
             <input type="text" id="base_url" value="http://localhost:1234/v1" />
           </div>
           <div class="field-group">
             <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
-            <input type="password" id="api_key" placeholder="lm-studio" />
+            <div style="flex-direction:row;align-items:center;gap:8px;display:flex">
+              <input type="password" id="api_key" placeholder="any non-empty" style="flex:1" />
+              <button type="button" id="toggle-key" class="btn-secondary">show</button>
+            </div>
           </div>
           <div class="field-group">
             <label for="model">Model ID</label>

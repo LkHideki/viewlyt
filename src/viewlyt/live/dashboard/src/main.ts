@@ -2,6 +2,44 @@
 // Strict TypeScript, dependency-free.
 
 // ---------------------------------------------------------------------------
+// Provider table
+// ---------------------------------------------------------------------------
+
+interface ProviderInfo {
+  base_url: string;
+  model: string;
+  keyHint: string;
+}
+
+const PROVIDERS: Record<string, ProviderInfo> = {
+  lmstudio: {
+    base_url: "http://localhost:1234/v1",
+    model: "local-model",
+    keyHint: "any non-empty",
+  },
+  ollama: {
+    base_url: "http://localhost:11434/v1",
+    model: "llama3.1",
+    keyHint: "any non-empty",
+  },
+  openai: {
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    keyHint: "sk-...",
+  },
+  openrouter: {
+    base_url: "https://openrouter.ai/api/v1",
+    model: "openai/gpt-4o-mini",
+    keyHint: "sk-or-...",
+  },
+  groq: {
+    base_url: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+    keyHint: "gsk_...",
+  },
+};
+
+// ---------------------------------------------------------------------------
 // WebSocket base
 // ---------------------------------------------------------------------------
 
@@ -327,6 +365,15 @@ function handleState(msg: StateMsg): void {
   setInputVal("model", msg.model.model);
   // api_key is intentionally not filled (write-only)
 
+  // Reverse-map base_url -> provider dropdown
+  const providerSel = el<HTMLSelectElement>("provider");
+  const matchedKey = Object.keys(PROVIDERS).find(
+    (k) => PROVIDERS[k].base_url === msg.model.base_url
+  );
+  if (matchedKey !== undefined) {
+    providerSel.value = matchedKey;
+  }
+
   // Stats
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
 
@@ -516,6 +563,27 @@ function wireButtons(): void {
   });
 
   el("probe-kind").addEventListener("change", updateProbeFieldVisibility);
+
+  el<HTMLSelectElement>("provider").addEventListener("change", () => {
+    const key = el<HTMLSelectElement>("provider").value;
+    const info = PROVIDERS[key];
+    if (!info) return;
+    setInputVal("base_url", info.base_url);
+    setInputVal("model", info.model);
+    el<HTMLInputElement>("api_key").placeholder = info.keyHint;
+  });
+
+  el("toggle-key").addEventListener("click", () => {
+    const apiKeyEl = el<HTMLInputElement>("api_key");
+    const toggleBtn = el<HTMLButtonElement>("toggle-key");
+    if (apiKeyEl.type === "password") {
+      apiKeyEl.type = "text";
+      toggleBtn.textContent = "hide";
+    } else {
+      apiKeyEl.type = "password";
+      toggleBtn.textContent = "show";
+    }
+  });
 
   el("copy-snippet").addEventListener("click", () => {
     const text = el<HTMLTextAreaElement>("snippet").value;
