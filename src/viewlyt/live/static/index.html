@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-CtCnJ90c.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BSHS-Tm8.css">
+    <script type="module" crossorigin src="./assets/index-CKxtIpn6.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CZAfDQF0.css">
   </head>
   <body>
     <header>
@@ -76,27 +76,27 @@
           <div class="field-group">
             <label for="provider">Provider</label>
             <select id="provider">
+              <option value="openrouter" selected>OpenRouter</option>
               <option value="lmstudio">LM Studio</option>
               <option value="ollama">Ollama</option>
               <option value="openai">OpenAI</option>
-              <option value="openrouter">OpenRouter</option>
               <option value="groq">Groq</option>
             </select>
           </div>
           <div class="field-group">
             <label for="base_url">Base URL</label>
-            <input type="text" id="base_url" value="http://localhost:1234/v1" />
+            <input type="text" id="base_url" value="https://openrouter.ai/api/v1" />
           </div>
           <div class="field-group">
             <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
             <div style="flex-direction:row;align-items:center;gap:8px;display:flex">
-              <input type="password" id="api_key" placeholder="any non-empty" style="flex:1" />
+              <input type="password" id="api_key" placeholder="sk-or-..." style="flex:1" />
               <button type="button" id="toggle-key" class="btn-secondary">show</button>
             </div>
           </div>
           <div class="field-group">
             <label for="model">Model ID</label>
-            <input type="text" id="model" value="local-model" />
+            <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
           </div>
           <div class="button-row">
             <button id="apply-model" class="btn-primary">Apply</button>

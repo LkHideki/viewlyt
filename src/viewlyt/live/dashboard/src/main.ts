@@ -29,7 +29,7 @@ const PROVIDERS: Record<string, ProviderInfo> = {
   },
   openrouter: {
     base_url: "https://openrouter.ai/api/v1",
-    model: "openai/gpt-4o-mini",
+    model: "google/gemini-3.1-flash-lite",
     keyHint: "sk-or-...",
   },
   groq: {
@@ -314,39 +314,11 @@ function getCategoryColor(index: number): string {
   return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
 }
 
-function upsertResultCard(msg: ResultMsg): void {
-  const container = el<HTMLDivElement>("results");
+const HISTORY_MAX = 20;
 
-  // Remove empty-hint on first result
-  const hint = container.querySelector(".empty-hint");
-  if (hint) hint.remove();
-
-  let card = container.querySelector<HTMLDivElement>(
-    `[data-probe-id="${CSS.escape(msg.probe_id)}"]`
-  );
-  if (!card) {
-    card = document.createElement("div");
-    card.className = "result-card";
-    card.dataset["probeId"] = msg.probe_id;
-    container.prepend(card);
-  }
-
-  card.innerHTML = "";
-
-  const header = document.createElement("div");
-  header.className = "result-header";
-
-  const labelEl = document.createElement("span");
-  labelEl.className = "result-label";
-  labelEl.textContent = msg.label;
-
-  const meta = document.createElement("span");
-  meta.className = "result-meta";
-  meta.textContent = `n=${msg.n}  ·  ${new Date(msg.ts * 1000).toLocaleTimeString()}`;
-
-  header.appendChild(labelEl);
-  header.appendChild(meta);
-  card.appendChild(header);
+function buildResultBody(msg: ResultMsg): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "entry-body";
 
   if (msg.kind === "classification" && msg.pct) {
     const barsEl = document.createElement("div");
@@ -378,12 +350,74 @@ function upsertResultCard(msg: ResultMsg): void {
       row.appendChild(pctLabel);
       barsEl.appendChild(row);
     });
-    card.appendChild(barsEl);
+    body.appendChild(barsEl);
   } else if (msg.kind === "open" && msg.text) {
+    // Preprocess: insert newline before inline ordinal markers so list items
+    // don't run together when the model returns the list on one line.
+    // Covers: "1º", "2°", "3)" etc. (masculine ordinal º, degree °, closing paren)
+    const preprocessed = msg.text.replace(/\s+(\d+\s*[º°)])/g, "\n$1");
     const textEl = document.createElement("p");
     textEl.className = "result-text";
-    textEl.innerHTML = renderMarkdown(msg.text);
-    card.appendChild(textEl);
+    textEl.innerHTML = renderMarkdown(preprocessed);
+    body.appendChild(textEl);
+  }
+
+  return body;
+}
+
+function upsertResultCard(msg: ResultMsg): void {
+  const container = el<HTMLDivElement>("results");
+
+  // Remove empty-hint on first result
+  const hint = container.querySelector(".empty-hint");
+  if (hint) hint.remove();
+
+  let card = container.querySelector<HTMLDivElement>(
+    `[data-probe-id="${CSS.escape(msg.probe_id)}"]`
+  );
+
+  if (!card) {
+    // Create card with persistent header + empty history container
+    card = document.createElement("div");
+    card.className = "result-card";
+    card.dataset["probeId"] = msg.probe_id;
+
+    const header = document.createElement("div");
+    header.className = "result-header";
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "result-label";
+    labelEl.textContent = msg.label;
+
+    header.appendChild(labelEl);
+    card.appendChild(header);
+
+    const historyEl = document.createElement("div");
+    historyEl.className = "result-history";
+    card.appendChild(historyEl);
+
+    container.prepend(card);
+  }
+
+  // Build a new history entry (newest first)
+  const historyEl = card.querySelector<HTMLDivElement>(".result-history")!;
+
+  const entry = document.createElement("div");
+  entry.className = "result-entry";
+
+  const timeEl = document.createElement("div");
+  timeEl.className = "entry-time";
+  timeEl.textContent =
+    new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
+
+  entry.appendChild(timeEl);
+  entry.appendChild(buildResultBody(msg));
+
+  historyEl.prepend(entry);
+
+  // Cap to HISTORY_MAX entries
+  while (historyEl.children.length > HISTORY_MAX) {
+    historyEl.removeChild(historyEl.lastChild!);
   }
 }
 

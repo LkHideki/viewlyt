@@ -438,6 +438,35 @@ button:active {
   line-height: 1.6;
 }
 
+/* Result history (scrollable timeline inside a card) */
+
+.result-history {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.result-entry {
+  border-top: 1px solid var(--border);
+  padding: 0.55rem 0 0.35rem;
+}
+
+.result-entry:first-child {
+  border-top: none;
+  padding-top: 0.15rem;
+}
+
+.entry-time {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: #94a3b8;
+  margin-bottom: 0.35rem;
+  letter-spacing: 0.03em;
+}
+
+.entry-body {
+  /* inherits bar/text styles; no extra rule needed */
+}
+
 /* -------------------------------------------------------------------------
    Snippet section
    ------------------------------------------------------------------------- */
