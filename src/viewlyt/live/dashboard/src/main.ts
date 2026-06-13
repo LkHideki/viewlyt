@@ -316,42 +316,100 @@ function getCategoryColor(index: number): string {
 
 const HISTORY_MAX = 20;
 
-function buildResultBody(msg: ResultMsg): HTMLElement {
+// ---------------------------------------------------------------------------
+// Classification sparkline history
+// Map<probe_id, Map<category, pct[]>> — at most 24 values per category.
+// ---------------------------------------------------------------------------
+
+const SPARK_MAX = 24;
+const classificationHistory = new Map<string, Map<string, number[]>>();
+
+/** Map a 0–100 value to one of the 8 unicode block characters. */
+function sparkline(values: number[]): string {
+  const blocks = "▁▂▃▄▅▆▇█";
+  return values
+    .map((v) => blocks[Math.min(7, Math.floor(v / 12.5))])
+    .join("");
+}
+
+/** Push `pct` into the per-category ring for `probeId`, capped to SPARK_MAX. */
+function pushSparkValue(probeId: string, category: string, pct: number): void {
+  let probeMap = classificationHistory.get(probeId);
+  if (!probeMap) {
+    probeMap = new Map<string, number[]>();
+    classificationHistory.set(probeId, probeMap);
+  }
+  let arr = probeMap.get(category);
+  if (!arr) {
+    arr = [];
+    probeMap.set(category, arr);
+  }
+  arr.push(pct);
+  if (arr.length > SPARK_MAX) {
+    arr.splice(0, arr.length - SPARK_MAX);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Classification card body builder (update-in-place)
+// ---------------------------------------------------------------------------
+
+function buildClassificationBody(msg: ResultMsg): HTMLElement {
+  const probeHist = classificationHistory.get(msg.probe_id);
   const body = document.createElement("div");
   body.className = "entry-body";
 
-  if (msg.kind === "classification" && msg.pct) {
-    const barsEl = document.createElement("div");
-    barsEl.className = "bars";
-    const categories = Object.entries(msg.pct);
-    categories.forEach(([cat, pct], i) => {
-      const row = document.createElement("div");
-      row.className = "bar-row";
+  if (!msg.pct) return body;
 
-      const catLabel = document.createElement("span");
-      catLabel.className = "bar-label";
-      catLabel.textContent = cat;
+  const barsEl = document.createElement("div");
+  barsEl.className = "bars";
 
-      const track = document.createElement("div");
-      track.className = "bar-track";
+  Object.entries(msg.pct).forEach(([cat, pct], i) => {
+    const row = document.createElement("div");
+    row.className = "bar-row";
 
-      const fill = document.createElement("div");
-      fill.className = "bar-fill";
-      fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-      fill.style.backgroundColor = getCategoryColor(i);
+    const catLabel = document.createElement("span");
+    catLabel.className = "bar-label";
+    catLabel.textContent = cat;
 
-      const pctLabel = document.createElement("span");
-      pctLabel.className = "bar-pct";
-      pctLabel.textContent = `${pct.toFixed(1)}%`;
+    const track = document.createElement("div");
+    track.className = "bar-track";
 
-      track.appendChild(fill);
-      row.appendChild(catLabel);
-      row.appendChild(track);
-      row.appendChild(pctLabel);
-      barsEl.appendChild(row);
-    });
-    body.appendChild(barsEl);
-  } else if (msg.kind === "open" && msg.text) {
+    const fill = document.createElement("div");
+    fill.className = "bar-fill";
+    fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    fill.style.backgroundColor = getCategoryColor(i);
+
+    const pctLabel = document.createElement("span");
+    pctLabel.className = "bar-pct";
+    pctLabel.textContent = `${pct.toFixed(1)}%`;
+
+    const sparkEl = document.createElement("span");
+    sparkEl.className = "spark";
+    const history = probeHist?.get(cat) ?? [];
+    sparkEl.textContent = history.length > 0 ? sparkline(history) : "";
+
+    track.appendChild(fill);
+    row.appendChild(catLabel);
+    row.appendChild(track);
+    row.appendChild(pctLabel);
+    row.appendChild(sparkEl);
+    barsEl.appendChild(row);
+  });
+
+  body.appendChild(barsEl);
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// Open result body builder (one entry, timestamped)
+// ---------------------------------------------------------------------------
+
+function buildOpenBody(msg: ResultMsg): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "entry-body";
+
+  if (msg.kind === "open" && msg.text) {
     // Preprocess: insert newline before inline ordinal markers so list items
     // don't run together when the model returns the list on one line.
     // Covers: "1º", "2°", "3)" etc. (masculine ordinal º, degree °, closing paren)
@@ -377,7 +435,6 @@ function upsertResultCard(msg: ResultMsg): void {
   );
 
   if (!card) {
-    // Create card with persistent header + empty history container
     card = document.createElement("div");
     card.className = "result-card";
     card.dataset["probeId"] = msg.probe_id;
@@ -389,35 +446,68 @@ function upsertResultCard(msg: ResultMsg): void {
     labelEl.className = "result-label";
     labelEl.textContent = msg.label;
 
+    const metaEl = document.createElement("span");
+    metaEl.className = "result-meta";
     header.appendChild(labelEl);
+    header.appendChild(metaEl);
     card.appendChild(header);
 
-    const historyEl = document.createElement("div");
-    historyEl.className = "result-history";
-    card.appendChild(historyEl);
+    if (msg.kind === "classification") {
+      // Classification: single body div updated in place; no history list.
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "class-body";
+      card.appendChild(bodyEl);
+    } else {
+      // Open: scrollable history timeline.
+      const historyEl = document.createElement("div");
+      historyEl.className = "result-history";
+      card.appendChild(historyEl);
+    }
 
     container.prepend(card);
   }
 
-  // Build a new history entry (newest first)
-  const historyEl = card.querySelector<HTMLDivElement>(".result-history")!;
+  // Update the header meta (n + time) regardless of kind.
+  const metaEl = card.querySelector<HTMLSpanElement>(".result-meta");
+  if (metaEl) {
+    metaEl.textContent = new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
+  }
 
-  const entry = document.createElement("div");
-  entry.className = "result-entry";
+  if (msg.kind === "classification") {
+    // Push new values into sparkline history BEFORE building the body.
+    if (msg.pct) {
+      for (const [cat, pct] of Object.entries(msg.pct)) {
+        pushSparkValue(msg.probe_id, cat, pct);
+      }
+    }
+    // Replace the classification body in place.
+    const bodyEl = card.querySelector<HTMLDivElement>(".class-body");
+    if (bodyEl) {
+      bodyEl.innerHTML = "";
+      bodyEl.appendChild(buildClassificationBody(msg));
+    }
+  } else {
+    // Open: prepend a new timestamped entry to the history timeline.
+    const historyEl = card.querySelector<HTMLDivElement>(".result-history");
+    if (!historyEl) return;
 
-  const timeEl = document.createElement("div");
-  timeEl.className = "entry-time";
-  timeEl.textContent =
-    new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
+    const entry = document.createElement("div");
+    entry.className = "result-entry";
 
-  entry.appendChild(timeEl);
-  entry.appendChild(buildResultBody(msg));
+    const timeEl = document.createElement("div");
+    timeEl.className = "entry-time";
+    timeEl.textContent =
+      new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
 
-  historyEl.prepend(entry);
+    entry.appendChild(timeEl);
+    entry.appendChild(buildOpenBody(msg));
 
-  // Cap to HISTORY_MAX entries
-  while (historyEl.children.length > HISTORY_MAX) {
-    historyEl.removeChild(historyEl.lastChild!);
+    historyEl.prepend(entry);
+
+    // Cap to HISTORY_MAX entries.
+    while (historyEl.children.length > HISTORY_MAX) {
+      historyEl.removeChild(historyEl.lastChild!);
+    }
   }
 }
 

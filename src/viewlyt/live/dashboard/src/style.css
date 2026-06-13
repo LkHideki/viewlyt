@@ -395,7 +395,7 @@ button:active {
 
 .bar-row {
   display: grid;
-  grid-template-columns: 120px 1fr 52px;
+  grid-template-columns: 120px 1fr 52px auto;
   align-items: center;
   gap: 0.5rem;
 }
@@ -428,6 +428,15 @@ button:active {
   font-size: 0.72rem;
   color: var(--text-dim);
   text-align: right;
+}
+
+.spark {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: #94a3b8;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+  opacity: 0.75;
 }
 
 /* Open summary */
