@@ -152,14 +152,16 @@
           popout showing connected / captured / sent counts.
         </p>
         <p class="hint">
-          <strong>Recommended (set-and-forget):</strong> install the
-          <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>
-          or
-          <a href="https://violentmonkey.github.io/" target="_blank" rel="noopener">Violentmonkey</a>
-          browser extension, then click
-          <a id="userscript-link" href="/viewlyt.user.js">Install viewlyt userscript</a>
-          and confirm &mdash; it auto-runs on every chat popout, no pasting.
+          <strong>Bookmark (recommended &mdash; set up once, no extension):</strong>
+          right-click your bookmarks bar &rarr; <em>Add page&hellip;</em> (or open the
+          Bookmark Manager), name it <code>viewlyt</code>, and paste the code below as
+          its <strong>URL</strong>. Then, on the chat popout, click the
+          <code>viewlyt</code> bookmark.
         </p>
+        <textarea id="bookmarklet" readonly rows="3" spellcheck="false"></textarea>
+        <div class="button-row">
+          <button id="copy-bookmarklet" class="btn-primary">Copy bookmark code</button>
+        </div>
         <p class="hint">
           <strong>Or paste in the console:</strong> on the popout, open DevTools
           (F12) &rarr; Console, paste the snippet below, press Enter. If Chrome

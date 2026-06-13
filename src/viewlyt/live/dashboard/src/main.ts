@@ -524,6 +524,11 @@ function wireButtons(): void {
       el<HTMLTextAreaElement>("snippet").select();
     });
   });
+
+  el("copy-bookmarklet").addEventListener("click", () => {
+    const bm = el<HTMLTextAreaElement>("bookmarklet");
+    navigator.clipboard.writeText(bm.value).catch(() => bm.select());
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -535,6 +540,9 @@ async function loadSnippet(): Promise<void> {
     const r = await fetch("/snippet.js");
     const text = await r.text();
     el<HTMLTextAreaElement>("snippet").value = text;
+    // Build a one-click bookmark ("bookmarklet") from the same snippet.
+    const bm = document.getElementById("bookmarklet") as HTMLTextAreaElement | null;
+    if (bm) bm.value = "javascript:" + encodeURIComponent(text);
   } catch {
     el<HTMLTextAreaElement>("snippet").value =
       "// Could not load snippet.js from server.";
