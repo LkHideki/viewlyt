@@ -74,6 +74,8 @@ class LiveServer:
         self.processing = False
         self.last_latency_ms: int | None = None
         self.ingested = 0
+        self.total_tokens = 0
+        self.total_cost = 0.0
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
@@ -168,6 +170,8 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.llm_cfg = LLMConfig()
             server.buffer = WindowBuffer(maxlen=server.window.capacity)
             server._client = None
+            server.total_tokens = 0
+            server.total_cost = 0.0
             try:
                 persistence.STATE_FILE.unlink(missing_ok=True)
             except Exception:
@@ -206,9 +210,16 @@ async def _rewrite_and_add(server: LiveServer, kind: str, text: str, categories:
     try:
         try:
             spec = await rewrite_probe_spec(server.client(), kind, text, categories)
+            # In "auto" mode the model chose the kind, so the spec carries a "kind"
+            # key we pop and honor; explicit kinds keep the requested one.
+            resolved_kind = str(spec.pop("kind", kind) if kind == "auto" else kind)
             probe_id = _slugify_probe_id(server, str(spec.get("label") or ""))
-            probe_dict = {"kind": kind, "id": probe_id, **spec}
-            if kind == "classification" and not probe_dict.get("categories") and categories:
+            probe_dict = {"kind": resolved_kind, "id": probe_id, **spec}
+            if (
+                resolved_kind == "classification"
+                and not probe_dict.get("categories")
+                and categories
+            ):
                 probe_dict["categories"] = categories
         except Exception:
             logger.exception("probe rewrite failed; adding raw text")
@@ -263,7 +274,11 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
         window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors
     )
     window = cleaned[-server.window.n :]
-    results = await run_probes(server.client(), probes, window)
+    # Snapshot the client's cumulative usage so we can attribute this batch's spend.
+    c = server.client()
+    before_tok = getattr(c, "total_tokens", 0)
+    before_cost = getattr(c, "total_cost", 0.0)
+    results = await run_probes(c, probes, window)
     for r in results:
         r.ts = now_wall
         await server.dash.broadcast(r.to_dict())
@@ -278,6 +293,20 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
                 ),
             }
         )
+    # Cost frame for this analysed window: per-batch delta + running totals.
+    batch_tok = getattr(c, "total_tokens", 0) - before_tok
+    batch_cost = getattr(c, "total_cost", 0.0) - before_cost
+    server.total_tokens += batch_tok
+    server.total_cost += batch_cost
+    await server.dash.broadcast(
+        {
+            "type": "cost",
+            "tokens_total": server.total_tokens,
+            "tokens_delta": batch_tok,
+            "cost_total": round(server.total_cost, 6),
+            "cost_delta": round(batch_cost, 6),
+        }
+    )
     await broadcast_stat(server, len(window))
 
 

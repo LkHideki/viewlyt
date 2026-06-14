@@ -151,12 +151,14 @@ class ClassificationProbe(Probe):
         categories: list[str],
         ema_alpha: float = 0.0,
         chart: str = "bars",
+        colors: dict[str, str] | None = None,
     ) -> None:
         super().__init__(id, label)
         self.question = question
         self.categories = [c.strip() for c in categories if c.strip()]
         self.ema_alpha = float(ema_alpha)
         self.chart = str(chart) if chart else "bars"
+        self.colors: dict[str, str] = dict(colors) if colors else {}
         self._ema: dict[str, float] | None = None
 
     def build_prompt(self, messages: list[ChatMessage]) -> tuple[str, str]:
@@ -237,6 +239,8 @@ class ClassificationProbe(Probe):
             ema_alpha=self.ema_alpha,
             chart=self.chart,
         )
+        if self.colors:
+            d["colors"] = self.colors
         return d
 
     @classmethod
@@ -249,6 +253,7 @@ class ClassificationProbe(Probe):
             else:
                 categories = list(d.get("categories") or [])
                 label = _auto_label(", ".join(categories)) if categories else str(d["id"])
+        colors = dict(d.get("colors") or {})
         return cls(
             id=str(d["id"]),
             label=label,
@@ -256,6 +261,7 @@ class ClassificationProbe(Probe):
             categories=list(d.get("categories") or []),
             ema_alpha=float(d.get("ema_alpha") or 0.0),
             chart=str(d.get("chart") or "bars"),
+            colors=colors,
         )
 
 

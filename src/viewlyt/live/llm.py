@@ -92,6 +92,8 @@ class LLMClient:
 
         self.cfg = cfg
         self.model = cfg.model
+        self.total_tokens = 0
+        self.total_cost = 0.0
         kwargs: dict = {
             "base_url": cfg.base_url,
             "api_key": cfg.api_key or "x",
@@ -103,7 +105,34 @@ class LLMClient:
                 "HTTP-Referer": "https://github.com/LkHideki/viewlyt",
                 "X-Title": "viewlyt",
             }
+            # Ask OpenRouter to include generation usage (token counts + USD cost) in
+            # the response, so _record_usage can accumulate real spend.
+            self._usage_extra: dict = {"usage": {"include": True}}
+        else:
+            self._usage_extra = {}
         self._client = AsyncOpenAI(**kwargs)
+
+    def _record_usage(self, resp: object) -> None:
+        """Accumulate token/cost usage from a completion response (never raises).
+
+        ``total_tokens`` falls back to ``prompt + completion`` when absent. ``cost``
+        comes from the provider (OpenRouter exposes USD on ``usage.cost``; on the
+        pydantic model it lands in ``model_extra``) and is ``0`` when not provided.
+        """
+        try:
+            u = getattr(resp, "usage", None)
+            if u is None:
+                return
+            tokens = getattr(u, "total_tokens", 0) or (
+                getattr(u, "prompt_tokens", 0) + getattr(u, "completion_tokens", 0)
+            )
+            cost = getattr(u, "cost", None)
+            if cost is None:
+                cost = (getattr(u, "model_extra", None) or {}).get("cost")
+            self.total_tokens += int(tokens or 0)
+            self.total_cost += float(cost or 0.0)
+        except Exception:
+            pass
 
     async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
         system, user = probe.build_prompt(messages)
@@ -114,6 +143,7 @@ class LLMClient:
         schema = probe.output_schema()
         # Structured-output fallback chain: try json_schema, then json_object; if both
         # fail (provider doesn't support them) fall through to a plain call.
+        extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
         for rf in (
             {"type": "json_schema", "json_schema": schema},
             {"type": "json_object"},
@@ -124,7 +154,9 @@ class LLMClient:
                     messages=msgs,
                     temperature=0,
                     response_format=rf,
+                    **extra,
                 )
+                self._record_usage(resp)
                 return parse_json_loose(resp.choices[0].message.content or "")
             except Exception:
                 continue
@@ -132,8 +164,9 @@ class LLMClient:
         # bad key / network error) propagates up to run_probes, which surfaces it
         # in the dashboard error banner rather than silently returning {}.
         resp = await self._client.chat.completions.create(
-            model=self.model, messages=msgs, temperature=0
+            model=self.model, messages=msgs, temperature=0, **extra
         )
+        self._record_usage(resp)
         return parse_json_loose(resp.choices[0].message.content or "")
 
     async def complete_json(self, system: str, user: str, schema: dict) -> dict:
@@ -148,6 +181,7 @@ class LLMClient:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
+        extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
         for rf in (
             {"type": "json_schema", "json_schema": schema},
             {"type": "json_object"},
@@ -158,13 +192,16 @@ class LLMClient:
                     messages=msgs,
                     temperature=0,
                     response_format=rf,
+                    **extra,
                 )
+                self._record_usage(resp)
                 return parse_json_loose(resp.choices[0].message.content or "")
             except Exception:
                 continue
         resp = await self._client.chat.completions.create(
-            model=self.model, messages=msgs, temperature=0
+            model=self.model, messages=msgs, temperature=0, **extra
         )
+        self._record_usage(resp)
         return parse_json_loose(resp.choices[0].message.content or "")
 
 
@@ -239,6 +276,9 @@ async def rewrite_probe_spec(
     * ``kind == "classification"`` → ``{"question", "categories", "label", "chart"}``;
       3-6 mutually-exclusive lowercase categories. Caller-supplied categories always
       win (forced after the call).
+    * ``kind == "auto"`` → the model FIRST decides between the two kinds, so the
+      returned dict ALSO carries a ``"kind"`` key (``"open"`` or ``"classification"``)
+      alongside that kind's normal fields. The explicit kinds never return ``"kind"``.
     """
     caller_cats = _clean_categories(categories)
     system = (
@@ -248,6 +288,9 @@ async def rewrite_probe_spec(
         "spec that analyzes the WHOLE sample together, grounded in what the "
         "messages actually say. Answer ONLY with the required JSON."
     )
+
+    if kind == "auto":
+        return await _rewrite_auto(client, system, text, caller_cats)
 
     if kind == "open":
         schema = {
@@ -334,3 +377,93 @@ async def rewrite_probe_spec(
     if chart not in CHART_TYPES:
         chart = "bars"
     return {"question": question, "categories": cats, "label": label, "chart": chart}
+
+
+async def _rewrite_auto(client: LLMRunner, system: str, text: str, caller_cats: list[str]) -> dict:
+    """Fully automatic rewrite: the model picks the kind AND returns its spec.
+
+    Unlike the explicit paths, the returned dict CARRIES a ``"kind"`` key. A single
+    permissive ``json_schema`` lets the model fill in either the open fields
+    (``instruction``/``max_words``) or the classification fields
+    (``question``/``categories``/``chart``); we then normalize defensively for the
+    kind it chose, reusing the same fallbacks as the explicit paths.
+    """
+    schema = {
+        "name": "auto_probe_spec",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "kind": {"type": "string", "enum": ["open", "classification"]},
+                "label": {"type": "string"},
+                "instruction": {"type": "string"},
+                "max_words": {"type": "integer"},
+                "question": {"type": "string"},
+                "categories": {"type": "array", "items": {"type": "string"}},
+                "chart": {"type": "string"},
+            },
+            "required": ["kind", "label"],
+        },
+    }
+    if caller_cats:
+        cats_line = (
+            "If you choose 'classification', the user already picked these categories "
+            f"and you MUST keep them EXACTLY: {', '.join(caller_cats)}.\n"
+        )
+    else:
+        cats_line = (
+            "If you choose 'classification', pick 3-6 mutually-exclusive, lowercase, "
+            "collectively-exhaustive categories.\n"
+        )
+    user = (
+        f"User request: {text}\n\n"
+        "FIRST decide the best probe 'kind' for this request over the whole sample:\n"
+        "- 'classification' sorts EACH message into 3-6 mutually-exclusive categories "
+        "to produce live percentages (sentiment, yes/no, topic buckets);\n"
+        "- 'open' writes a short synthesis across all messages (e.g. 'list the top 3 "
+        "complaints', 'what are people asking about').\n"
+        "THEN return the full spec for the kind you chose.\n"
+        "For 'open': set 'instruction' (start it like \"Across all the sampled "
+        "live-chat messages, ...\") and 'max_words' (caps the answer length).\n"
+        f"For 'classification': set 'question' (how to classify each message), "
+        f"'categories', and 'chart' (one of {', '.join(CHART_TYPES)}). {cats_line}"
+        'The "label" is always a short 2-4 word title.\n'
+        'Return e.g. {"kind":"open","instruction":"...","label":"...","max_words":60} '
+        'or {"kind":"classification","question":"...","categories":["...","..."],'
+        '"label":"...","chart":"bars"}.'
+    )
+    try:
+        spec = await client.complete_json(system, user, schema)
+    except Exception:
+        spec = {}
+    spec = spec if isinstance(spec, dict) else {}
+
+    chosen = str(spec.get("kind") or "").strip().lower()
+    label = str(spec.get("label") or "").strip()
+    if chosen == "classification":
+        question = str(spec.get("question") or "").strip() or text
+        cats = _clean_categories(spec.get("categories"))
+        if caller_cats:
+            cats = caller_cats
+        elif len(cats) < 2:
+            cats = ["positive", "negative", "neutral"]
+        chart = str(spec.get("chart") or "").strip().lower()
+        if chart not in CHART_TYPES:
+            chart = "bars"
+        return {
+            "kind": "classification",
+            "question": question,
+            "categories": cats,
+            "label": label,
+            "chart": chart,
+        }
+    # Default (and the explicit 'open' choice) → open synthesis.
+    instruction = str(spec.get("instruction") or "").strip() or text
+    max_words = _clamp_int(spec.get("max_words"), 60, 10, 200)
+    return {
+        "kind": "open",
+        "instruction": instruction,
+        "max_words": max_words,
+        "label": label,
+    }
