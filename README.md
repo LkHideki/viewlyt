@@ -28,6 +28,19 @@ into `out/<title-slug>-<video_id>.transcript.md`. Use `-c -t` for comments
 > transcript (previously, `--transcript` also kept the comments). For both,
 > use `-c -t`.
 
+## Live mode (real-time)
+
+`viewlyt[live]` adds **`viewlyt-live`**: it taps a YouTube **live chat** in real
+time, batches the messages to an LLM, and streams the results — live percentages,
+rolling summaries, and charts — to a local dashboard you drive in a second window
+(create probes by typing a question, set a spending budget, pick the output
+language, and more). See **[how-to.md](how-to.md)** for the full guide.
+
+```bash
+uv sync --extra live
+uv run viewlyt-live 'https://www.youtube.com/watch?v=LIVE_ID'
+```
+
 ## Requirements
 
 - `uv` (installs/manages Python; requires **Python ≥ 3.11**, and the

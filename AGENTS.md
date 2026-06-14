@@ -31,6 +31,11 @@ uv run pre-commit install                           # roda ruff + pytest a cada 
 `uv sync` instala também o dependency-group `dev` (ruff, pytest, pre-commit).
 As funções puras também rodam sem pytest via `uv run python tests/test_units.py`.
 
+**Modo live (opt-in, `uv sync --extra live`):** `uv run viewlyt-live '<url-da-live>'`
+sobe um servidor FastAPI + dashboard que analisa o chat ao vivo com LLM. O código vive
+em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
+`persistence`; dashboard Vite+TS em `dashboard/` → `static/`). Veja @how-to.md.
+
 ## Estrutura
 
 - `src/viewlyt/htmltext.py` — funções de texto **puras, só com stdlib** (HTML→texto, slug,
@@ -53,6 +58,7 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 - `tests/test_integration.py` — integração sem navegador (monkeypatch do boundary Selenium em `cli`/`api`).
 - `tests/test_smoke.py` — smoke da CLI por subprocess (`--version`/`--help`/exit codes/entry point).
 - `tests/test_e2e.py` — e2e real (Chrome + rede), **opt-in** via `VIEWLYT_E2E=1` (pulado por padrão).
+- `src/viewlyt/live/` — subpacote **opt-in** do modo live (real-time, LLM); testes em `tests/test_live_*.py`. Veja @how-to.md.
 - `out/` — entregáveis (no `.gitignore`).
 
 ## Convenções

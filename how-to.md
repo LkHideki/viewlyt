@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - `viewlyt[live]` installed (see Setup below).
-- An OpenAI-compatible LLM endpoint. The default is a **local** one via [LM Studio](https://lmstudio.ai/): start its local server and load any small model (e.g. `lmstudio-community/Qwen2.5-7B-Instruct-GGUF`).
+- An OpenAI-compatible LLM endpoint. The default is **OpenRouter** (`google/gemini-3.1-flash-lite`) — set `--api-key`. You can also point at **OpenAI**, **Groq**, or a **local** server (**LM Studio** `localhost:1234`, **Ollama** `localhost:11434`).
 - **Node** (any LTS) — needed once to build the dashboard (dev only; the built assets are served by the Python process).
 
 ## Setup
@@ -29,38 +29,40 @@ The process prints the URLs and opens the dashboard automatically (default port 
 ```
 viewlyt-live -> dashboard: http://127.0.0.1:8000/
 chat popout:  https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID
-snippet:      http://127.0.0.1:8000/snippet.js  (or copy it from the dashboard)
 ```
 
 ## The three windows
 
 **A — the live video** — watch it in any browser tab (optional, for context).
 
-**B — the chat popout** — open `https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID` in its own window, then start the capture there with **either**:
+**B — the chat popout** — open `https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID` in its own window, then start the capture there with **one** of (all on the dashboard's **Capture** panel):
 
-- **Bookmarklet (easiest — no "allow pasting"):** on the dashboard, drag the **▶ viewlyt capture** button to your bookmarks bar, then click it while on the popout tab.
-- **Console:** open DevTools (`F12`) → **Console**, paste the snippet from the dashboard, press Enter. If Chrome blocks the paste, type `allow pasting` there first.
+- **Browser extension (recommended, works in Chrome & Vivaldi):** download `viewlyt-extension.zip`, unzip, and load the folder via your browser's Extensions page (Developer mode → Load unpacked). It auto-runs on every chat popout.
+- **Bookmark:** copy the bookmark code and paste it as the **URL** of a new bookmark named `viewlyt`; click it while on the popout.
+- **Console:** open DevTools (`F12`) → **Console**, paste the snippet, press Enter. If Chrome blocks the paste, type `allow pasting` first.
 
-A small **viewlyt** badge appears in the popout (bottom-right) showing `connected | captured | sent`. Accept Chrome's one-time "Allow access to local network?" prompt if it appears.
+A small **viewlyt** badge appears in the popout (bottom-right) showing `connected | captured`. Accept Chrome's one-time "Allow access to local network?" prompt if it appears.
 
 > Always use the popout URL. The snippet cannot reach the server from a regular embedded chat frame.
 
-**C — the dashboard** — create probes and watch them update live.
+**C — the dashboard** — ask questions and watch the answers update live.
 
-## Example: two probes in action
+## The dashboard
 
-1. In the **Add Probe** panel, choose kind **classification**:
-   - Label: `Mood`
-   - Question: `How is the audience feeling?`
-   - Categories: `happy, angry, neutral`
-   - Click **Add Probe** and watch the `%` bars fill in under **Live Results** as new batches arrive.
+- **Header** — live counters (Ingested / Buffer / LLM / **Cost**), a spinner while the LLM is analyzing, and a **language selector** on the right (default **Português (BR)**) that sets the language the analyses are written in.
+- **Ask bar** (top) — type a question (e.g. `how is the crowd feeling?` or `liste os 3 jogadores mais elogiados`). In **Auto** the system rewrites it and picks the kind, chart and categories for you; **Open**/**Classify** force a kind. **Suggest** reads the current chat and proposes two ready-to-add probes. A new probe is analyzed right away (no wait for the next refresh).
+- **Live Results** — one card per probe: a kind badge, the editable label, the prompt beneath it, **Edit** (rename, and for classification reorder/recolor categories), and **Remove**. A **time slider** at the top of each card scrubs through past snapshots; click **LIVE** to snap back to the latest. **Analyze now** forces an immediate analysis. Classification cards choose among 11 visualizations (bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin), each with the per-category `%`, the change vs the previous snapshot, and a sparkline.
+- **Live Chat** — the raw captured feed (proves the bridge), bounded with its own scroll.
+- **Configs → Window** — **Sample** (target messages per analysis), **Refresh (s)**, **Buffer (max)**, **Mode** (count / time / hybrid), and the spam toggles. **Apply** takes effect immediately, no restart.
+- **Configs → Model** — provider / Base URL / API Key / Model ID, plus **Budget USD** (`0` = off; pauses analyses once the cumulative cost reaches it). **Apply** swaps the model live.
+- **Probes** — a manual **Add Probe** form and a **JSON import** for adding probes in bulk.
 
-2. In the **Window** panel, change **Size (n)** or **Overlap** and click **Apply** — the cadence changes immediately, no restart needed.
+## Example
 
-3. In the **Add Probe** panel, choose kind **open**:
-   - Label: `Complaints`
-   - Instruction: `What are the main complaints right now?`
-   - Click **Add Probe** and read the rolling summary under **Live Results**.
+1. Type `how is the audience feeling?` in the ask bar (**Auto**) and press Enter — the system creates a classification probe with inferred categories and the bars fill in as batches arrive.
+2. Click **Suggest** to get two more probes proposed from the live chat; click one to add it.
+3. On a probe card, switch the chart to **podium** or **area**, or click **Edit** to recolor a category. Drag the slider left to replay earlier snapshots; click **LIVE** to return.
+4. In **Window**, change **Refresh** and click **Apply** — the cadence changes immediately.
 
 ## Using a cloud or other model
 
@@ -73,11 +75,12 @@ uv run viewlyt-live "https://www.youtube.com/watch?v=LIVE_ID" \
   --model gpt-4o-mini
 ```
 
-You can also swap the model live from the dashboard's **Model** panel (Base URL / API Key / Model ID → **Apply**) without restarting the server.
+You can also swap the model (and set a spending budget, or the analysis language) live from the dashboard without restarting the server. The setup is persisted to `~/.viewlyt/live-state.json` (the API key Fernet-encrypted), so a restart resumes where you left off; **Reset / forget saved** in the Model panel clears it.
 
 ## Troubleshooting
 
-- **Badge says `CANNOT REACH SERVER` (or the counts stay at 0):** accept Chrome's one-time *local network* prompt; make sure you used the **popout** (not the embedded chat); keep the server on `127.0.0.1`. If you run an **ad blocker**, allow this page to reach `127.0.0.1` — uBlock Origin's *"Block outsider intrusion into LAN"* filter blocks exactly this, so disable it or allowlist the site.
+- **Badge says `CANNOT REACH SERVER` (or `captured` stays at 0):** accept Chrome's one-time *local network* prompt; make sure you used the **popout** (not the embedded chat); keep the server on `127.0.0.1`. If you run an **ad blocker**, allow this page to reach `127.0.0.1` — uBlock Origin's *"Block outsider intrusion into LAN"* filter blocks exactly this, so disable it or allowlist the site.
 - **A red `youtubei/v1/player/ad_break … net::ERR_BLOCKED_BY_CLIENT` line in the console:** that is your **ad blocker** blocking YouTube's ad telemetry. It is unrelated to viewlyt and does **not** affect chat capture — ignore it.
-- **`allow pasting`:** Chrome's console refuses pasted code until you type `allow pasting` once. Use the **bookmarklet** to skip this entirely.
+- **`allow pasting`:** Chrome's console refuses pasted code until you type `allow pasting` once. Use the **extension** or **bookmark** to skip this entirely.
+- **A probe shows no results:** it needs the LLM reachable (check the Model panel and the server log) and, for classification, at least a couple of categories. Click **Analyze now** to retry without waiting for the refresh.
 - **Spam / repeated messages:** the server drops a user's near-duplicate messages and merges their consecutive messages before sampling, so one spammer counts once (toggle in the **Window** panel).
