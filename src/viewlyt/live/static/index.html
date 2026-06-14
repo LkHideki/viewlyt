@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-BRhpWs-n.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DP8HHdB-.css">
+    <script type="module" crossorigin src="./assets/index-2bC7mW-z.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-a8Jn_aqr.css">
   </head>
   <body>
     <header>
@@ -36,10 +36,11 @@
           <button type="button" id="ask-open" class="ask-chip ask-chip-active">Open</button>
           <button type="button" id="ask-classify" class="ask-chip">Classify</button>
         </div>
-        <input type="text" id="ask-text" placeholder="Ask the audience… e.g. How are they feeling?" autocomplete="off" />
+        <input type="text" id="ask-text" placeholder="Ask the audience… AI rewrites it to analyze the whole sample" autocomplete="off" />
         <input type="text" id="ask-categories" class="hidden" placeholder="categories (CSV) — for Classify" autocomplete="off" />
         <button type="button" id="ask-send" class="btn-primary ask-send-btn">Add</button>
       </section>
+      <p class="hint" style="margin:-0.4rem 0 var(--gap)">The ask-bar rewrites your question into a probe that analyzes the entire sample. Use <strong>Add Probe</strong> below for an exact, manual probe.</p>
 
       <!-- Live results — the visual star, always visible at the top.
            Two columns: results (wide) on the left, live chat on the right. -->
@@ -191,7 +192,7 @@ open:
 classification:
   { "kind": "classification", "question": "What is the overall sentiment?",
     "categories": ["positive", "negative", "neutral"],
-    "label"?: "Sentiment", "chart"?: "bars|stacked|donut|lines|delta" }
+    "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta" }
 
 Notes:
   • "label" is optional — auto-generated from the text when omitted.
