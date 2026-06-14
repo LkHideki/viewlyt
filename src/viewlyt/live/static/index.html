@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-2bC7mW-z.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-a8Jn_aqr.css">
+    <script type="module" crossorigin src="./assets/index-B4ZGfY-h.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-wqxUUkde.css">
   </head>
   <body>
     <header>
@@ -28,15 +28,21 @@
           <span class="stat-label">LLM</span>
           <span id="proc" class="stat-value">idle</span>
         </div>
+        <div class="stat">
+          <span class="stat-label">Cost</span>
+          <span id="cost" class="stat-value">$0.0000</span>
+          <span id="cost-delta" class="hint"></span>
+        </div>
       </section>
 
       <!-- Quick ask-bar — always-visible probe composer -->
       <section class="ask-bar">
         <div class="ask-chips">
-          <button type="button" id="ask-open" class="ask-chip ask-chip-active">Open</button>
+          <button type="button" id="ask-auto" class="ask-chip ask-chip-active">Auto</button>
+          <button type="button" id="ask-open" class="ask-chip">Open</button>
           <button type="button" id="ask-classify" class="ask-chip">Classify</button>
         </div>
-        <input type="text" id="ask-text" placeholder="Ask the audience… AI rewrites it to analyze the whole sample" autocomplete="off" />
+        <input type="text" id="ask-text" placeholder="Ask the audience… the system auto-picks kind, chart &amp; categories" autocomplete="off" />
         <input type="text" id="ask-categories" class="hidden" placeholder="categories (CSV) — for Classify" autocomplete="off" />
         <button type="button" id="ask-send" class="btn-primary ask-send-btn">Add</button>
       </section>
@@ -210,13 +216,6 @@ Notes:
             </div>
           </section>
 
-          <!-- Active probes -->
-          <section class="panel full-width">
-            <h2>Active Probes</h2>
-            <div id="probes" class="probe-list">
-              <p class="empty-hint">No probes configured yet.</p>
-            </div>
-          </section>
         </div>
       </section>
 
