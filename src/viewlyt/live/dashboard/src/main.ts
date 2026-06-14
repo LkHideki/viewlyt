@@ -1517,7 +1517,7 @@ function syncCardsFromState(): void {
 // Per-card inline editor (A2/A3): rename / re-prompt / reorder / recolor.
 // ---------------------------------------------------------------------------
 
-/** Build one .edit-categories row: [color][name][up][down]. */
+/** Build one .edit-categories row: [color][name input][up][down][delete]. */
 function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTMLDivElement {
   const row = document.createElement("div");
   row.className = "edit-cat-row";
@@ -1527,32 +1527,45 @@ function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTML
   color.type = "color";
   color.value = colorFor(probeId, cat, orderIndex);
 
-  const name = document.createElement("span");
+  const name = document.createElement("input");
   name.className = "edit-cat-name";
-  name.textContent = cat;
+  name.type = "text";
+  name.value = cat;
+  name.placeholder = "category";
 
   const up = document.createElement("button");
   up.className = "cat-up btn-secondary btn-small";
   up.type = "button";
   up.textContent = "↑";
+  up.title = "Move up";
   up.addEventListener("click", () => {
     const prev = row.previousElementSibling;
-    if (prev) row.parentElement?.insertBefore(row, prev);
+    // Don't hop over the trailing "+ Add category" button (a non-row sibling).
+    if (prev && prev.classList.contains("edit-cat-row")) row.parentElement?.insertBefore(row, prev);
   });
 
   const down = document.createElement("button");
   down.className = "cat-down btn-secondary btn-small";
   down.type = "button";
   down.textContent = "↓";
+  down.title = "Move down";
   down.addEventListener("click", () => {
     const next = row.nextElementSibling;
-    if (next) row.parentElement?.insertBefore(next, row);
+    if (next && next.classList.contains("edit-cat-row")) row.parentElement?.insertBefore(next, row);
   });
+
+  const del = document.createElement("button");
+  del.className = "cat-del btn-danger btn-small";
+  del.type = "button";
+  del.textContent = "✕";
+  del.title = "Delete category";
+  del.addEventListener("click", () => row.remove());
 
   row.appendChild(color);
   row.appendChild(name);
   row.appendChild(up);
   row.appendChild(down);
+  row.appendChild(del);
   return row;
 }
 
@@ -1578,6 +1591,18 @@ function openEditor(probeId: string): void {
       editCats.classList.remove("hidden");
       const cats = probe?.categories ?? [];
       cats.forEach((cat, i) => editCats.appendChild(buildEditCatRow(probeId, cat, i)));
+      // "+ Add category": append a fresh, empty, focusable row before this button.
+      const addBtn = document.createElement("button");
+      addBtn.className = "cat-add btn-secondary btn-small";
+      addBtn.type = "button";
+      addBtn.textContent = "+ Add category";
+      addBtn.addEventListener("click", () => {
+        const count = editCats.querySelectorAll(".edit-cat-row").length;
+        const newRow = buildEditCatRow(probeId, "", count);
+        editCats.insertBefore(newRow, addBtn);
+        newRow.querySelector<HTMLInputElement>(".edit-cat-name")?.focus();
+      });
+      editCats.appendChild(addBtn);
     } else {
       editCats.classList.add("hidden");
     }
@@ -1600,10 +1625,14 @@ function saveEditor(probeId: string): void {
   if (kind === "classification") {
     const categories: string[] = [];
     const colors: Record<string, string> = {};
+    const seen = new Set<string>();
     const rows = card.querySelectorAll<HTMLDivElement>(".edit-categories .edit-cat-row");
     rows.forEach((row) => {
-      const cat = row.querySelector<HTMLSpanElement>(".edit-cat-name")?.textContent ?? "";
+      const cat = (row.querySelector<HTMLInputElement>(".edit-cat-name")?.value ?? "").trim();
       if (cat === "") return;
+      const key = cat.toLowerCase();
+      if (seen.has(key)) return; // skip duplicate category names
+      seen.add(key);
       categories.push(cat);
       const color = row.querySelector<HTMLInputElement>(".edit-color")?.value;
       if (color) colors[cat] = color;

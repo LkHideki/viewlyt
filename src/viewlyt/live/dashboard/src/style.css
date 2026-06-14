@@ -1339,10 +1339,10 @@ input[type="file"]::file-selector-button:hover {
   gap: .35rem;
 }
 
-/* Grid: [color swatch 28px] [name flex] [up btn auto] [down btn auto] */
+/* Grid: [color 28px] [name input flex] [up] [down] [delete] */
 .edit-cat-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: .5rem;
 }
@@ -1372,13 +1372,23 @@ input.edit-color:focus-visible {
   outline-offset: 2px;
 }
 
-/* Category name label (read-only display inside each row) */
-.edit-cat-name {
+/* Category name (editable input inside each row) */
+input.edit-cat-name {
   font-size: .82rem;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: .2rem .45rem;
+  width: 100%;
+}
+
+/* Per-row delete button + the add-category button */
+.cat-del {
+  font-size: .7rem;
+  padding: .1rem .45rem;
+  line-height: 1.3;
+}
+
+.cat-add {
+  align-self: flex-start;
+  margin-top: .15rem;
 }
 
 /* Reorder buttons */
