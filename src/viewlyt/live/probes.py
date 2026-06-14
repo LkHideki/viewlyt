@@ -184,15 +184,17 @@ class ClassificationProbe(Probe):
             f"Question: {self.question}\n"
             f"Categories: {cats}\n\n"
             f"Messages:\n{_numbered(messages)}\n\n"
-            'Return {"labels":[{"i":<message number>,"label":<category>}, ...]} '
-            "with one entry per message."
+            'Return {"labels":["<category>", ...]} — exactly one category per '
+            "message, in the same order, and nothing else."
         )
         return system, user
 
     def output_schema(self) -> dict:
-        # An empty enum is an invalid JSON schema (it rejects every value); fall back
-        # to a plain string for a degenerate probe that somehow has no categories.
-        label_schema: dict = (
+        # Output is a FLAT array of category strings (one per message) — dropping the
+        # per-item {"i","label"} wrapper roughly quarters the (pricey) output tokens.
+        # An empty enum is invalid JSON schema (rejects every value), so a degenerate
+        # no-category probe falls back to a plain string.
+        item_schema: dict = (
             {"type": "string", "enum": self.categories} if self.categories else {"type": "string"}
         )
         return {
@@ -201,20 +203,7 @@ class ClassificationProbe(Probe):
             "schema": {
                 "type": "object",
                 "additionalProperties": False,
-                "properties": {
-                    "labels": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {
-                                "i": {"type": "integer"},
-                                "label": label_schema,
-                            },
-                            "required": ["i", "label"],
-                        },
-                    }
-                },
+                "properties": {"labels": {"type": "array", "items": item_schema}},
                 "required": ["labels"],
             },
         }
@@ -225,7 +214,9 @@ class ClassificationProbe(Probe):
         norm_to_cat = {_fold_label(c): c for c in self.categories}
         counts: Counter[str] = Counter()
         for item in (parsed or {}).get("labels", []) or []:
-            canon = norm_to_cat.get(_fold_label(str(item.get("label", ""))))
+            # Accept a flat "category" string (current shape) or a legacy {"label": …} dict.
+            raw = item.get("label", "") if isinstance(item, dict) else item
+            canon = norm_to_cat.get(_fold_label(str(raw)))
             if canon is not None:
                 counts[canon] += 1
         total = sum(counts.values())

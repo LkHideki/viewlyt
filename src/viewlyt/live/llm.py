@@ -103,6 +103,7 @@ class LLMClient:
         self.language = cfg.language
         self.total_tokens = 0
         self.total_cost = 0.0
+        self._rf_mode: str | None = None  # remembered working response_format mode
         kwargs: dict = {
             "base_url": cfg.base_url,
             "api_key": cfg.api_key or "x",
@@ -143,6 +144,37 @@ class LLMClient:
         except Exception:
             pass
 
+    async def _complete(self, msgs: list[dict], schema: dict) -> dict:
+        """Create a completion, trying structured-output modes in a cached-first order.
+
+        The first mode that works for this client/provider is remembered, so later
+        requests skip the dead attempts: a provider that doesn't support ``json_schema``
+        is probed once, then we go straight to ``json_object``/plain instead of paying a
+        failed request every time. If every mode fails, the last exception propagates
+        (``run_probes`` surfaces it in the dashboard).
+        """
+        extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
+        chain: list[tuple[str, dict]] = [
+            ("json_schema", {"response_format": {"type": "json_schema", "json_schema": schema}}),
+            ("json_object", {"response_format": {"type": "json_object"}}),
+            ("plain", {}),
+        ]
+        if self._rf_mode is not None:
+            chain.sort(key=lambda m: 0 if m[0] == self._rf_mode else 1)  # cached mode first
+        last_exc: Exception | None = None
+        for mode, rf_kwargs in chain:
+            try:
+                resp = await self._client.chat.completions.create(
+                    model=self.model, messages=msgs, temperature=0, **rf_kwargs, **extra
+                )
+                self._record_usage(resp)
+                self._rf_mode = mode
+                return parse_json_loose(resp.choices[0].message.content or "")
+            except Exception as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
     async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
         system, user = probe.build_prompt(messages)
         # Free-text output (open summaries) follows the chosen language; classification
@@ -153,34 +185,7 @@ class LLMClient:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        schema = probe.output_schema()
-        # Structured-output fallback chain: try json_schema, then json_object; if both
-        # fail (provider doesn't support them) fall through to a plain call.
-        extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
-        for rf in (
-            {"type": "json_schema", "json_schema": schema},
-            {"type": "json_object"},
-        ):
-            try:
-                resp = await self._client.chat.completions.create(
-                    model=self.model,
-                    messages=msgs,
-                    temperature=0,
-                    response_format=rf,
-                    **extra,
-                )
-                self._record_usage(resp)
-                return parse_json_loose(resp.choices[0].message.content or "")
-            except Exception:
-                continue
-        # Plain call — intentionally unguarded so a real failure (endpoint down /
-        # bad key / network error) propagates up to run_probes, which surfaces it
-        # in the dashboard error banner rather than silently returning {}.
-        resp = await self._client.chat.completions.create(
-            model=self.model, messages=msgs, temperature=0, **extra
-        )
-        self._record_usage(resp)
-        return parse_json_loose(resp.choices[0].message.content or "")
+        return await self._complete(msgs, probe.output_schema())
 
     async def complete_json(self, system: str, user: str, schema: dict) -> dict:
         """One-shot structured completion: ``(system, user)`` → parsed JSON dict.
@@ -198,28 +203,7 @@ class LLMClient:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
-        for rf in (
-            {"type": "json_schema", "json_schema": schema},
-            {"type": "json_object"},
-        ):
-            try:
-                resp = await self._client.chat.completions.create(
-                    model=self.model,
-                    messages=msgs,
-                    temperature=0,
-                    response_format=rf,
-                    **extra,
-                )
-                self._record_usage(resp)
-                return parse_json_loose(resp.choices[0].message.content or "")
-            except Exception:
-                continue
-        resp = await self._client.chat.completions.create(
-            model=self.model, messages=msgs, temperature=0, **extra
-        )
-        self._record_usage(resp)
-        return parse_json_loose(resp.choices[0].message.content or "")
+        return await self._complete(msgs, schema)
 
 
 # Max probes whose LLM calls run at once. Probes are independent and I/O-bound, so

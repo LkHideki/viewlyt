@@ -231,6 +231,20 @@ def test_classification_aggregate_tolerant_matching() -> None:
     print("ok: classification_aggregate_tolerant_matching")
 
 
+def test_classification_aggregate_flat_string_labels() -> None:
+    # The optimized request returns a FLAT array of category strings (no per-item
+    # {"i","label"} wrapper); aggregate counts those and still accepts legacy dicts.
+    probe = _clf(["happy", "angry", "neutral"])
+    msgs = [_msg() for _ in range(4)]
+    flat = probe.aggregate({"labels": ["happy", "angry", "happy", "neutral"]}, msgs)
+    assert flat.pct is not None
+    assert flat.pct["happy"] == 50.0
+    assert flat.pct["angry"] == 25.0 and flat.pct["neutral"] == 25.0
+    legacy = probe.aggregate({"labels": [{"i": 1, "label": "happy"}, {"i": 2, "label": "angry"}]}, msgs)
+    assert legacy.pct is not None and legacy.pct["happy"] == 50.0
+    print("ok: classification_aggregate_flat_string_labels")
+
+
 def test_classification_ema_smoothing() -> None:
     cats = ["happy", "sad"]
     probe = ClassificationProbe(
@@ -326,6 +340,7 @@ if __name__ == "__main__":
     test_classification_aggregate_ignores_unknown_labels()
     test_classification_aggregate_empty_labels_gives_all_zeros()
     test_classification_aggregate_tolerant_matching()
+    test_classification_aggregate_flat_string_labels()
     test_classification_ema_smoothing()
     test_open_summary_aggregate_returns_text()
     test_classification_roundtrip()
