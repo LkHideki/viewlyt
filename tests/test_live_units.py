@@ -209,6 +209,28 @@ def test_classification_aggregate_empty_labels_gives_all_zeros() -> None:
     print("ok: classification_aggregate_empty_labels_gives_all_zeros")
 
 
+def test_classification_aggregate_tolerant_matching() -> None:
+    # Models routinely vary case/accents/whitespace from the exact category text;
+    # folded matching must still count them (else accented categories give all zeros).
+    probe = _clf(["técnico da seleção", "fifa", "outros/nenhum"])
+    parsed = {
+        "labels": [
+            {"i": 1, "label": "Técnico da Seleção"},  # different case
+            {"i": 2, "label": "tecnico da selecao"},  # accents stripped
+            {"i": 3, "label": "FIFA"},  # uppercase
+            {"i": 4, "label": "  outros/nenhum "},  # extra whitespace
+        ]
+    }
+    msgs = [_msg() for _ in range(4)]
+    result = probe.aggregate(parsed, msgs)
+    assert result.pct is not None
+    assert sum(result.pct.values()) > 0.0, "tolerant matching must not give all zeros"
+    assert result.pct["técnico da seleção"] == 50.0
+    assert result.pct["fifa"] == 25.0
+    assert result.pct["outros/nenhum"] == 25.0
+    print("ok: classification_aggregate_tolerant_matching")
+
+
 def test_classification_ema_smoothing() -> None:
     cats = ["happy", "sad"]
     probe = ClassificationProbe(
@@ -303,6 +325,7 @@ if __name__ == "__main__":
     test_classification_aggregate_sums_to_100()
     test_classification_aggregate_ignores_unknown_labels()
     test_classification_aggregate_empty_labels_gives_all_zeros()
+    test_classification_aggregate_tolerant_matching()
     test_classification_ema_smoothing()
     test_open_summary_aggregate_returns_text()
     test_classification_roundtrip()

@@ -17,6 +17,7 @@ creates/edits them live. Pure: no Selenium, no openai, no I/O.
 
 from __future__ import annotations
 
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 
@@ -109,6 +110,16 @@ def _numbered(messages: list[ChatMessage]) -> str:
     return "\n".join(f"{i}. {m.text}" for i, m in enumerate(messages, 1))
 
 
+def _fold_label(s: str) -> str:
+    """Normalize a category label for tolerant matching: strip accents, casefold,
+    and collapse internal whitespace — so a model that answers "Técnico da Seleção"
+    (or "  tecnico  da  selecao ") still matches the category "técnico da seleção".
+    """
+    decomposed = unicodedata.normalize("NFKD", s)
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(no_accents.split()).casefold()
+
+
 class Probe:
     """Base probe. Subclasses set ``kind`` and implement the three hooks."""
 
@@ -166,6 +177,7 @@ class ClassificationProbe(Probe):
         system = (
             "You are a precise text classifier for YouTube live-chat messages. "
             f"Classify each numbered message into EXACTLY ONE of: {cats}. "
+            "Use each category's text VERBATIM (same words, case and accents) as the label. "
             "Answer ONLY with the required JSON. Do not explain."
         )
         user = (
@@ -178,6 +190,11 @@ class ClassificationProbe(Probe):
         return system, user
 
     def output_schema(self) -> dict:
+        # An empty enum is an invalid JSON schema (it rejects every value); fall back
+        # to a plain string for a degenerate probe that somehow has no categories.
+        label_schema: dict = (
+            {"type": "string", "enum": self.categories} if self.categories else {"type": "string"}
+        )
         return {
             "name": "classification",
             "strict": True,
@@ -192,7 +209,7 @@ class ClassificationProbe(Probe):
                             "additionalProperties": False,
                             "properties": {
                                 "i": {"type": "integer"},
-                                "label": {"type": "string", "enum": self.categories},
+                                "label": label_schema,
                             },
                             "required": ["i", "label"],
                         },
@@ -203,11 +220,14 @@ class ClassificationProbe(Probe):
         }
 
     def aggregate(self, parsed: dict, messages: list[ChatMessage]) -> ProbeResult:
+        # Tolerant matching: models routinely vary the case/accents/whitespace of the
+        # exact category text, so fold both sides before comparing (see _fold_label).
+        norm_to_cat = {_fold_label(c): c for c in self.categories}
         counts: Counter[str] = Counter()
         for item in (parsed or {}).get("labels", []) or []:
-            label = str(item.get("label", "")).strip()
-            if label in self.categories:
-                counts[label] += 1
+            canon = norm_to_cat.get(_fold_label(str(item.get("label", ""))))
+            if canon is not None:
+                counts[canon] += 1
         total = sum(counts.values())
         if total:
             pct = {c: round(100.0 * counts.get(c, 0) / total, 1) for c in self.categories}
