@@ -364,14 +364,7 @@ button:active {
   padding: 0.75rem 1rem;
 }
 
-/* Latest result accent — make the most recent card stand out. */
-.result-card.is-latest {
-  border-color: rgba(76, 139, 245, 0.55);
-  box-shadow:
-    inset 3px 0 0 var(--accent),
-    0 0 0 1px rgba(76, 139, 245, 0.25),
-    0 0 18px rgba(76, 139, 245, 0.12);
-}
+/* .result-card.is-latest intentionally removed (R4: flat cards, no left accent bar) */
 
 .result-header {
   display: flex;
@@ -491,37 +484,9 @@ button:active {
   transition: flex-basis 0.4s ease;
 }
 
-/* Shared legend (stacked / donut / lines) */
+/* Legend rules removed (R3: buildLegend is gone; .cat-stats replaces it) */
 
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 0.85rem;
-  margin-top: 0.6rem;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.76rem;
-  color: var(--text);
-}
-
-.legend-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.legend-pct {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-dim);
-}
-
-/* SVG charts (donut / lines) */
+/* SVG charts (donut / lines / columns / area) */
 
 .chart-svg {
   display: block;
@@ -537,6 +502,28 @@ button:active {
 .chart-lines {
   width: 100%;
   height: 120px;
+}
+
+/* R3 — new chart containers */
+.chart-columns {
+  width: 100%;
+  height: 140px;
+  display: block;
+}
+
+.chart-columns rect {
+  transition: height 0.3s ease, y 0.3s ease;
+}
+
+.chart-area {
+  width: 100%;
+  height: 120px;
+  display: block;
+}
+
+/* Wrapper for the chosen visualization (R3) */
+.chart-viz {
+  display: block;
 }
 
 .chart-baseline {
@@ -648,7 +635,7 @@ button:active {
   text-align: right;
 }
 
-/* Open summary */
+/* Open probe: single snapshot display (R5 replaces timeline with scrubber) */
 
 .result-text {
   font-size: 0.88rem;
@@ -656,62 +643,130 @@ button:active {
   line-height: 1.6;
 }
 
-/* Result history (scrollable timeline inside a card) */
-
-.result-history {
-  max-height: 320px;
-  overflow: auto;
+/* R5 — scrubber row (hidden when only one snapshot) */
+.result-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.15rem 0 0.6rem;
 }
 
-.result-entry {
-  border-top: 1px solid var(--border);
-  padding: 0.55rem 0 0.35rem;
+.result-scrubber.is-single {
+  display: none;
 }
 
-.result-entry:first-child {
-  border-top: none;
-  padding-top: 0.15rem;
+/* Native range input — minimal, themed via accent-color; must NOT inherit the
+   global text/number/password border rule (type=range is not in that selector,
+   but add an explicit reset for safety). */
+input.scrub-range {
+  flex: 1 1 auto;
+  width: auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+  height: auto;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  /* Override any inherited box from the global input rule */
+  box-shadow: none;
+  outline: none;
 }
 
-/* Open timeline: latest entry prominent (larger, accent), previous dimmed. */
-.result-entry.is-latest {
-  border-left: 3px solid var(--accent);
-  background: rgba(76, 139, 245, 0.06);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.4rem;
+input.scrub-range:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
-.result-entry.is-latest .result-text {
-  font-size: 0.95rem;
-  color: #fff;
-}
-
-.result-entry.is-latest .entry-time {
-  color: var(--accent);
-}
-
-.result-entry.is-previous {
-  opacity: 0.6;
-  border-left: 2px solid var(--border);
-  padding-left: 0.75rem;
-}
-
-.result-entry.is-previous .result-text {
-  font-size: 0.82rem;
-}
-
-.entry-time {
+.scrub-meta {
   font-family: var(--font-mono);
   font-size: 0.7rem;
-  color: #94a3b8;
-  margin-bottom: 0.35rem;
-  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
-.entry-body {
-  /* inherits bar/text styles; no extra rule needed */
+/* "LIVE" pill badge inside the scrubber */
+.scrub-live {
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgba(76, 139, 245, 0.16);
+  border: 1px solid rgba(76, 139, 245, 0.35);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
 }
+
+/* Single-snapshot display container (R5) */
+.result-display {
+  display: block;
+  margin-top: 0.1rem;
+}
+
+/* R4 — error card: danger-tinted bordered box, no left bar */
+.result-error {
+  border: 1px solid rgba(234, 67, 53, 0.35);
+  background: rgba(234, 67, 53, 0.10);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+}
+
+/* R3 — per-category stats table under every chart type except "bars" */
+.cat-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+}
+
+.cat-stat-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) 52px auto auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cat-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.cat-name {
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-pct {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-align: right;
+}
+
+.cat-spark {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: #94a3b8;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+/* Timeline artifacts removed (R4): .result-history / .result-entry /
+   .result-entry.is-latest / .result-entry.is-previous / .entry-time /
+   .entry-body — open timeline is replaced by the scrubber single display.
+   .result-text is kept above (still used). */
 
 /* -------------------------------------------------------------------------
    Snippet section
@@ -733,10 +788,11 @@ button:active {
    Results star — prominent top section (not collapsible)
    ------------------------------------------------------------------------- */
 
+/* R4: border-left removed (no accent side bar); R2: min-height bumped so
+   #feed has real height even with a single probe. */
 .results-star {
-  border-left: 4px solid var(--accent);
   padding: 1.25rem 1.5rem;
-  min-height: 220px;
+  min-height: 360px;
   margin-bottom: var(--gap);
 }
 
@@ -778,11 +834,10 @@ button:active {
   letter-spacing: 0.06em;
 }
 
-/* Live chat feed — its own scroll inside the chat column. */
+/* R2 — full-height chat feed: grows to fill the flex column, no fixed cap. */
 #feed {
   flex: 1 1 auto;
-  max-height: 480px;
-  min-height: 160px;
+  min-height: 0;
   overflow: auto;
   font-family: var(--font-mono);
   font-size: 0.78rem;
@@ -808,8 +863,9 @@ button:active {
     padding-top: var(--gap);
   }
 
+  /* R2 — sensible mobile cap when columns are stacked */
   #feed {
-    max-height: 300px;
+    max-height: 50vh;
   }
 }
 

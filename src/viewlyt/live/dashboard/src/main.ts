@@ -315,23 +315,44 @@ function getCategoryColor(index: number): string {
   return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
 }
 
-const HISTORY_MAX = 20;
-
 // ---------------------------------------------------------------------------
-// Classification sparkline history
-// Map<probe_id, Map<category, pct[]>> — at most 24 values per category.
-// ---------------------------------------------------------------------------
-
-const SPARK_MAX = 24;
-const classificationHistory = new Map<string, Map<string, number[]>>();
-
-// ---------------------------------------------------------------------------
-// Per-probe chart type + latest result (so a card can re-render on type change)
+// Per-probe snapshot history + scrubber view state (R5)
+// Each result frame appends a Snapshot; the card shows ONE snapshot at a time,
+// chosen by a per-card scrubber. resultHistory is oldest -> newest, capped.
 // ---------------------------------------------------------------------------
 
-type ChartType = "bars" | "stacked" | "donut" | "lines" | "delta";
-const CHART_TYPES: ChartType[] = ["bars", "stacked", "donut", "lines", "delta"];
-const lastClassResult = new Map<string, ResultMsg>();
+interface Snapshot {
+  ts: number;
+  n: number;
+  pct?: Record<string, number>;
+  text?: string;
+}
+
+const HISTORY_CAP = 60;
+const resultHistory = new Map<string, Snapshot[]>();
+const viewState = new Map<string, { index: number; live: boolean }>();
+
+// ---------------------------------------------------------------------------
+// Per-probe chart type (server-persisted on the probe descriptor)
+// ---------------------------------------------------------------------------
+
+type ChartType =
+  | "bars"
+  | "columns"
+  | "stacked"
+  | "donut"
+  | "lines"
+  | "area"
+  | "delta";
+const CHART_TYPES: ChartType[] = [
+  "bars",
+  "columns",
+  "stacked",
+  "donut",
+  "lines",
+  "area",
+  "delta",
+];
 
 /** Read a probe's persisted chart type (server-side), defaulting to "bars". */
 function probeChart(probeId: string): ChartType {
@@ -339,13 +360,6 @@ function probeChart(probeId: string): ChartType {
   return stored !== undefined && (CHART_TYPES as readonly string[]).includes(stored)
     ? (stored as ChartType)
     : "bars";
-}
-
-/** Delta of the latest value vs the immediately-previous snapshot for a category. */
-function categoryDelta(probeId: string, category: string): number | null {
-  const arr = classificationHistory.get(probeId)?.get(category);
-  if (!arr || arr.length < 2) return null;
-  return arr[arr.length - 1] - arr[arr.length - 2];
 }
 
 /** Small delta badge: ▲ +x.x (green) / ▼ -x.x (red) / 0 (dim) vs previous. */
@@ -386,26 +400,8 @@ function sparkline(values: number[]): string {
     .join("");
 }
 
-/** Push `pct` into the per-category ring for `probeId`, capped to SPARK_MAX. */
-function pushSparkValue(probeId: string, category: string, pct: number): void {
-  let probeMap = classificationHistory.get(probeId);
-  if (!probeMap) {
-    probeMap = new Map<string, number[]>();
-    classificationHistory.set(probeId, probeMap);
-  }
-  let arr = probeMap.get(category);
-  if (!arr) {
-    arr = [];
-    probeMap.set(category, arr);
-  }
-  arr.push(pct);
-  if (arr.length > SPARK_MAX) {
-    arr.splice(0, arr.length - SPARK_MAX);
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Classification card body builder (update-in-place, multiple chart types)
+// Display renderers (one snapshot at a time; the scrubber picks the snapshot)
 // ---------------------------------------------------------------------------
 
 /** Clamp a percentage into the 0–100 range. */
@@ -413,66 +409,50 @@ function clampPct(pct: number): number {
   return Math.max(0, Math.min(100, pct));
 }
 
-/** Shared color-swatch legend used by the stacked / donut / lines charts. */
-function buildLegend(entries: [string, number][]): HTMLElement {
-  const legend = document.createElement("div");
-  legend.className = "legend";
-  entries.forEach(([cat, pct], i) => {
-    const item = document.createElement("div");
-    item.className = "legend-item";
-
-    const swatch = document.createElement("span");
-    swatch.className = "legend-swatch";
-    swatch.style.backgroundColor = getCategoryColor(i);
-
-    const name = document.createElement("span");
-    name.textContent = cat;
-
-    const pctEl = document.createElement("span");
-    pctEl.className = "legend-pct";
-    pctEl.textContent = `${pct.toFixed(1)}%`;
-
-    item.appendChild(swatch);
-    item.appendChild(name);
-    item.appendChild(pctEl);
-    legend.appendChild(item);
-  });
-  return legend;
+/**
+ * One category's view at the scrubbed snapshot: its current pct, the series of
+ * its pct from the first snapshot up to (and including) the viewed one, the
+ * delta vs the immediately-previous snapshot, and its stable color index.
+ */
+interface CatView {
+  cat: string;
+  pct: number;
+  series: number[];
+  delta: number | null;
+  i: number;
 }
 
 /** Default: horizontal % bars + delta badge vs previous + per-category sparkline. */
-function renderBars(entries: [string, number][], probeId: string): HTMLElement {
-  const probeHist = classificationHistory.get(probeId);
+function renderBars(views: CatView[]): HTMLElement {
   const barsEl = document.createElement("div");
   barsEl.className = "bars";
 
-  entries.forEach(([cat, pct], i) => {
+  for (const v of views) {
     const row = document.createElement("div");
     row.className = "bar-row";
 
     const catLabel = document.createElement("span");
     catLabel.className = "bar-label";
-    catLabel.textContent = cat;
+    catLabel.textContent = v.cat;
 
     const track = document.createElement("div");
     track.className = "bar-track";
 
     const fill = document.createElement("div");
     fill.className = "bar-fill";
-    fill.style.width = `${clampPct(pct)}%`;
-    fill.style.backgroundColor = getCategoryColor(i);
+    fill.style.width = `${clampPct(v.pct)}%`;
+    fill.style.backgroundColor = getCategoryColor(v.i);
 
     const pctLabel = document.createElement("span");
     pctLabel.className = "bar-pct";
-    pctLabel.textContent = `${pct.toFixed(1)}%`;
+    pctLabel.textContent = `${v.pct.toFixed(1)}%`;
 
     // Delta vs the immediately-previous snapshot, beside the pct.
-    const deltaBadge = buildDeltaBadge(categoryDelta(probeId, cat));
+    const deltaBadge = buildDeltaBadge(v.delta);
 
     const sparkEl = document.createElement("span");
     sparkEl.className = "spark";
-    const history = probeHist?.get(cat) ?? [];
-    sparkEl.textContent = history.length > 0 ? sparkline(history) : "";
+    sparkEl.textContent = v.series.length > 0 ? sparkline(v.series) : "";
 
     track.appendChild(fill);
     row.appendChild(catLabel);
@@ -481,15 +461,104 @@ function renderBars(entries: [string, number][], probeId: string): HTMLElement {
     row.appendChild(deltaBadge);
     row.appendChild(sparkEl);
     barsEl.appendChild(row);
-  });
+  }
 
   return barsEl;
 }
 
-/** Single full-width bar split into colored segments + legend. */
-function renderStacked(entries: [string, number][]): HTMLElement {
-  const wrap = document.createElement("div");
+/**
+ * The loved stats table, reused under EVERY non-bars chart: one row per
+ * category with a color swatch, name, pct, delta badge and sparkline.
+ */
+function buildStats(views: CatView[]): HTMLElement {
+  const stats = document.createElement("div");
+  stats.className = "cat-stats";
 
+  for (const v of views) {
+    const row = document.createElement("div");
+    row.className = "cat-stat-row";
+
+    const swatch = document.createElement("span");
+    swatch.className = "cat-swatch";
+    swatch.style.backgroundColor = getCategoryColor(v.i);
+
+    const name = document.createElement("span");
+    name.className = "cat-name";
+    name.textContent = v.cat;
+
+    const pctEl = document.createElement("span");
+    pctEl.className = "cat-pct";
+    pctEl.textContent = `${v.pct.toFixed(1)}%`;
+
+    const sparkEl = document.createElement("span");
+    sparkEl.className = "cat-spark";
+    sparkEl.textContent = v.series.length > 0 ? sparkline(v.series) : "";
+
+    row.appendChild(swatch);
+    row.appendChild(name);
+    row.appendChild(pctEl);
+    row.appendChild(buildDeltaBadge(v.delta));
+    row.appendChild(sparkEl);
+    stats.appendChild(row);
+  }
+
+  return stats;
+}
+
+/** Vertical columns (SVG): one bar per category, height proportional to pct. */
+function renderColumns(views: CatView[]): Element {
+  const width = 320;
+  const height = 140;
+  const padX = 8;
+  const padY = 8;
+  const baseline = height - padY;
+
+  const root = svg("svg", {
+    class: "chart-svg chart-columns",
+    viewBox: `0 0 ${width} ${height}`,
+    preserveAspectRatio: "none",
+    role: "img",
+  });
+
+  // Faint baseline line along the bottom.
+  root.appendChild(
+    svg("line", {
+      class: "chart-baseline",
+      x1: padX,
+      y1: baseline,
+      x2: width - padX,
+      y2: baseline,
+    }),
+  );
+
+  const n = views.length;
+  const plotW = width - 2 * padX;
+  const plotH = baseline - padY;
+  // Evenly spaced slots; bar takes ~60% of its slot, centered.
+  const slot = n > 0 ? plotW / n : plotW;
+  const barW = Math.max(2, slot * 0.6);
+
+  views.forEach((v, idx) => {
+    const h = (clampPct(v.pct) / 100) * plotH;
+    const x = padX + slot * idx + (slot - barW) / 2;
+    const y = baseline - h;
+    root.appendChild(
+      svg("rect", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        width: barW.toFixed(1),
+        height: Math.max(0, h).toFixed(1),
+        fill: getCategoryColor(v.i),
+        rx: 2,
+      }),
+    );
+  });
+
+  return root;
+}
+
+/** Single full-width bar split into colored segments. */
+function renderStacked(entries: [string, number][]): HTMLElement {
   const bar = document.createElement("div");
   bar.className = "stacked-bar";
   entries.forEach(([cat, pct], i) => {
@@ -500,16 +569,11 @@ function renderStacked(entries: [string, number][]): HTMLElement {
     seg.title = `${cat}: ${pct.toFixed(1)}%`;
     bar.appendChild(seg);
   });
-
-  wrap.appendChild(bar);
-  wrap.appendChild(buildLegend(entries));
-  return wrap;
+  return bar;
 }
 
-/** Inline SVG donut — one arc per category, sized to its pct, + legend. */
-function renderDonut(entries: [string, number][]): HTMLElement {
-  const wrap = document.createElement("div");
-
+/** Inline SVG donut — one arc per category, sized to its pct. */
+function renderDonut(entries: [string, number][]): Element {
   const size = 140;
   const cx = size / 2;
   const cy = size / 2;
@@ -545,20 +609,15 @@ function renderDonut(entries: [string, number][]): HTMLElement {
     });
   }
 
-  wrap.appendChild(root);
-  wrap.appendChild(buildLegend(entries));
-  return wrap;
+  return root;
 }
 
-/** Inline SVG multi-line chart over classificationHistory + legend. */
-function renderLines(entries: [string, number][], probeId: string): HTMLElement {
-  const wrap = document.createElement("div");
-
+/** Inline SVG multi-line chart over each category's snapshot series. */
+function renderLines(views: CatView[]): Element {
   const width = 320;
   const height = 120;
   const padX = 4;
   const padY = 6;
-  const probeHist = classificationHistory.get(probeId);
 
   const root = svg("svg", {
     class: "chart-svg chart-lines",
@@ -584,39 +643,124 @@ function renderLines(entries: [string, number][], probeId: string): HTMLElement 
     len <= 1 ? padX + plotW : padX + (idx / (len - 1)) * plotW;
   const yFor = (pct: number): number => padY + (1 - clampPct(pct) / 100) * plotH;
 
-  entries.forEach(([cat], i) => {
-    const series = probeHist?.get(cat) ?? [];
-    if (series.length === 0) return;
+  for (const v of views) {
+    const series = v.series;
+    if (series.length === 0) continue;
     const pts = series
-      .map((v, idx) => `${xFor(idx, series.length).toFixed(1)},${yFor(v).toFixed(1)}`)
+      .map((p, idx) => `${xFor(idx, series.length).toFixed(1)},${yFor(p).toFixed(1)}`)
       .join(" ");
     root.appendChild(
-      svg("polyline", { class: "chart-line", stroke: getCategoryColor(i), points: pts }),
+      svg("polyline", { class: "chart-line", stroke: getCategoryColor(v.i), points: pts }),
     );
+  }
+
+  return root;
+}
+
+/**
+ * 100%-stacked area over the snapshot history: shows how the mix evolves. Each
+ * category is a filled band between its lower and upper cumulative boundary at
+ * every time point. A single time point degrades to one vertical 100% stack.
+ */
+function renderArea(views: CatView[]): Element {
+  const width = 320;
+  const height = 120;
+
+  const root = svg("svg", {
+    class: "chart-svg chart-area",
+    viewBox: `0 0 ${width} ${height}`,
+    preserveAspectRatio: "none",
+    role: "img",
   });
 
-  wrap.appendChild(root);
-  wrap.appendChild(buildLegend(entries));
-  return wrap;
+  if (views.length === 0) return root;
+
+  // Number of time points = longest series among the categories.
+  const steps = views.reduce((m, v) => Math.max(m, v.series.length), 0);
+  if (steps === 0) return root;
+
+  const xFor = (t: number): number => (steps <= 1 ? 0 : (t / (steps - 1)) * width);
+  // y grows downward; cumulative 0 -> top (0), 100 -> bottom (height) inverted.
+  const yFor = (cumPct: number): number => height - (clampPct(cumPct) / 100) * height;
+
+  // At each time point compute the normalized (to 100%) cumulative boundaries.
+  // boundaries[t][k] = cumulative pct AFTER stacking categories 0..k-1.
+  const lowers: number[][] = [];
+  const uppers: number[][] = [];
+  for (let i = 0; i < views.length; i++) {
+    lowers.push(new Array<number>(steps).fill(0));
+    uppers.push(new Array<number>(steps).fill(0));
+  }
+  for (let t = 0; t < steps; t++) {
+    const vals = views.map((v) => Math.max(0, v.series[t] ?? 0));
+    const total = vals.reduce((a, b) => a + b, 0);
+    let cum = 0;
+    for (let i = 0; i < views.length; i++) {
+      const share = total > 0 ? (vals[i] / total) * 100 : 0;
+      lowers[i][t] = cum;
+      cum += share;
+      uppers[i][t] = cum;
+    }
+  }
+
+  if (steps === 1) {
+    // Single vertical 100% stack: one full-width rect band per category.
+    for (let i = 0; i < views.length; i++) {
+      const yTop = yFor(uppers[i][0]);
+      const yBot = yFor(lowers[i][0]);
+      root.appendChild(
+        svg("rect", {
+          x: 0,
+          y: Math.min(yTop, yBot).toFixed(1),
+          width,
+          height: Math.abs(yBot - yTop).toFixed(1),
+          fill: getCategoryColor(views[i].i),
+          "fill-opacity": 0.85,
+        }),
+      );
+    }
+    return root;
+  }
+
+  for (let i = 0; i < views.length; i++) {
+    // Upper boundary left->right, then lower boundary right->left = closed band.
+    const top: string[] = [];
+    const bottom: string[] = [];
+    for (let t = 0; t < steps; t++) {
+      top.push(`${xFor(t).toFixed(1)},${yFor(uppers[i][t]).toFixed(1)}`);
+      bottom.push(`${xFor(t).toFixed(1)},${yFor(lowers[i][t]).toFixed(1)}`);
+    }
+    bottom.reverse();
+    root.appendChild(
+      svg("polygon", {
+        class: "chart-area-band",
+        points: top.concat(bottom).join(" "),
+        fill: getCategoryColor(views[i].i),
+        "fill-opacity": 0.85,
+      }),
+    );
+  }
+
+  return root;
 }
 
 /** Diverging horizontal bars: change vs previous snapshot (right=green, left=red). */
-function renderDelta(entries: [string, number][], probeId: string): HTMLElement {
+function renderDelta(views: CatView[]): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "delta-chart";
 
   // Symmetric scale from the largest absolute delta (min 1 so flat data shows).
-  const deltas = entries.map(([cat]) => categoryDelta(probeId, cat) ?? 0);
+  const deltas = views.map((v) => v.delta ?? 0);
   const maxAbs = Math.max(1, ...deltas.map((d) => Math.abs(d)));
 
-  entries.forEach(([cat], i) => {
-    const delta = deltas[i];
+  views.forEach((v, idx) => {
+    const delta = deltas[idx];
     const row = document.createElement("div");
     row.className = "delta-row";
 
     const label = document.createElement("span");
     label.className = "delta-label";
-    label.textContent = cat;
+    label.textContent = v.cat;
 
     // Track with a centered zero axis; one half fills per sign.
     const track = document.createElement("div");
@@ -655,54 +799,139 @@ function renderDelta(entries: [string, number][], probeId: string): HTMLElement 
   return wrap;
 }
 
-function buildClassificationBody(msg: ResultMsg): HTMLElement {
+/**
+ * Build the classification .result-display content for the snapshot at `index`:
+ * the chosen visualization wrapped in .chart-viz, plus (for every chart EXCEPT
+ * "bars") the .cat-stats table underneath it.
+ */
+function buildClassificationBody(probeId: string, index: number): HTMLElement {
   const body = document.createElement("div");
-  body.className = "entry-body";
+  body.className = "result-display";
 
-  if (!msg.pct) return body;
-  const entries = Object.entries(msg.pct);
-  const type = probeChart(msg.probe_id);
+  const history = resultHistory.get(probeId) ?? [];
+  const snap = history[index];
+  if (!snap || !snap.pct) return body;
 
+  const entries = Object.entries(snap.pct);
+  const views: CatView[] = entries.map(([cat, pct], i) => {
+    const series = history
+      .slice(0, index + 1)
+      .map((s) => s.pct?.[cat] ?? 0);
+    const delta =
+      index > 0 ? pct - (history[index - 1].pct?.[cat] ?? pct) : null;
+    return { cat, pct, series, delta, i };
+  });
+
+  const type = probeChart(probeId);
+
+  const viz = document.createElement("div");
+  viz.className = "chart-viz";
   switch (type) {
+    case "columns":
+      viz.appendChild(renderColumns(views));
+      break;
     case "stacked":
-      body.appendChild(renderStacked(entries));
+      viz.appendChild(renderStacked(entries));
       break;
     case "donut":
-      body.appendChild(renderDonut(entries));
+      viz.appendChild(renderDonut(entries));
       break;
     case "lines":
-      body.appendChild(renderLines(entries, msg.probe_id));
+      viz.appendChild(renderLines(views));
+      break;
+    case "area":
+      viz.appendChild(renderArea(views));
       break;
     case "delta":
-      body.appendChild(renderDelta(entries, msg.probe_id));
+      viz.appendChild(renderDelta(views));
       break;
     default:
-      body.appendChild(renderBars(entries, msg.probe_id));
+      viz.appendChild(renderBars(views));
       break;
+  }
+  body.appendChild(viz);
+
+  if (type !== "bars") {
+    body.appendChild(buildStats(views));
   }
   return body;
 }
 
-// ---------------------------------------------------------------------------
-// Open result body builder (one entry, timestamped)
-// ---------------------------------------------------------------------------
-
-function buildOpenBody(msg: ResultMsg): HTMLElement {
+/** Build the open .result-display: a single markdown-rendered snapshot text. */
+function buildOpenBody(probeId: string, index: number): HTMLElement {
   const body = document.createElement("div");
-  body.className = "entry-body";
+  body.className = "result-display";
 
-  if (msg.kind === "open" && msg.text) {
+  const snap = resultHistory.get(probeId)?.[index];
+  const textEl = document.createElement("p");
+  textEl.className = "result-text";
+  if (snap && snap.text) {
     // Preprocess: insert newline before inline ordinal markers so list items
     // don't run together when the model returns the list on one line.
     // Covers: "1º", "2°", "3)" etc. (masculine ordinal º, degree °, closing paren)
-    const preprocessed = msg.text.replace(/\s+(\d+\s*[º°)])/g, "\n$1");
-    const textEl = document.createElement("p");
-    textEl.className = "result-text";
+    const preprocessed = snap.text.replace(/\s+(\d+\s*[º°)])/g, "\n$1");
     textEl.innerHTML = renderMarkdown(preprocessed);
-    body.appendChild(textEl);
   }
-
+  body.appendChild(textEl);
   return body;
+}
+
+/** (Re)render a card's single .result-display at the given snapshot index. */
+function renderDisplay(card: HTMLDivElement, probeId: string, kind: string, index: number): void {
+  const next =
+    kind === "classification"
+      ? buildClassificationBody(probeId, index)
+      : buildOpenBody(probeId, index);
+  const existing = card.querySelector<HTMLDivElement>(".result-display");
+  if (existing) existing.replaceWith(next);
+  else card.appendChild(next);
+}
+
+/** Format the "n=…" + time string used by both header meta and scrub meta. */
+function snapStamp(snap: Snapshot): string {
+  return new Date(snap.ts * 1000).toLocaleTimeString() + "  n=" + String(snap.n);
+}
+
+/**
+ * Refresh the scrubber DOM (range bounds/value, scrub-meta text + LIVE badge)
+ * and the header meta to reflect the snapshot currently being viewed.
+ */
+function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): void {
+  const history = resultHistory.get(probeId) ?? [];
+  const max = Math.max(0, history.length - 1);
+  const snap = history[index];
+
+  const scrubber = card.querySelector<HTMLDivElement>(".result-scrubber");
+  const range = card.querySelector<HTMLInputElement>(".scrub-range");
+  const meta = card.querySelector<HTMLDivElement>(".scrub-meta");
+  const live = card.querySelector<HTMLSpanElement>(".scrub-live");
+  const headerMeta = card.querySelector<HTMLSpanElement>(".result-meta");
+
+  if (scrubber) scrubber.classList.toggle("is-single", history.length <= 1);
+  if (range) {
+    range.min = "0";
+    range.max = String(max);
+    range.value = String(index);
+  }
+  if (meta) {
+    // Keep the LIVE badge node; set the leading text via the first text node.
+    const label = snap ? snapStamp(snap) + " " : "";
+    if (meta.firstChild && meta.firstChild.nodeType === Node.TEXT_NODE) {
+      meta.firstChild.textContent = label;
+    } else {
+      meta.insertBefore(document.createTextNode(label), meta.firstChild);
+    }
+  }
+  if (live) {
+    if (index === max) {
+      live.textContent = "LIVE";
+      live.classList.remove("scrub-behind");
+    } else {
+      live.textContent = String(index - max); // e.g. "-3" snapshots behind
+      live.classList.add("scrub-behind");
+    }
+  }
+  if (headerMeta && snap) headerMeta.textContent = snapStamp(snap);
 }
 
 function upsertResultCard(msg: ResultMsg): void {
@@ -712,6 +941,28 @@ function upsertResultCard(msg: ResultMsg): void {
   const hint = container.querySelector(".empty-hint");
   if (hint) hint.remove();
 
+  // 1. Append this frame as a snapshot; cap from the FRONT.
+  let history = resultHistory.get(msg.probe_id);
+  if (!history) {
+    history = [];
+    resultHistory.set(msg.probe_id, history);
+  }
+  history.push({ ts: msg.ts, n: msg.n, pct: msg.pct, text: msg.text });
+  let dropped = 0;
+  if (history.length > HISTORY_CAP) {
+    dropped = history.length - HISTORY_CAP;
+    history.splice(0, dropped);
+  }
+
+  let view = viewState.get(msg.probe_id);
+  if (!view) {
+    view = { index: history.length - 1, live: true };
+    viewState.set(msg.probe_id, view);
+  } else if (dropped > 0 && !view.live) {
+    // Pinned-back view: shift the index left by however many we dropped.
+    view.index = Math.max(0, view.index - dropped);
+  }
+
   let card = container.querySelector<HTMLDivElement>(
     `[data-probe-id="${CSS.escape(msg.probe_id)}"]`
   );
@@ -719,21 +970,21 @@ function upsertResultCard(msg: ResultMsg): void {
   if (!card) {
     card = document.createElement("div");
     const cardEl = card; // stable non-null ref for closures below
-    // Each probe shows a single card whose body always reflects the latest
-    // result — give it the 'is-latest' accent so the current state stands out.
-    card.className = "result-card is-latest";
+    // Flat card (R4): just border + radius, no left accent bar.
+    card.className = "result-card";
     card.dataset["probeId"] = msg.probe_id;
 
+    // --- header ---
     const header = document.createElement("div");
     header.className = "result-header";
 
     const labelEl = document.createElement("span");
     labelEl.className = "result-label";
     labelEl.textContent = msg.label;
+    header.appendChild(labelEl);
 
     const metaEl = document.createElement("span");
     metaEl.className = "result-meta";
-    header.appendChild(labelEl);
 
     if (msg.kind === "classification") {
       // Classification header carries a chart-type selector beside the meta.
@@ -752,19 +1003,17 @@ function upsertResultCard(msg: ResultMsg): void {
       select.value = probeChart(msg.probe_id);
       select.addEventListener("change", () => {
         const chosen = select.value as ChartType;
+        const pid = cardEl.dataset["probeId"] ?? "";
         // Persist server-side by re-upserting the existing probe descriptor.
-        const existing = probeState.get(cardEl.dataset["probeId"] ?? "");
+        const existing = probeState.get(pid);
         const probe: ProbeDescriptor = existing
           ? { ...existing, chart: chosen }
-          : { id: cardEl.dataset["probeId"] ?? "", kind: "classification", label: "", chart: chosen };
+          : { id: pid, kind: "classification", label: "", chart: chosen };
         send({ op: "upsert_probe", probe });
         probeState.set(probe.id, probe);
-        const latest = lastClassResult.get(probe.id);
-        const bodyEl = cardEl.querySelector<HTMLDivElement>(".class-body");
-        if (latest && bodyEl) {
-          bodyEl.innerHTML = "";
-          bodyEl.appendChild(buildClassificationBody(latest));
-        }
+        // Re-render the display at the CURRENT view index.
+        const vs = viewState.get(pid);
+        renderDisplay(cardEl, pid, "classification", vs ? vs.index : 0);
       });
 
       right.appendChild(select);
@@ -775,76 +1024,69 @@ function upsertResultCard(msg: ResultMsg): void {
     }
     card.appendChild(header);
 
-    if (msg.kind === "classification") {
-      // Classification: single body div updated in place; no history list.
-      const bodyEl = document.createElement("div");
-      bodyEl.className = "class-body";
-      card.appendChild(bodyEl);
-    } else {
-      // Open: scrollable history timeline.
-      const historyEl = document.createElement("div");
-      historyEl.className = "result-history";
-      card.appendChild(historyEl);
-    }
+    // --- scrubber ---
+    const scrubber = document.createElement("div");
+    scrubber.className = "result-scrubber";
+
+    const range = document.createElement("input");
+    range.className = "scrub-range";
+    range.type = "range";
+    range.min = "0";
+    range.max = String(Math.max(0, history.length - 1));
+    range.value = String(view.index);
+    range.step = "1";
+
+    const scrubMeta = document.createElement("div");
+    scrubMeta.className = "scrub-meta";
+    // Leading text node (filled by refreshScrubber) + the LIVE/behind badge.
+    scrubMeta.appendChild(document.createTextNode(""));
+    const liveBadge = document.createElement("span");
+    liveBadge.className = "scrub-live";
+    liveBadge.textContent = "LIVE";
+    scrubMeta.appendChild(liveBadge);
+
+    scrubber.appendChild(range);
+    scrubber.appendChild(scrubMeta);
+    card.appendChild(scrubber);
+
+    // Wire the scrubber listener ONCE; read the live max from history each time.
+    const kind = msg.kind;
+    const pid = msg.probe_id;
+    range.addEventListener("input", () => {
+      const hist = resultHistory.get(pid) ?? [];
+      const max = Math.max(0, hist.length - 1);
+      const idx = Math.min(max, Math.max(0, Number(range.value)));
+      const vs = viewState.get(pid);
+      if (vs) {
+        vs.index = idx;
+        vs.live = idx === max;
+      }
+      renderDisplay(cardEl, pid, kind, idx);
+      refreshScrubber(cardEl, pid, idx);
+    });
+
+    // --- display ---
+    card.appendChild(
+      msg.kind === "classification"
+        ? buildClassificationBody(msg.probe_id, view.index)
+        : buildOpenBody(msg.probe_id, view.index),
+    );
 
     container.prepend(card);
   }
 
-  // Update the header meta (n + time) regardless of kind.
-  const metaEl = card.querySelector<HTMLSpanElement>(".result-meta");
-  if (metaEl) {
-    metaEl.textContent = new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
-  }
+  // If pinned to latest, jump the view to the newest snapshot.
+  if (view.live) view.index = history.length - 1;
 
+  // Keep the selector in sync with the server-persisted chart type.
   if (msg.kind === "classification") {
-    // Push new values into sparkline history BEFORE building the body.
-    if (msg.pct) {
-      for (const [cat, pct] of Object.entries(msg.pct)) {
-        pushSparkValue(msg.probe_id, cat, pct);
-      }
-    }
-    // Remember the latest result so a chart-type change can re-render.
-    lastClassResult.set(msg.probe_id, msg);
-    // Keep the selector in sync with the server-persisted chart type.
     const selectEl = card.querySelector<HTMLSelectElement>(".chart-select");
     if (selectEl) selectEl.value = probeChart(msg.probe_id);
-    // Replace the classification body in place.
-    const bodyEl = card.querySelector<HTMLDivElement>(".class-body");
-    if (bodyEl) {
-      bodyEl.innerHTML = "";
-      bodyEl.appendChild(buildClassificationBody(msg));
-    }
-  } else {
-    // Open: prepend a new timestamped entry to the history timeline.
-    const historyEl = card.querySelector<HTMLDivElement>(".result-history");
-    if (!historyEl) return;
-
-    const entry = document.createElement("div");
-    entry.className = "result-entry";
-
-    const timeEl = document.createElement("div");
-    timeEl.className = "entry-time";
-    timeEl.textContent =
-      new Date(msg.ts * 1000).toLocaleTimeString() + "  n=" + String(msg.n);
-
-    entry.appendChild(timeEl);
-    entry.appendChild(buildOpenBody(msg));
-
-    historyEl.prepend(entry);
-
-    // Re-tag the timeline: newest entry is prominent ('is-latest'), the one
-    // right under it is dimmed ('is-previous') so the two compare at a glance.
-    const entries = historyEl.children;
-    for (let i = 0; i < entries.length; i++) {
-      entries[i].classList.toggle("is-latest", i === 0);
-      entries[i].classList.toggle("is-previous", i === 1);
-    }
-
-    // Cap to HISTORY_MAX entries.
-    while (historyEl.children.length > HISTORY_MAX) {
-      historyEl.removeChild(historyEl.lastChild!);
-    }
   }
+
+  // Render the display at the current view index and refresh chrome.
+  renderDisplay(card, msg.probe_id, msg.kind, view.index);
+  refreshScrubber(card, msg.probe_id, view.index);
 }
 
 // ---------------------------------------------------------------------------
@@ -858,9 +1100,9 @@ function showError(message: string): void {
   let card = container.querySelector<HTMLDivElement>('[data-error="1"]');
   if (!card) {
     card = document.createElement("div");
-    card.className = "result-card";
+    // Bordered danger-tinted box (R4): no inline border-left, no left bar.
+    card.className = "result-card result-error";
     card.dataset["error"] = "1";
-    card.style.borderLeft = "3px solid #ea4335";
     container.prepend(card);
   }
   card.textContent = "⚠ " + message;
@@ -942,6 +1184,9 @@ function handleState(msg: StateMsg): void {
     probeState.set(p.id, p);
   }
   renderProbes();
+
+  // A state frame is the ack of an ask-bar rewrite — restore the send button.
+  if (askPending) setAskPending(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,11 +1283,30 @@ function updateProbeFieldVisibility(): void {
 let probeCounter = 0;
 
 // ---------------------------------------------------------------------------
-// Ask-bar kind state
+// Ask-bar kind state + transient "rewriting…" tracking
 // ---------------------------------------------------------------------------
 
 type AskKind = "open" | "classify";
 let askKind: AskKind = "open";
+
+// The ask-bar fires an async server-side rewrite; while it is in flight we
+// disable the send button. It is restored by the next state frame (the rewrite
+// broadcasts "state") or by a safety timeout if nothing comes back.
+let askPending = false;
+let askRestoreTimer: number | undefined;
+
+function setAskPending(pending: boolean): void {
+  askPending = pending;
+  const btn = document.getElementById("ask-send") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = pending;
+    btn.textContent = pending ? "Rewriting…" : "Add";
+  }
+  if (!pending && askRestoreTimer !== undefined) {
+    clearTimeout(askRestoreTimer);
+    askRestoreTimer = undefined;
+  }
+}
 
 function labelToId(label: string): string {
   const slug = label
@@ -1186,28 +1450,36 @@ function wireButtons(): void {
   el("ask-classify").addEventListener("click", () => setAskKind("classify"));
 
   function submitAskBar(): void {
+    if (askPending) return;
     const text = el<HTMLInputElement>("ask-text").value.trim();
     if (!text) return;
 
-    const id = `probe-${++probeCounter}`;
-    let probe: ProbeDescriptor;
+    // The "smart" path: the server rewrites this prompt into a probe spec, then
+    // builds + stores the probe (assigning its id) and broadcasts a state frame.
+    const cats = el<HTMLInputElement>("ask-categories").value
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
 
-    if (askKind === "classify") {
-      const cats = el<HTMLInputElement>("ask-categories").value
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      probe = { kind: "classification", id, label: "", question: text, categories: cats };
-    } else {
-      probe = { kind: "open", id, label: "", instruction: text };
+    const op: Record<string, unknown> = {
+      op: "rewrite_probe",
+      kind: askKind === "classify" ? "classification" : "open",
+      text,
+    };
+    if (askKind === "classify" && cats.length > 0) {
+      op["categories"] = cats;
     }
-
-    send({ op: "upsert_probe", probe });
-    probeState.set(id, probe);
-    renderProbes();
+    send(op);
 
     el<HTMLInputElement>("ask-text").value = "";
     el<HTMLInputElement>("ask-categories").value = "";
+
+    // Show a transient "rewriting…" state; restored by the next state frame
+    // (handleState) or by this safety timeout, whichever comes first.
+    setAskPending(true);
+    askRestoreTimer = window.setTimeout(() => {
+      setAskPending(false);
+    }, 8000);
   }
 
   el("ask-send").addEventListener("click", submitAskBar);
