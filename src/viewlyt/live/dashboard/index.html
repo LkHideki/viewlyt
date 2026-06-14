@@ -43,8 +43,10 @@
         </div>
         <input type="text" id="ask-text" placeholder="Ask the audience… the system auto-picks kind, chart &amp; categories" autocomplete="off" />
         <input type="text" id="ask-categories" class="hidden" placeholder="categories (CSV) — for Classify" autocomplete="off" />
+        <button type="button" id="ask-suggest" class="btn-secondary ask-suggest-btn">Suggest</button>
         <button type="button" id="ask-send" class="btn-primary ask-send-btn">Add</button>
       </section>
+      <div id="suggestions"></div>
       <p class="hint" style="margin:-0.4rem 0 var(--gap)">The ask-bar rewrites your question into a probe that analyzes the entire sample. Use <strong>Add Probe</strong> below for an exact, manual probe.</p>
 
       <!-- Live results — the visual star, always visible at the top.
@@ -139,6 +141,10 @@
                 <label for="model">Model ID</label>
                 <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
               </div>
+              <div class="field-group">
+                <label for="budget">Budget USD <span class="hint">(0 = off; pauses analyses when reached)</span></label>
+                <input type="number" id="budget" min="0" step="0.01" value="0" />
+              </div>
               <div class="button-row">
                 <button id="apply-model" class="btn-primary">Apply</button>
               </div>
@@ -200,12 +206,12 @@ open:
 classification:
   { "kind": "classification", "question": "What is the overall sentiment?",
     "categories": ["positive", "negative", "neutral"],
-    "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta" }
+    "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta|gauge|heatmap|podium|violin" }
 
 Notes:
   • "label" is optional — auto-generated from the text when omitted.
   • "kind" defaults to "open" when omitted.
-  • "chart" applies only to classification probes.</pre>
+  • "chart" applies only to classification probes (eleven types: bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin).</pre>
               <div class="field-group" style="margin-top:0.5rem">
                 <label for="probe-json-file">Upload JSON file</label>
                 <input type="file" id="probe-json-file" accept=".json,application/json" />

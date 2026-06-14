@@ -1338,3 +1338,184 @@ input.edit-color:focus-visible {
     transition: none;
   }
 }
+
+/* =========================================================================
+   Batch 3 — gauge / heatmap / podium / violin charts, Suggest chips,
+              budget field, Cost card overflow fix
+   ========================================================================= */
+
+/* -------------------------------------------------------------------------
+   B9 — four new SVG chart containers
+   The renderer sets fill/stroke inline; these rules only size the <svg>.
+   .chart-baseline is already defined above and reused by axes here.
+   ------------------------------------------------------------------------- */
+
+.chart-gauge {
+  width: 100%;
+  max-width: 240px;
+  height: 130px;
+  display: block;
+  margin: 0 auto;
+}
+
+/* The renderer may place a centered big-number <text> element; it sets
+   fill inline. font-mono is applied via the SVG font-family attribute in
+   the renderer, but inherit here keeps the number on-brand if left unset. */
+.chart-gauge text {
+  font-family: var(--font-mono);
+}
+
+.chart-heatmap {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-podium {
+  width: 100%;
+  height: 150px;
+  display: block;
+}
+
+.chart-violin {
+  width: 100%;
+  height: 130px;
+  display: block;
+}
+
+/* -------------------------------------------------------------------------
+   B9 — reduced-motion: suppress rect/path transitions in new chart types
+   ------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-gauge *,
+  .chart-heatmap *,
+  .chart-podium *,
+  .chart-violin * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   B10 — Suggest chips container (#suggestions)
+   Lives directly under the ask-bar; empty (no children) collapses to 0.
+   ------------------------------------------------------------------------- */
+
+#suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: -.3rem 0 var(--gap);
+}
+
+/* -------------------------------------------------------------------------
+   B10 — individual .suggest-chip
+   Each chip shows a bold label + a dim one-line hint. Clicking sends the
+   probe and clears #suggestions.
+   WCAG-AA: accent border on --bg yields > 4.5:1; white label on surface-2
+   background is > 7:1.
+   ------------------------------------------------------------------------- */
+
+.suggest-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .1rem;
+  text-align: left;
+  max-width: 340px;
+  padding: .4rem .7rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: rgba(76, 139, 245, .10);
+  color: var(--text);
+  cursor: pointer;
+  transition: background .12s;
+}
+
+.suggest-chip:hover {
+  background: rgba(76, 139, 245, .18);
+}
+
+.suggest-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Bold white title line */
+.suggest-chip-label {
+  color: #fff;
+  font-size: .84rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Dim one-liner hint — truncates so chips stay compact */
+.suggest-chip-hint {
+  font-size: .74rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+/* -------------------------------------------------------------------------
+   B10 — #ask-suggest ("Suggest") button
+   Secondary-style pill sitting next to #ask-send inside the ask-bar.
+   Mirrors .ask-send-btn sizing but uses surface-2 bg + border (secondary).
+   ------------------------------------------------------------------------- */
+
+.ask-suggest-btn {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  padding: .3rem .9rem;
+  font-size: .82rem;
+  /* secondary appearance: surface-2 bg, border, readable text */
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  transition: background .12s, border-color .12s, color .12s;
+}
+
+.ask-suggest-btn:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--accent);
+  filter: none; /* override global button brightness filter */
+}
+
+.ask-suggest-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "Thinking…" transient state while suggest_probes is in flight */
+.ask-suggest-btn[data-thinking="1"] {
+  opacity: .6;
+  cursor: wait;
+}
+
+/* -------------------------------------------------------------------------
+   B8 — Cost card: handle longer "$0.0123 / $5.00" budget display
+   Drop the font size slightly and pin white-space so the slash + budget
+   never wrap. (min-width: 120px on .stat is already set in batch 1.)
+   ------------------------------------------------------------------------- */
+
+.stat-value#cost {
+  /* Override the batch-2 value (1.15rem) with a slightly smaller one so that
+     "$0.0123 / $5.00" (16 chars) fits in the 120px min-width card. */
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   B10 — Reduced-motion: suppress suggest-chip transition
+   ------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .suggest-chip,
+  .ask-suggest-btn {
+    transition: none;
+  }
+}

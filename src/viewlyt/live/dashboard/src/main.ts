@@ -60,7 +60,7 @@ interface StateMsg {
     merge_authors?: boolean;
     capacity?: number;
   };
-  model: { base_url: string; model: string };
+  model: { base_url: string; model: string; budget?: number };
   paused: boolean;
   ingested: number;
   latency_ms?: number | null;
@@ -125,6 +125,14 @@ interface CostMsg {
   cost_delta: number;
 }
 
+// Server -> dashboard suggestions frame (B10): exactly two ready-to-use probe
+// descriptors proposed for the current chat + the user's typed request. Each
+// dict already carries an id; clicking a chip upserts it verbatim.
+interface SuggestMsg {
+  type: "suggestions";
+  probes: ProbeDescriptor[];
+}
+
 type InboundMsg =
   | StateMsg
   | ResultMsg
@@ -132,7 +140,8 @@ type InboundMsg =
   | ErrorMsg
   | ChatFeedMsg
   | ProcMsg
-  | CostMsg;
+  | CostMsg
+  | SuggestMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -324,7 +333,11 @@ type ChartType =
   | "donut"
   | "lines"
   | "area"
-  | "delta";
+  | "delta"
+  | "gauge"
+  | "heatmap"
+  | "podium"
+  | "violin";
 const CHART_TYPES: ChartType[] = [
   "bars",
   "columns",
@@ -333,6 +346,10 @@ const CHART_TYPES: ChartType[] = [
   "lines",
   "area",
   "delta",
+  "gauge",
+  "heatmap",
+  "podium",
+  "violin",
 ];
 
 /** Read a probe's persisted chart type (server-side), defaulting to "bars". */
@@ -785,6 +802,292 @@ function renderDelta(views: CatView[]): HTMLElement {
 }
 
 /**
+ * Semicircular gauge for the leading category: a 180° track plus a colored arc
+ * filling pct/100 of the half-circle, a big centered pct number and the category
+ * name beneath. Defensive when every category is zero (empty track only).
+ */
+function renderGauge(views: CatView[], probeId: string): Element {
+  const width = 200;
+  const height = 120;
+  const cx = width / 2;
+  const cy = height - 12;
+  const radius = 78;
+  const stroke = 16;
+
+  const root = svg("svg", {
+    class: "chart-svg chart-gauge",
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+  });
+
+  // Point on the semicircle for a fraction f in [0,1] (left=0 -> right=1),
+  // walking the upper half: 180° (left) down to 0° (right).
+  const pointAt = (f: number): [number, number] => {
+    const angle = Math.PI * (1 - Math.max(0, Math.min(1, f)));
+    return [cx + radius * Math.cos(angle), cy - radius * Math.sin(angle)];
+  };
+  const arcPath = (f: number): string => {
+    const [sx, sy] = pointAt(0);
+    const [ex, ey] = pointAt(f);
+    const large = f > 0.5 ? 1 : 0;
+    return `M ${sx.toFixed(1)} ${sy.toFixed(1)} A ${radius} ${radius} 0 ${large} 1 ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+  };
+
+  // Full-sweep background track.
+  root.appendChild(
+    svg("path", {
+      class: "chart-gauge-track",
+      d: arcPath(1),
+      fill: "none",
+      stroke: "#2a2f3a",
+      "stroke-width": stroke,
+      "stroke-linecap": "round",
+    }),
+  );
+
+  // Top category (max pct); defensive when there are no categories / all zero.
+  let top: CatView | null = null;
+  for (const v of views) {
+    if (top === null || v.pct > top.pct) top = v;
+  }
+  const pct = top ? clampPct(top.pct) : 0;
+  if (top && pct > 0) {
+    root.appendChild(
+      svg("path", {
+        class: "chart-gauge-arc",
+        d: arcPath(pct / 100),
+        fill: "none",
+        stroke: colorFor(probeId, top.cat, top.i),
+        "stroke-width": stroke,
+        "stroke-linecap": "round",
+      }),
+    );
+  }
+
+  const num = svg("text", {
+    class: "chart-gauge-pct",
+    x: cx,
+    y: cy - 8,
+    "text-anchor": "middle",
+    fill: "currentColor",
+    "font-size": 26,
+    "font-weight": 700,
+  });
+  num.textContent = `${pct.toFixed(0)}%`;
+  root.appendChild(num);
+
+  const name = svg("text", {
+    class: "chart-gauge-name",
+    x: cx,
+    y: cy + 10,
+    "text-anchor": "middle",
+    fill: "currentColor",
+    "font-size": 11,
+    "fill-opacity": 0.7,
+  });
+  name.textContent = top ? top.cat : "—";
+  root.appendChild(name);
+
+  return root;
+}
+
+/**
+ * Heatmap grid: one ROW per category, columns = the last up-to-24 snapshots of
+ * that category's series. Cell fill = the category color at opacity scaled by
+ * its % (0 -> near transparent). Defensive against short/empty series. Names
+ * live in the stats table, so no left gutter is drawn.
+ */
+function renderHeatmap(views: CatView[], probeId: string): Element {
+  const COLS = 24;
+  const cell = 12;
+  const gap = 2;
+  const rows = views.length;
+  const maxLen = views.reduce((m, v) => Math.max(m, v.series.length), 0);
+  const cols = Math.max(1, Math.min(COLS, maxLen));
+  const width = cols * (cell + gap);
+  const height = Math.max(1, rows) * (cell + gap);
+
+  const root = svg("svg", {
+    class: "chart-svg chart-heatmap",
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+  });
+
+  views.forEach((v, r) => {
+    // Take the last `cols` values of this category's series (right-aligned).
+    const series = v.series;
+    const start = Math.max(0, series.length - cols);
+    const fill = colorFor(probeId, v.cat, v.i);
+    for (let c = 0; c < cols; c++) {
+      const value = series[start + c];
+      const has = value !== undefined;
+      const opacity = has ? clampPct(value) / 100 : 0;
+      root.appendChild(
+        svg("rect", {
+          x: c * (cell + gap),
+          y: r * (cell + gap),
+          width: cell,
+          height: cell,
+          rx: 2,
+          fill,
+          "fill-opacity": Math.max(0.04, opacity).toFixed(3),
+        }),
+      );
+    }
+  });
+
+  return root;
+}
+
+/**
+ * Winner's podium: rank categories by current pct (desc) and render the top 3 as
+ * blocks ordered 2nd–1st–3rd, heights proportional to pct (1st tallest). Fewer
+ * than three categories simply show what exists. Defensive on empty input.
+ */
+function renderPodium(views: CatView[], probeId: string): Element {
+  const ranked = [...views].sort((a, b) => b.pct - a.pct).slice(0, 3);
+
+  const width = 300;
+  const height = 150;
+  const root = svg("svg", {
+    class: "chart-svg chart-podium",
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+  });
+  if (ranked.length === 0) return root;
+
+  // Visual slot order left->right by rank: 2nd, 1st, 3rd (center is tallest).
+  const slotOrder = [1, 0, 2].filter((r) => r < ranked.length);
+  const slotW = width / slotOrder.length;
+  const blockW = Math.min(72, slotW * 0.7);
+  const baseline = height - 20;
+  const maxPct = Math.max(1, ...ranked.map((v) => clampPct(v.pct)));
+  const maxBarH = baseline - 24;
+
+  slotOrder.forEach((rank, slot) => {
+    const v = ranked[rank];
+    const h = (clampPct(v.pct) / maxPct) * maxBarH;
+    const x = slot * slotW + (slotW - blockW) / 2;
+    const y = baseline - h;
+
+    root.appendChild(
+      svg("rect", {
+        x: x.toFixed(1),
+        y: y.toFixed(1),
+        width: blockW.toFixed(1),
+        height: Math.max(2, h).toFixed(1),
+        rx: 3,
+        fill: colorFor(probeId, v.cat, v.i),
+      }),
+    );
+
+    const place = svg("text", {
+      x: x + blockW / 2,
+      y: y - 4,
+      "text-anchor": "middle",
+      fill: "currentColor",
+      "font-size": 12,
+      "font-weight": 700,
+    });
+    place.textContent = `#${rank + 1} ${v.pct.toFixed(0)}%`;
+    root.appendChild(place);
+
+    const baseLbl = svg("text", {
+      x: x + blockW / 2,
+      y: baseline + 14,
+      "text-anchor": "middle",
+      fill: "currentColor",
+      "font-size": 10,
+      "fill-opacity": 0.7,
+    });
+    baseLbl.textContent = v.cat;
+    root.appendChild(baseLbl);
+  });
+
+  return root;
+}
+
+/**
+ * Violin plot: per category, a ~9-bin histogram of its series values, mirrored
+ * into a symmetric vertical shape. Categories with <3 points degrade to a thin
+ * bar at the current value. Defensive against empty input.
+ */
+function renderViolin(views: CatView[], probeId: string): Element {
+  const BINS = 9;
+  const slotW = 56;
+  const height = 130;
+  const padY = 8;
+  const width = Math.max(slotW, views.length * slotW);
+
+  const root = svg("svg", {
+    class: "chart-svg chart-violin",
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+  });
+  if (views.length === 0) return root;
+
+  const plotH = height - 2 * padY;
+  // Value (0..100) -> y, with 0 at the bottom and 100 at the top.
+  const yFor = (value: number): number => padY + (1 - clampPct(value) / 100) * plotH;
+  const maxHalf = slotW * 0.42;
+
+  views.forEach((v, idx) => {
+    const cx = idx * slotW + slotW / 2;
+    const color = colorFor(probeId, v.cat, v.i);
+    const series = v.series;
+
+    if (series.length < 3) {
+      // Too few points for a distribution: a thin bar at the current value.
+      const y = yFor(v.pct);
+      root.appendChild(
+        svg("rect", {
+          x: (cx - 2).toFixed(1),
+          y: Math.min(y, height - padY).toFixed(1),
+          width: 4,
+          height: Math.max(2, height - padY - y).toFixed(1),
+          rx: 2,
+          fill: color,
+          "fill-opacity": 0.85,
+        }),
+      );
+      return;
+    }
+
+    // Histogram over BINS buckets spanning 0..100.
+    const counts = new Array<number>(BINS).fill(0);
+    for (const raw of series) {
+      const value = clampPct(raw);
+      const b = Math.min(BINS - 1, Math.floor((value / 100) * BINS));
+      counts[b] += 1;
+    }
+    const maxCount = Math.max(1, ...counts);
+
+    // Build a closed mirrored path: down the right edge, up the left edge.
+    const rightPts: string[] = [];
+    const leftPts: string[] = [];
+    for (let b = 0; b < BINS; b++) {
+      // Bin center value -> y; width proportional to the bin's share.
+      const value = ((b + 0.5) / BINS) * 100;
+      const y = yFor(value);
+      const half = (counts[b] / maxCount) * maxHalf;
+      rightPts.push(`${(cx + half).toFixed(1)},${y.toFixed(1)}`);
+      leftPts.push(`${(cx - half).toFixed(1)},${y.toFixed(1)}`);
+    }
+    leftPts.reverse();
+    root.appendChild(
+      svg("path", {
+        class: "chart-violin-shape",
+        d: `M ${rightPts.concat(leftPts).join(" L ")} Z`,
+        fill: color,
+        "fill-opacity": 0.8,
+      }),
+    );
+  });
+
+  return root;
+}
+
+/**
  * Build the classification .result-display content for the snapshot at `index`:
  * the chosen visualization wrapped in .chart-viz, plus (for every chart EXCEPT
  * "bars") the .cat-stats table underneath it.
@@ -829,6 +1132,18 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
       break;
     case "delta":
       viz.appendChild(renderDelta(views));
+      break;
+    case "gauge":
+      viz.appendChild(renderGauge(views, probeId));
+      break;
+    case "heatmap":
+      viz.appendChild(renderHeatmap(views, probeId));
+      break;
+    case "podium":
+      viz.appendChild(renderPodium(views, probeId));
+      break;
+    case "violin":
+      viz.appendChild(renderViolin(views, probeId));
       break;
     default:
       viz.appendChild(renderBars(probeId, views));
@@ -1437,6 +1752,12 @@ function setProc(active: boolean, latencyMs?: number | null): void {
 // quietly if the stats-bar hasn't got the Cost card.
 // ---------------------------------------------------------------------------
 
+// Budget cap (B8): the last-known spending budget in USD (0 = off) and the most
+// recent cost frame. handleState refreshes the cost label's "/budget" suffix on
+// a budget change by re-rendering from this cached frame.
+let currentBudget = 0;
+let lastCost: CostMsg | null = null;
+
 /** "1.2k tok" for >=1000, else "842 tok". */
 function fmtTok(n: number): string {
   return n >= 1000 ? (n / 1000).toFixed(1) + "k tok" : n + " tok";
@@ -1451,12 +1772,24 @@ function signed(value: number, render: (n: number) => string): string {
 }
 
 function handleCost(msg: CostMsg): void {
+  // Cache the frame so a later budget change can re-render the "/budget" suffix.
+  lastCost = msg;
+
   const main = document.getElementById("cost");
   const delta = document.getElementById("cost-delta");
   if (!main || !delta) return;
 
+  if (currentBudget > 0) {
+    // Budget mode: show spent / budget regardless of whether the provider
+    // reports a dollar cost (0 spend renders as "$0.0000 / $<budget>").
+    main.textContent =
+      "$" + msg.cost_total.toFixed(4) + " / $" + currentBudget.toFixed(2);
+  } else {
+    const hasCost = msg.cost_total > 0;
+    main.textContent = hasCost ? "$" + msg.cost_total.toFixed(4) : fmtTok(msg.tokens_total);
+  }
+
   const hasCost = msg.cost_total > 0;
-  main.textContent = hasCost ? "$" + msg.cost_total.toFixed(4) : fmtTok(msg.tokens_total);
   delta.textContent = hasCost
     ? signed(msg.cost_delta, (n) => "$" + n.toFixed(4))
     : signed(msg.tokens_delta, fmtTok);
@@ -1478,6 +1811,13 @@ function handleState(msg: StateMsg): void {
   setInputVal("base_url", msg.model.base_url);
   setInputVal("model", msg.model.model);
   // api_key is intentionally not filled (write-only)
+
+  // Spending budget (B8): remember it, mirror it onto the #budget field (when
+  // present) and re-render the Cost card so its "/budget" suffix tracks changes.
+  currentBudget = Number(msg.model.budget) || 0;
+  const budgetEl = document.getElementById("budget") as HTMLInputElement | null;
+  if (budgetEl) budgetEl.value = String(currentBudget);
+  if (lastCost) handleCost(lastCost);
 
   // Reverse-map base_url -> provider dropdown
   const providerSel = el<HTMLSelectElement>("provider");
@@ -1556,6 +1896,9 @@ function connectDashboard(): void {
       case "cost":
         handleCost(msg);
         break;
+      case "suggestions":
+        renderSuggestions(msg.probes);
+        break;
     }
   };
 }
@@ -1625,6 +1968,84 @@ function setAskPending(pending: boolean): void {
   }
 }
 
+// The Suggest button (B10) fires an off-loop server task that proposes two
+// probes; while it is in flight we disable the button and show "Thinking…".
+// It is restored by the next suggestions frame or by a safety timeout.
+let suggestPending = false;
+let suggestRestoreTimer: number | undefined;
+
+function setSuggestPending(pending: boolean): void {
+  suggestPending = pending;
+  const btn = document.getElementById("ask-suggest") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = pending;
+    btn.textContent = pending ? "Thinking…" : "Suggest";
+  }
+  if (!pending && suggestRestoreTimer !== undefined) {
+    clearTimeout(suggestRestoreTimer);
+    suggestRestoreTimer = undefined;
+  }
+}
+
+/**
+ * Render the (up to two) suggested probes as clickable chips in #suggestions.
+ * Each chip shows the probe label plus a short hint of its kind/question/
+ * instruction. Clicking a chip upserts that probe verbatim (it already carries
+ * an id), updates local probeState, and clears the container. A tiny "Dismiss"
+ * affordance clears it too. Guards against #suggestions being absent.
+ */
+function renderSuggestions(probes: ProbeDescriptor[]): void {
+  setSuggestPending(false);
+  const container = document.getElementById("suggestions");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const shown = probes.slice(0, 2);
+  for (const probe of shown) {
+    if (typeof probe !== "object" || probe === null) continue;
+
+    const chip = document.createElement("button");
+    chip.className = "suggest-chip";
+    chip.type = "button";
+
+    const label = document.createElement("span");
+    label.className = "suggest-chip-label";
+    label.textContent = probe.label || probe.id || "(probe)";
+    chip.appendChild(label);
+
+    const hintText =
+      probe.kind === "classification"
+        ? (probe.question ?? "")
+        : (probe.instruction ?? "");
+    const hint = document.createElement("span");
+    hint.className = "suggest-chip-hint";
+    hint.textContent = `${probe.kind ?? "open"} · ${hintText}`.trim();
+    chip.appendChild(hint);
+
+    chip.addEventListener("click", () => {
+      send({ op: "upsert_probe", probe });
+      if (typeof probe.id === "string" && probe.id !== "") {
+        probeState.set(probe.id, probe);
+        syncCardsFromState();
+      }
+      container.innerHTML = "";
+    });
+
+    container.appendChild(chip);
+  }
+
+  if (shown.length > 0) {
+    const dismiss = document.createElement("button");
+    dismiss.className = "suggest-dismiss btn-secondary btn-small";
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => {
+      container.innerHTML = "";
+    });
+    container.appendChild(dismiss);
+  }
+}
+
 function labelToId(label: string): string {
   const slug = label
     .toLowerCase()
@@ -1657,7 +2078,7 @@ function wireButtons(): void {
 
   el("apply-model").addEventListener("click", () => {
     const apiKey = inputVal("api_key");
-    const op: Record<string, string> = {
+    const op: Record<string, string | number> = {
       op: "set_model",
       base_url: inputVal("base_url"),
       model: inputVal("model"),
@@ -1665,6 +2086,10 @@ function wireButtons(): void {
     if (apiKey !== "") {
       op["api_key"] = apiKey;
     }
+    // Spending budget (B8): always include it (>= 0; 0 = off). The field is
+    // optional in the DOM — default to 0 when absent.
+    const budgetEl = document.getElementById("budget") as HTMLInputElement | null;
+    op["budget"] = budgetEl ? Math.max(0, Number(budgetEl.value) || 0) : 0;
     send(op);
     // Clear the api_key input after sending
     setInputVal("api_key", "");
@@ -1808,6 +2233,22 @@ function wireButtons(): void {
   }
 
   el("ask-send").addEventListener("click", submitAskBar);
+
+  // Suggest (B10): ask the server to propose two probes for the current chat +
+  // the typed (possibly empty) request. Shows a transient "Thinking…" state,
+  // restored on the suggestions frame (renderSuggestions) or this safety timeout.
+  function requestSuggestions(): void {
+    if (suggestPending) return;
+    const text = el<HTMLInputElement>("ask-text").value.trim();
+    send({ op: "suggest_probes", text });
+    setSuggestPending(true);
+    suggestRestoreTimer = window.setTimeout(() => {
+      setSuggestPending(false);
+    }, 10000);
+  }
+
+  const suggestBtn = document.getElementById("ask-suggest");
+  if (suggestBtn) suggestBtn.addEventListener("click", requestSuggestions);
 
   el<HTMLInputElement>("ask-text").addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.key === "Enter") {
