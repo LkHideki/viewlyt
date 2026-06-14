@@ -84,10 +84,55 @@ h2 {
 header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
   padding-bottom: var(--gap);
   border-bottom: 1px solid var(--border);
   margin-bottom: var(--gap);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+/* Loading spinner shown at the top while the LLM is analyzing. */
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: viewlyt-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes viewlyt-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2s;
+  }
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+#language {
+  width: auto;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.5rem;
 }
 
 .status {
@@ -115,10 +160,25 @@ header {
    Stats bar
    ------------------------------------------------------------------------- */
 
-.stats-bar {
+/* Stat cards live in the header now: a compact, wrapping row. */
+.top-stats {
   display: flex;
-  gap: var(--gap);
-  margin-bottom: var(--gap);
+  gap: 0.5rem;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+
+.top-stats .stat {
+  padding: 0.3rem 0.65rem;
+  min-width: 0;
+}
+
+.top-stats .stat-value {
+  font-size: 1.05rem;
+}
+
+.top-stats .stat-label {
+  font-size: 0.62rem;
 }
 
 .stat {

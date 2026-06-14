@@ -60,7 +60,7 @@ interface StateMsg {
     merge_authors?: boolean;
     capacity?: number;
   };
-  model: { base_url: string; model: string; budget?: number };
+  model: { base_url: string; model: string; budget?: number; language?: string };
   paused: boolean;
   ingested: number;
   latency_ms?: number | null;
@@ -1751,6 +1751,9 @@ function appendFeed(items: { author: string; text: string }[]): void {
 
 function setProc(active: boolean, latencyMs?: number | null): void {
   const e = el<HTMLSpanElement>("proc");
+  // Top-of-page loading spinner: visible only while an analysis is in flight.
+  const spinner = document.getElementById("spinner");
+  if (spinner) spinner.classList.toggle("hidden", !active);
   if (active) {
     e.textContent = "analyzing…";
     e.style.color = "#fbbf24";
@@ -1832,6 +1835,12 @@ function handleState(msg: StateMsg): void {
   const budgetEl = document.getElementById("budget") as HTMLInputElement | null;
   if (budgetEl) budgetEl.value = String(currentBudget);
   if (lastCost) handleCost(lastCost);
+
+  // Analysis language (header selector)
+  const langEl = document.getElementById("language") as HTMLSelectElement | null;
+  if (langEl && typeof msg.model.language === "string" && msg.model.language) {
+    langEl.value = msg.model.language;
+  }
 
   // Reverse-map base_url -> provider dropdown
   const providerSel = el<HTMLSelectElement>("provider");
@@ -2089,6 +2098,12 @@ function wireButtons(): void {
   el("resume").addEventListener("click", () => send({ op: "resume" }));
   el("clear").addEventListener("click", () => send({ op: "clear" }));
   el("force-run").addEventListener("click", () => send({ op: "force_run" }));
+
+  // Analysis language (header selector): applies immediately; set_model keeps the
+  // rest of the model config unchanged (omitted fields fall back to the current).
+  el<HTMLSelectElement>("language").addEventListener("change", () => {
+    send({ op: "set_model", language: el<HTMLSelectElement>("language").value });
+  });
 
   el("apply-model").addEventListener("click", () => {
     const apiKey = inputVal("api_key");

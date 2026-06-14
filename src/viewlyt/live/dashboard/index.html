@@ -8,13 +8,11 @@
   </head>
   <body>
     <header>
-      <h1>viewlyt<span class="accent">.live</span></h1>
-      <span id="status" class="status disconnected">Disconnected</span>
-    </header>
-
-    <main>
-      <!-- Stats bar -->
-      <section class="stats-bar">
+      <div class="brand">
+        <h1>viewlyt<span class="accent">.live</span></h1>
+        <span id="spinner" class="spinner hidden" aria-hidden="true"></span>
+      </div>
+      <div class="top-stats">
         <div class="stat">
           <span class="stat-label">Ingested</span>
           <span id="ingested" class="stat-value">0</span>
@@ -32,7 +30,22 @@
           <span id="cost" class="stat-value">$0.0000</span>
           <span id="cost-delta" class="hint"></span>
         </div>
-      </section>
+      </div>
+      <div class="top-right">
+        <span id="status" class="status disconnected">Disconnected</span>
+        <select id="language" title="Language of the LLM analyses">
+          <option value="Portuguese (Brazil)">Português (BR)</option>
+          <option value="English">English</option>
+          <option value="Spanish">Español</option>
+          <option value="French">Français</option>
+          <option value="German">Deutsch</option>
+          <option value="Italian">Italiano</option>
+          <option value="Japanese">日本語</option>
+        </select>
+      </div>
+    </header>
+
+    <main>
 
       <!-- Quick ask-bar — always-visible probe composer -->
       <section class="ask-bar">
