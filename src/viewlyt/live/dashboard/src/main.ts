@@ -1408,6 +1408,20 @@ function ensureCard(probeId: string): HTMLDivElement {
   const liveBadge = document.createElement("span");
   liveBadge.className = "scrub-live";
   liveBadge.textContent = "LIVE";
+  liveBadge.title = "Jump to the most recent";
+  // Clicking the LIVE / -N badge snaps the scrubber back to the latest snapshot.
+  liveBadge.addEventListener("click", () => {
+    const hist = resultHistory.get(probeId) ?? [];
+    const max = Math.max(0, hist.length - 1);
+    const vs = viewState.get(probeId);
+    if (vs) {
+      vs.index = max;
+      vs.live = true;
+    }
+    range.value = String(max);
+    renderDisplay(card, probeId, domKind(card), max);
+    refreshScrubber(card, probeId, max);
+  });
   scrubMeta.appendChild(liveBadge);
 
   scrubber.appendChild(range);

@@ -390,16 +390,16 @@ button:active {
 /* Classification bars */
 
 .bars {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.bar-row {
+  /* Shared grid (rows use display:contents) so every row's 1fr track is the
+     SAME width → the bars are directly comparable across categories. */
   display: grid;
   grid-template-columns: 120px 1fr 52px auto auto;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem 0.5rem;
+}
+
+.bar-row {
+  display: contents;
 }
 
 .bar-label {
@@ -661,16 +661,54 @@ button:active {
 input.scrub-range {
   flex: 1 1 auto;
   width: auto;
-  accent-color: var(--accent);
-  cursor: pointer;
-  height: auto;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px; /* hit area; the visible track is thin (below) */
   background: transparent;
   border: none;
   padding: 0;
   margin: 0;
-  /* Override any inherited box from the global input rule */
   box-shadow: none;
   outline: none;
+  cursor: pointer;
+}
+
+/* Thin, discreet track + small accent thumb (WebKit) */
+input.scrub-range::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+input.scrub-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px; /* center the thumb on the 3px track */
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  transition: box-shadow 0.12s;
+}
+
+input.scrub-range:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(76, 139, 245, 0.18);
+}
+
+/* Firefox */
+input.scrub-range::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+input.scrub-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
 }
 
 input.scrub-range:focus-visible {
@@ -700,6 +738,11 @@ input.scrub-range:focus-visible {
   border: 1px solid rgba(76, 139, 245, 0.35);
   border-radius: 999px;
   padding: 0.05rem 0.4rem;
+  cursor: pointer; /* click to snap back to the latest snapshot */
+}
+
+.scrub-live:hover {
+  background: rgba(76, 139, 245, 0.28);
 }
 
 /* Single-snapshot display container (R5) */
@@ -719,17 +762,16 @@ input.scrub-range:focus-visible {
 
 /* R3 — per-category stats table under every chart type except "bars" */
 .cat-stats {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  /* Shared grid (rows use display:contents) so all rows align on identical columns. */
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) 52px auto auto;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
   margin-top: 0.6rem;
 }
 
 .cat-stat-row {
-  display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) 52px auto auto;
-  align-items: center;
-  gap: 0.5rem;
+  display: contents;
 }
 
 .cat-swatch {
