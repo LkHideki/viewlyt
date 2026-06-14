@@ -1116,3 +1116,202 @@ input[type="file"]::file-selector-button:hover {
   background: var(--border);
   border-radius: 3px;
 }
+
+/* -------------------------------------------------------------------------
+   Batch 2 — editable result-card chrome, Auto chip, Cost stat card
+   ------------------------------------------------------------------------- */
+
+/* --- Result header layout (now multi-line with badge + prompt subtitle) --- */
+
+.result-header {
+  align-items: flex-start;
+  gap: .5rem;
+}
+
+/* Title column: badge + label + prompt stacked vertically */
+.result-titles {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+/* --- Kind badge on the result card (mirrors .probe-kind-badge) --- */
+
+.result-kind-badge {
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: .15rem .45rem;
+  border-radius: 4px;
+  background: rgba(76, 139, 245, .15);
+  color: var(--accent);
+  border: 1px solid rgba(76, 139, 245, .25);
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+
+/* --- Editable label (bold white title, truncates) --- */
+
+.result-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Prompt subtitle under the label --- */
+
+.result-prompt {
+  font-size: .76rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Edit / Remove buttons in .result-header-right --- */
+
+/* Ensure .card-edit and .card-remove have correct minimal sizing even when
+   the btn-secondary / btn-danger / btn-small classes are not yet applied. */
+.card-edit,
+.card-remove {
+  font-size: .75rem;
+  padding: .25rem .55rem;
+}
+
+/* --- Per-card editor panel --- */
+
+.card-editor {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .75rem;
+  margin: .25rem 0 .6rem;
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+
+.card-editor.hidden {
+  display: none;
+}
+
+/* Full-width text inputs inside the editor inherit global input styling;
+   only the textarea-like prompt field needs a min-height hint. */
+.edit-prompt {
+  min-height: 3.5rem;
+  resize: vertical;
+}
+
+/* --- Category list inside the editor --- */
+
+.edit-categories {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+
+/* Grid: [color swatch 28px] [name flex] [up btn auto] [down btn auto] */
+.edit-cat-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: .5rem;
+}
+
+/* Color picker */
+input.edit-color {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+input.edit-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input.edit-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 3px;
+}
+
+input.edit-color:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Category name label (read-only display inside each row) */
+.edit-cat-name {
+  font-size: .82rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Reorder buttons */
+.cat-up,
+.cat-down {
+  font-size: .7rem;
+  padding: .1rem .4rem;
+  /* Inherit .btn-secondary look; also work standalone: */
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: opacity .15s, filter .15s;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.cat-up:hover,
+.cat-down:hover {
+  filter: brightness(1.12);
+}
+
+.cat-up:active,
+.cat-down:active {
+  filter: brightness(.9);
+}
+
+/* --- Editor Save / Cancel row (reuse .button-row; nothing extra needed) --- */
+
+/* --- Ask-bar Auto chip (#ask-auto) --- */
+/* .ask-chip / .ask-chip-active already cover Auto. Verify active reads well:
+   the accent-tinted background and border give ≥ 4.5:1 contrast on --bg. */
+
+/* Nothing extra required; #ask-auto uses the same classes as Open / Classify. */
+
+/* --- Cost stat card --- */
+
+/* #cost can show "$0.0000" (8 chars) — scale down slightly from the default
+   1.5rem so it fits comfortably inside the 120px min-width card. */
+.stat-value#cost {
+  font-size: 1.15rem;
+}
+
+/* Delta sub-line: mono, dim, smaller — mirrors the pattern of .hint */
+#cost-delta {
+  font-family: var(--font-mono);
+  font-size: .7rem;
+  color: var(--text-dim);
+}
+
+/* -------------------------------------------------------------------------
+   Reduced-motion overrides (batch 2 additions)
+   ------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .cat-up,
+  .cat-down {
+    transition: none;
+  }
+}

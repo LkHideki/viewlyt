@@ -109,9 +109,30 @@ interface ProbeDescriptor {
   categories?: string[];
   instruction?: string;
   chart?: string;
+  // Optional per-category color overrides (category name -> hex like "#4c8bf5").
+  // Empty/missing entries fall back to the palette (getCategoryColor).
+  colors?: Record<string, string>;
+  max_words?: number;
 }
 
-type InboundMsg = StateMsg | ResultMsg | StatMsg | ErrorMsg | ChatFeedMsg | ProcMsg;
+// Server -> dashboard cost frame: broadcast once per analysed window, after the
+// results. cost_* are USD (0 when the provider doesn't expose cost).
+interface CostMsg {
+  type: "cost";
+  tokens_total: number;
+  tokens_delta: number;
+  cost_total: number;
+  cost_delta: number;
+}
+
+type InboundMsg =
+  | StateMsg
+  | ResultMsg
+  | StatMsg
+  | ErrorMsg
+  | ChatFeedMsg
+  | ProcMsg
+  | CostMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -164,60 +185,11 @@ function setStatus(connected: boolean): void {
 }
 
 // ---------------------------------------------------------------------------
-// Probe list rendering
+// Probe descriptor state — the source of truth for every card's chrome/editor.
+// One .result-card is rendered per probe (A4); there is no separate probe list.
 // ---------------------------------------------------------------------------
 
 const probeState = new Map<string, ProbeDescriptor>();
-
-function renderProbes(): void {
-  const container = el<HTMLDivElement>("probes");
-  if (probeState.size === 0) {
-    container.innerHTML = '<p class="empty-hint">No probes configured yet.</p>';
-    return;
-  }
-  container.innerHTML = "";
-  for (const probe of probeState.values()) {
-    const row = document.createElement("div");
-    row.className = "probe-row";
-    row.dataset["id"] = probe.id;
-
-    const info = document.createElement("div");
-    info.className = "probe-info";
-
-    const badge = document.createElement("span");
-    badge.className = "probe-kind-badge";
-    badge.textContent = probe.kind;
-
-    const name = document.createElement("span");
-    name.className = "probe-name";
-    name.textContent = probe.label;
-
-    const detail = document.createElement("span");
-    detail.className = "probe-detail";
-    if (probe.kind === "classification" && probe.categories) {
-      detail.textContent = probe.categories.join(", ");
-    } else if (probe.kind === "open" && probe.instruction) {
-      detail.textContent = probe.instruction;
-    }
-
-    info.appendChild(badge);
-    info.appendChild(name);
-    info.appendChild(detail);
-
-    const removeBtn = document.createElement("button");
-    removeBtn.className = "btn-danger btn-small";
-    removeBtn.textContent = "Remove";
-    removeBtn.addEventListener("click", () => {
-      send({ op: "remove_probe", id: probe.id });
-      probeState.delete(probe.id);
-      renderProbes();
-    });
-
-    row.appendChild(info);
-    row.appendChild(removeBtn);
-    container.appendChild(row);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Markdown-lite renderer (safe — escapes HTML first, no raw injection)
@@ -313,6 +285,15 @@ const CATEGORY_COLORS = [
 
 function getCategoryColor(index: number): string {
   return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+}
+
+/**
+ * The fill/swatch color for a probe's category: the probe's own override
+ * (probe.colors[cat]) when set, else the stable palette slot for its order
+ * index. Used everywhere a CATEGORY color is chosen inside the chart renderers.
+ */
+function colorFor(probeId: string, cat: string, orderIndex: number): string {
+  return probeState.get(probeId)?.colors?.[cat] ?? getCategoryColor(orderIndex);
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +404,7 @@ interface CatView {
 }
 
 /** Default: horizontal % bars + delta badge vs previous + per-category sparkline. */
-function renderBars(views: CatView[]): HTMLElement {
+function renderBars(probeId: string, views: CatView[]): HTMLElement {
   const barsEl = document.createElement("div");
   barsEl.className = "bars";
 
@@ -441,7 +422,7 @@ function renderBars(views: CatView[]): HTMLElement {
     const fill = document.createElement("div");
     fill.className = "bar-fill";
     fill.style.width = `${clampPct(v.pct)}%`;
-    fill.style.backgroundColor = getCategoryColor(v.i);
+    fill.style.backgroundColor = colorFor(probeId, v.cat, v.i);
 
     const pctLabel = document.createElement("span");
     pctLabel.className = "bar-pct";
@@ -470,7 +451,7 @@ function renderBars(views: CatView[]): HTMLElement {
  * The loved stats table, reused under EVERY non-bars chart: one row per
  * category with a color swatch, name, pct, delta badge and sparkline.
  */
-function buildStats(views: CatView[]): HTMLElement {
+function buildStats(probeId: string, views: CatView[]): HTMLElement {
   const stats = document.createElement("div");
   stats.className = "cat-stats";
 
@@ -480,7 +461,7 @@ function buildStats(views: CatView[]): HTMLElement {
 
     const swatch = document.createElement("span");
     swatch.className = "cat-swatch";
-    swatch.style.backgroundColor = getCategoryColor(v.i);
+    swatch.style.backgroundColor = colorFor(probeId, v.cat, v.i);
 
     const name = document.createElement("span");
     name.className = "cat-name";
@@ -506,7 +487,7 @@ function buildStats(views: CatView[]): HTMLElement {
 }
 
 /** Vertical columns (SVG): one bar per category, height proportional to pct. */
-function renderColumns(views: CatView[]): Element {
+function renderColumns(probeId: string, views: CatView[]): Element {
   const width = 320;
   const height = 140;
   const padX = 8;
@@ -548,7 +529,7 @@ function renderColumns(views: CatView[]): Element {
         y: y.toFixed(1),
         width: barW.toFixed(1),
         height: Math.max(0, h).toFixed(1),
-        fill: getCategoryColor(v.i),
+        fill: colorFor(probeId, v.cat, v.i),
         rx: 2,
       }),
     );
@@ -558,14 +539,14 @@ function renderColumns(views: CatView[]): Element {
 }
 
 /** Single full-width bar split into colored segments. */
-function renderStacked(entries: [string, number][]): HTMLElement {
+function renderStacked(probeId: string, entries: [string, number][]): HTMLElement {
   const bar = document.createElement("div");
   bar.className = "stacked-bar";
   entries.forEach(([cat, pct], i) => {
     const seg = document.createElement("div");
     seg.className = "stacked-seg";
     seg.style.flexBasis = `${clampPct(pct)}%`;
-    seg.style.backgroundColor = getCategoryColor(i);
+    seg.style.backgroundColor = colorFor(probeId, cat, i);
     seg.title = `${cat}: ${pct.toFixed(1)}%`;
     bar.appendChild(seg);
   });
@@ -573,7 +554,7 @@ function renderStacked(entries: [string, number][]): HTMLElement {
 }
 
 /** Inline SVG donut — one arc per category, sized to its pct. */
-function renderDonut(entries: [string, number][]): Element {
+function renderDonut(probeId: string, entries: [string, number][]): Element {
   const size = 140;
   const cx = size / 2;
   const cy = size / 2;
@@ -589,7 +570,7 @@ function renderDonut(entries: [string, number][]): Element {
   const total = entries.reduce((acc, [, pct]) => acc + Math.max(0, pct), 0);
   let offset = 0;
   if (total > 0) {
-    entries.forEach(([, pct], i) => {
+    entries.forEach(([cat, pct], i) => {
       const frac = Math.max(0, pct) / total;
       const dash = frac * circumference;
       const seg = svg("circle", {
@@ -597,7 +578,7 @@ function renderDonut(entries: [string, number][]): Element {
         cy,
         r: radius,
         fill: "none",
-        stroke: getCategoryColor(i),
+        stroke: colorFor(probeId, cat, i),
         "stroke-width": 18,
         "stroke-dasharray": `${dash} ${circumference - dash}`,
         // Start at 12 o'clock and walk clockwise from the running offset.
@@ -613,7 +594,7 @@ function renderDonut(entries: [string, number][]): Element {
 }
 
 /** Inline SVG multi-line chart over each category's snapshot series. */
-function renderLines(views: CatView[]): Element {
+function renderLines(probeId: string, views: CatView[]): Element {
   const width = 320;
   const height = 120;
   const padX = 4;
@@ -650,7 +631,11 @@ function renderLines(views: CatView[]): Element {
       .map((p, idx) => `${xFor(idx, series.length).toFixed(1)},${yFor(p).toFixed(1)}`)
       .join(" ");
     root.appendChild(
-      svg("polyline", { class: "chart-line", stroke: getCategoryColor(v.i), points: pts }),
+      svg("polyline", {
+        class: "chart-line",
+        stroke: colorFor(probeId, v.cat, v.i),
+        points: pts,
+      }),
     );
   }
 
@@ -662,7 +647,7 @@ function renderLines(views: CatView[]): Element {
  * category is a filled band between its lower and upper cumulative boundary at
  * every time point. A single time point degrades to one vertical 100% stack.
  */
-function renderArea(views: CatView[]): Element {
+function renderArea(probeId: string, views: CatView[]): Element {
   const width = 320;
   const height = 120;
 
@@ -714,7 +699,7 @@ function renderArea(views: CatView[]): Element {
           y: Math.min(yTop, yBot).toFixed(1),
           width,
           height: Math.abs(yBot - yTop).toFixed(1),
-          fill: getCategoryColor(views[i].i),
+          fill: colorFor(probeId, views[i].cat, views[i].i),
           "fill-opacity": 0.85,
         }),
       );
@@ -735,7 +720,7 @@ function renderArea(views: CatView[]): Element {
       svg("polygon", {
         class: "chart-area-band",
         points: top.concat(bottom).join(" "),
-        fill: getCategoryColor(views[i].i),
+        fill: colorFor(probeId, views[i].cat, views[i].i),
         "fill-opacity": 0.85,
       }),
     );
@@ -828,31 +813,31 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
   viz.className = "chart-viz";
   switch (type) {
     case "columns":
-      viz.appendChild(renderColumns(views));
+      viz.appendChild(renderColumns(probeId, views));
       break;
     case "stacked":
-      viz.appendChild(renderStacked(entries));
+      viz.appendChild(renderStacked(probeId, entries));
       break;
     case "donut":
-      viz.appendChild(renderDonut(entries));
+      viz.appendChild(renderDonut(probeId, entries));
       break;
     case "lines":
-      viz.appendChild(renderLines(views));
+      viz.appendChild(renderLines(probeId, views));
       break;
     case "area":
-      viz.appendChild(renderArea(views));
+      viz.appendChild(renderArea(probeId, views));
       break;
     case "delta":
       viz.appendChild(renderDelta(views));
       break;
     default:
-      viz.appendChild(renderBars(views));
+      viz.appendChild(renderBars(probeId, views));
       break;
   }
   body.appendChild(viz);
 
   if (type !== "bars") {
-    body.appendChild(buildStats(views));
+    body.appendChild(buildStats(probeId, views));
   }
   return body;
 }
@@ -934,13 +919,409 @@ function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): 
   if (headerMeta && snap) headerMeta.textContent = snapStamp(snap);
 }
 
-function upsertResultCard(msg: ResultMsg): void {
+// ---------------------------------------------------------------------------
+// Cards ARE the probe surface (A4). One .result-card per probe, created from
+// state OR from the first result (whichever lands first). The card carries its
+// own header chrome, an inline editor, the scrubber and the single display.
+// ---------------------------------------------------------------------------
+
+/** The kind a card currently renders as (drives display + chrome). */
+function cardKind(probeId: string): string {
+  return probeState.get(probeId)?.kind ?? "open";
+}
+
+/** Read a card's display kind from the DOM (set on the card dataset). */
+function domKind(card: HTMLDivElement): string {
+  return card.dataset["kind"] ?? "open";
+}
+
+/** True while a card's inline editor is open (must not be clobbered by sync). */
+function editorOpen(card: HTMLDivElement): boolean {
+  const editor = card.querySelector<HTMLDivElement>(".card-editor");
+  return editor != null && !editor.classList.contains("hidden");
+}
+
+/**
+ * Find (or build) the .result-card for a probe. A freshly-built card has the
+ * FULL skeleton and its static handlers wired exactly once; the kind-specific
+ * chrome (badge text, label, prompt, chart-select / edit-categories visibility)
+ * is applied later by updateCardChrome from state.
+ */
+function ensureCard(probeId: string): HTMLDivElement {
   const container = el<HTMLDivElement>("results");
+  const existing = container.querySelector<HTMLDivElement>(
+    `[data-probe-id="${CSS.escape(probeId)}"]`,
+  );
+  if (existing) return existing;
 
-  // Remove empty-hint on first result
-  const hint = container.querySelector(".empty-hint");
-  if (hint) hint.remove();
+  const card = document.createElement("div");
+  card.className = "result-card";
+  card.dataset["probeId"] = probeId;
+  card.dataset["kind"] = cardKind(probeId);
 
+  // --- header ---
+  const header = document.createElement("div");
+  header.className = "result-header";
+
+  const badge = document.createElement("span");
+  badge.className = "result-kind-badge";
+  badge.textContent = cardKind(probeId);
+  header.appendChild(badge);
+
+  const titles = document.createElement("div");
+  titles.className = "result-titles";
+  const labelEl = document.createElement("span");
+  labelEl.className = "result-label";
+  const promptEl = document.createElement("span");
+  promptEl.className = "result-prompt";
+  titles.appendChild(labelEl);
+  titles.appendChild(promptEl);
+  header.appendChild(titles);
+
+  const right = document.createElement("div");
+  right.className = "result-header-right";
+
+  const select = document.createElement("select");
+  select.className = "chart-select";
+  for (const t of CHART_TYPES) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    select.appendChild(opt);
+  }
+  select.value = probeChart(probeId);
+  select.addEventListener("change", () => {
+    const chosen = select.value as ChartType;
+    // Persist server-side by re-upserting the existing probe descriptor.
+    const prev = probeState.get(probeId);
+    const probe: ProbeDescriptor = prev
+      ? { ...prev, chart: chosen }
+      : { id: probeId, kind: "classification", label: "", chart: chosen };
+    send({ op: "upsert_probe", probe });
+    probeState.set(probe.id, probe);
+    const vs = viewState.get(probeId);
+    renderDisplay(card, probeId, domKind(card), vs ? vs.index : 0);
+  });
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "card-edit btn-secondary btn-small";
+  editBtn.type = "button";
+  editBtn.textContent = "Edit";
+  editBtn.addEventListener("click", () => openEditor(probeId));
+
+  const removeBtn = document.createElement("button");
+  removeBtn.className = "card-remove btn-danger btn-small";
+  removeBtn.type = "button";
+  removeBtn.textContent = "Remove";
+  removeBtn.addEventListener("click", () => {
+    send({ op: "remove_probe", id: probeId });
+    probeState.delete(probeId);
+    resultHistory.delete(probeId);
+    viewState.delete(probeId);
+    card.remove();
+  });
+
+  const metaEl = document.createElement("span");
+  metaEl.className = "result-meta";
+
+  right.appendChild(metaEl);
+  right.appendChild(select);
+  right.appendChild(editBtn);
+  right.appendChild(removeBtn);
+  header.appendChild(right);
+  card.appendChild(header);
+
+  // --- inline editor (hidden by default) ---
+  const editor = document.createElement("div");
+  editor.className = "card-editor hidden";
+
+  const labelField = document.createElement("div");
+  labelField.className = "field-group";
+  const labelInput = document.createElement("input");
+  labelInput.className = "edit-label";
+  labelInput.type = "text";
+  labelInput.placeholder = "Label";
+  labelField.appendChild(labelInput);
+  editor.appendChild(labelField);
+
+  const promptField = document.createElement("div");
+  promptField.className = "field-group";
+  const promptInput = document.createElement("textarea");
+  promptInput.className = "edit-prompt";
+  promptInput.rows = 3;
+  promptInput.placeholder = "Prompt";
+  promptField.appendChild(promptInput);
+  editor.appendChild(promptField);
+
+  const editCats = document.createElement("div");
+  editCats.className = "edit-categories";
+  editor.appendChild(editCats);
+
+  const buttonRow = document.createElement("div");
+  buttonRow.className = "button-row";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "edit-save btn-primary btn-small";
+  saveBtn.type = "button";
+  saveBtn.textContent = "Save";
+  saveBtn.addEventListener("click", () => saveEditor(probeId));
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "edit-cancel btn-secondary btn-small";
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => closeEditor(probeId));
+  buttonRow.appendChild(saveBtn);
+  buttonRow.appendChild(cancelBtn);
+  editor.appendChild(buttonRow);
+  card.appendChild(editor);
+
+  // --- scrubber ---
+  const scrubber = document.createElement("div");
+  scrubber.className = "result-scrubber";
+
+  const range = document.createElement("input");
+  range.className = "scrub-range";
+  range.type = "range";
+  range.min = "0";
+  range.max = "0";
+  range.value = "0";
+  range.step = "1";
+
+  const scrubMeta = document.createElement("div");
+  scrubMeta.className = "scrub-meta";
+  // Leading text node (filled by refreshScrubber) + the LIVE/behind badge.
+  scrubMeta.appendChild(document.createTextNode(""));
+  const liveBadge = document.createElement("span");
+  liveBadge.className = "scrub-live";
+  liveBadge.textContent = "LIVE";
+  scrubMeta.appendChild(liveBadge);
+
+  scrubber.appendChild(range);
+  scrubber.appendChild(scrubMeta);
+  card.appendChild(scrubber);
+
+  // Wire the scrubber listener ONCE; read the live max + kind each time.
+  range.addEventListener("input", () => {
+    const hist = resultHistory.get(probeId) ?? [];
+    const max = Math.max(0, hist.length - 1);
+    const idx = Math.min(max, Math.max(0, Number(range.value)));
+    const vs = viewState.get(probeId);
+    if (vs) {
+      vs.index = idx;
+      vs.live = idx === max;
+    }
+    renderDisplay(card, probeId, domKind(card), idx);
+    refreshScrubber(card, probeId, idx);
+  });
+
+  // --- display (placeholder until the first result arrives) ---
+  const display = document.createElement("div");
+  display.className = "result-display";
+  const placeholder = document.createElement("p");
+  placeholder.className = "empty-hint";
+  placeholder.textContent = "Waiting for first result…";
+  display.appendChild(placeholder);
+  card.appendChild(display);
+
+  // Drop the top-level "Waiting for results…" hint (a DIRECT child of #results;
+  // never a card's own nested placeholder) the moment the first card appears.
+  const topHint = container.querySelector(":scope > .empty-hint");
+  if (topHint) topHint.remove();
+
+  container.prepend(card);
+  return card;
+}
+
+/**
+ * Apply the read-only chrome from state: kind badge, label, prompt line, and
+ * the show/hide of the chart-select + edit-categories by kind. NEVER touches the
+ * editor inputs while the editor is open (don't clobber an in-progress edit) and
+ * never touches the display / scrubber / history.
+ */
+function updateCardChrome(probeId: string): void {
+  const card = ensureCard(probeId);
+  const probe = probeState.get(probeId);
+  const kind = probe?.kind ?? domKind(card);
+  card.dataset["kind"] = kind;
+
+  const badge = card.querySelector<HTMLSpanElement>(".result-kind-badge");
+  if (badge) badge.textContent = kind;
+
+  const labelEl = card.querySelector<HTMLSpanElement>(".result-label");
+  if (labelEl) labelEl.textContent = probe?.label ?? "";
+
+  const promptEl = card.querySelector<HTMLSpanElement>(".result-prompt");
+  if (promptEl) {
+    promptEl.textContent =
+      kind === "classification" ? (probe?.question ?? "") : (probe?.instruction ?? "");
+  }
+
+  const select = card.querySelector<HTMLSelectElement>(".chart-select");
+  if (select) {
+    select.classList.toggle("hidden", kind !== "classification");
+    select.value = probeChart(probeId);
+  }
+
+  // Editor's category rows only make sense for classification — but never
+  // rebuild them while the editor is open mid-edit.
+  if (!editorOpen(card)) {
+    const editCats = card.querySelector<HTMLDivElement>(".edit-categories");
+    if (editCats) editCats.classList.toggle("hidden", kind !== "classification");
+  }
+}
+
+/** Mirror probeState onto the cards: create/update/remove (A4). */
+function syncCardsFromState(): void {
+  const container = el<HTMLDivElement>("results");
+  for (const probeId of probeState.keys()) {
+    ensureCard(probeId);
+    updateCardChrome(probeId);
+  }
+  // Remove cards whose probe disappeared (skip the error banner card).
+  const cards = container.querySelectorAll<HTMLDivElement>(".result-card[data-probe-id]");
+  cards.forEach((card) => {
+    const pid = card.dataset["probeId"];
+    if (pid !== undefined && !probeState.has(pid)) card.remove();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Per-card inline editor (A2/A3): rename / re-prompt / reorder / recolor.
+// ---------------------------------------------------------------------------
+
+/** Build one .edit-categories row: [color][name][up][down]. */
+function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "edit-cat-row";
+
+  const color = document.createElement("input");
+  color.className = "edit-color";
+  color.type = "color";
+  color.value = colorFor(probeId, cat, orderIndex);
+
+  const name = document.createElement("span");
+  name.className = "edit-cat-name";
+  name.textContent = cat;
+
+  const up = document.createElement("button");
+  up.className = "cat-up btn-secondary btn-small";
+  up.type = "button";
+  up.textContent = "↑";
+  up.addEventListener("click", () => {
+    const prev = row.previousElementSibling;
+    if (prev) row.parentElement?.insertBefore(row, prev);
+  });
+
+  const down = document.createElement("button");
+  down.className = "cat-down btn-secondary btn-small";
+  down.type = "button";
+  down.textContent = "↓";
+  down.addEventListener("click", () => {
+    const next = row.nextElementSibling;
+    if (next) row.parentElement?.insertBefore(next, row);
+  });
+
+  row.appendChild(color);
+  row.appendChild(name);
+  row.appendChild(up);
+  row.appendChild(down);
+  return row;
+}
+
+/** Populate + reveal a card's editor from its current descriptor. */
+function openEditor(probeId: string): void {
+  const card = ensureCard(probeId);
+  const probe = probeState.get(probeId);
+  const kind = probe?.kind ?? domKind(card);
+
+  const labelInput = card.querySelector<HTMLInputElement>(".edit-label");
+  if (labelInput) labelInput.value = probe?.label ?? "";
+
+  const promptInput = card.querySelector<HTMLTextAreaElement>(".edit-prompt");
+  if (promptInput) {
+    promptInput.value =
+      kind === "classification" ? (probe?.question ?? "") : (probe?.instruction ?? "");
+  }
+
+  const editCats = card.querySelector<HTMLDivElement>(".edit-categories");
+  if (editCats) {
+    editCats.innerHTML = "";
+    if (kind === "classification") {
+      editCats.classList.remove("hidden");
+      const cats = probe?.categories ?? [];
+      cats.forEach((cat, i) => editCats.appendChild(buildEditCatRow(probeId, cat, i)));
+    } else {
+      editCats.classList.add("hidden");
+    }
+  }
+
+  const editor = card.querySelector<HTMLDivElement>(".card-editor");
+  if (editor) editor.classList.remove("hidden");
+}
+
+/** Read the editor back, build the full descriptor, upsert it, then close. */
+function saveEditor(probeId: string): void {
+  const card = ensureCard(probeId);
+  const prev = probeState.get(probeId);
+  const kind = prev?.kind ?? domKind(card);
+
+  const label = card.querySelector<HTMLInputElement>(".edit-label")?.value.trim() ?? "";
+  const prompt = card.querySelector<HTMLTextAreaElement>(".edit-prompt")?.value.trim() ?? "";
+
+  let probe: ProbeDescriptor;
+  if (kind === "classification") {
+    const categories: string[] = [];
+    const colors: Record<string, string> = {};
+    const rows = card.querySelectorAll<HTMLDivElement>(".edit-categories .edit-cat-row");
+    rows.forEach((row) => {
+      const cat = row.querySelector<HTMLSpanElement>(".edit-cat-name")?.textContent ?? "";
+      if (cat === "") return;
+      categories.push(cat);
+      const color = row.querySelector<HTMLInputElement>(".edit-color")?.value;
+      if (color) colors[cat] = color;
+    });
+    probe = {
+      kind: "classification",
+      id: probeId,
+      label,
+      question: prompt,
+      categories,
+      chart: probeChart(probeId),
+      colors,
+    };
+  } else {
+    probe = {
+      kind: "open",
+      id: probeId,
+      label,
+      instruction: prompt,
+      max_words: prev?.max_words ?? 60,
+    };
+  }
+
+  send({ op: "upsert_probe", probe });
+  probeState.set(probeId, probe);
+  closeEditor(probeId);
+  // The next state broadcast + syncCardsFromState refreshes the read-only
+  // chrome; refresh now too so reorder/recolor show on the current snapshot.
+  updateCardChrome(probeId);
+  const vs = viewState.get(probeId);
+  if (vs) renderDisplay(card, probeId, kind, vs.index);
+}
+
+/** Hide a card's editor (no descriptor change). */
+function closeEditor(probeId: string): void {
+  const card = ensureCard(probeId);
+  const editor = card.querySelector<HTMLDivElement>(".card-editor");
+  if (editor) editor.classList.add("hidden");
+}
+
+// ---------------------------------------------------------------------------
+// Result frames: append a snapshot, sync the card, render the display (A4).
+// The label / prompt / kind badge come from state (updateCardChrome), NOT msg;
+// a result only updates the snapshot history + scrubber + display + meta.
+// ---------------------------------------------------------------------------
+
+function upsertResultCard(msg: ResultMsg): void {
   // 1. Append this frame as a snapshot; cap from the FRONT.
   let history = resultHistory.get(msg.probe_id);
   if (!history) {
@@ -963,129 +1344,29 @@ function upsertResultCard(msg: ResultMsg): void {
     view.index = Math.max(0, view.index - dropped);
   }
 
-  let card = container.querySelector<HTMLDivElement>(
-    `[data-probe-id="${CSS.escape(msg.probe_id)}"]`
-  );
+  // The card may pre-exist (from state) or be created here (result-first).
+  const card = ensureCard(msg.probe_id);
 
-  if (!card) {
-    card = document.createElement("div");
-    const cardEl = card; // stable non-null ref for closures below
-    // Flat card (R4): just border + radius, no left accent bar.
-    card.className = "result-card";
-    card.dataset["probeId"] = msg.probe_id;
+  // Drop the "Waiting for first result…" placeholder on the first real frame.
+  const placeholder = card.querySelector(".result-display .empty-hint");
+  if (placeholder) placeholder.remove();
 
-    // --- header ---
-    const header = document.createElement("div");
-    header.className = "result-header";
-
-    const labelEl = document.createElement("span");
-    labelEl.className = "result-label";
-    labelEl.textContent = msg.label;
-    header.appendChild(labelEl);
-
-    const metaEl = document.createElement("span");
-    metaEl.className = "result-meta";
-
-    if (msg.kind === "classification") {
-      // Classification header carries a chart-type selector beside the meta.
-      const right = document.createElement("div");
-      right.className = "result-header-right";
-
-      const select = document.createElement("select");
-      select.className = "chart-select";
-      for (const t of CHART_TYPES) {
-        const opt = document.createElement("option");
-        opt.value = t;
-        opt.textContent = t;
-        select.appendChild(opt);
-      }
-      // Chart type is server-persisted on the probe descriptor.
-      select.value = probeChart(msg.probe_id);
-      select.addEventListener("change", () => {
-        const chosen = select.value as ChartType;
-        const pid = cardEl.dataset["probeId"] ?? "";
-        // Persist server-side by re-upserting the existing probe descriptor.
-        const existing = probeState.get(pid);
-        const probe: ProbeDescriptor = existing
-          ? { ...existing, chart: chosen }
-          : { id: pid, kind: "classification", label: "", chart: chosen };
-        send({ op: "upsert_probe", probe });
-        probeState.set(probe.id, probe);
-        // Re-render the display at the CURRENT view index.
-        const vs = viewState.get(pid);
-        renderDisplay(cardEl, pid, "classification", vs ? vs.index : 0);
-      });
-
-      right.appendChild(select);
-      right.appendChild(metaEl);
-      header.appendChild(right);
-    } else {
-      header.appendChild(metaEl);
-    }
-    card.appendChild(header);
-
-    // --- scrubber ---
-    const scrubber = document.createElement("div");
-    scrubber.className = "result-scrubber";
-
-    const range = document.createElement("input");
-    range.className = "scrub-range";
-    range.type = "range";
-    range.min = "0";
-    range.max = String(Math.max(0, history.length - 1));
-    range.value = String(view.index);
-    range.step = "1";
-
-    const scrubMeta = document.createElement("div");
-    scrubMeta.className = "scrub-meta";
-    // Leading text node (filled by refreshScrubber) + the LIVE/behind badge.
-    scrubMeta.appendChild(document.createTextNode(""));
-    const liveBadge = document.createElement("span");
-    liveBadge.className = "scrub-live";
-    liveBadge.textContent = "LIVE";
-    scrubMeta.appendChild(liveBadge);
-
-    scrubber.appendChild(range);
-    scrubber.appendChild(scrubMeta);
-    card.appendChild(scrubber);
-
-    // Wire the scrubber listener ONCE; read the live max from history each time.
-    const kind = msg.kind;
-    const pid = msg.probe_id;
-    range.addEventListener("input", () => {
-      const hist = resultHistory.get(pid) ?? [];
-      const max = Math.max(0, hist.length - 1);
-      const idx = Math.min(max, Math.max(0, Number(range.value)));
-      const vs = viewState.get(pid);
-      if (vs) {
-        vs.index = idx;
-        vs.live = idx === max;
-      }
-      renderDisplay(cardEl, pid, kind, idx);
-      refreshScrubber(cardEl, pid, idx);
-    });
-
-    // --- display ---
-    card.appendChild(
-      msg.kind === "classification"
-        ? buildClassificationBody(msg.probe_id, view.index)
-        : buildOpenBody(msg.probe_id, view.index),
-    );
-
-    container.prepend(card);
-  }
+  // The kind comes from state when known; fall back to the frame's kind so a
+  // result that arrives before its state still renders correctly.
+  const kind = probeState.has(msg.probe_id) ? cardKind(msg.probe_id) : msg.kind;
+  card.dataset["kind"] = kind;
+  // Make sure the chart-select is visible for classification even before state.
+  const select = card.querySelector<HTMLSelectElement>(".chart-select");
+  if (select) select.classList.toggle("hidden", kind !== "classification");
 
   // If pinned to latest, jump the view to the newest snapshot.
   if (view.live) view.index = history.length - 1;
 
   // Keep the selector in sync with the server-persisted chart type.
-  if (msg.kind === "classification") {
-    const selectEl = card.querySelector<HTMLSelectElement>(".chart-select");
-    if (selectEl) selectEl.value = probeChart(msg.probe_id);
-  }
+  if (kind === "classification" && select) select.value = probeChart(msg.probe_id);
 
   // Render the display at the current view index and refresh chrome.
-  renderDisplay(card, msg.probe_id, msg.kind, view.index);
+  renderDisplay(card, msg.probe_id, kind, view.index);
   refreshScrubber(card, msg.probe_id, view.index);
 }
 
@@ -1095,7 +1376,9 @@ function upsertResultCard(msg: ResultMsg): void {
 
 function showError(message: string): void {
   const container = el<HTMLDivElement>("results");
-  const hint = container.querySelector(".empty-hint");
+  // Only the top-level "Waiting for results…" hint (a direct child) — never a
+  // card's nested "Waiting for first result…" placeholder.
+  const hint = container.querySelector(":scope > .empty-hint");
   if (hint) hint.remove();
   let card = container.querySelector<HTMLDivElement>('[data-error="1"]');
   if (!card) {
@@ -1148,6 +1431,37 @@ function setProc(active: boolean, latencyMs?: number | null): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cost frame (A5): update the Cost stat card. Shows USD when the provider
+// reports it, else a compact token count. Both elements are optional — bail
+// quietly if the stats-bar hasn't got the Cost card.
+// ---------------------------------------------------------------------------
+
+/** "1.2k tok" for >=1000, else "842 tok". */
+function fmtTok(n: number): string {
+  return n >= 1000 ? (n / 1000).toFixed(1) + "k tok" : n + " tok";
+}
+
+/**
+ * Render `value` with a leading "+" when it is >= 0 (a negative value already
+ * carries its own "-" from `render`, so we never double it).
+ */
+function signed(value: number, render: (n: number) => string): string {
+  return (value >= 0 ? "+" : "") + render(value);
+}
+
+function handleCost(msg: CostMsg): void {
+  const main = document.getElementById("cost");
+  const delta = document.getElementById("cost-delta");
+  if (!main || !delta) return;
+
+  const hasCost = msg.cost_total > 0;
+  main.textContent = hasCost ? "$" + msg.cost_total.toFixed(4) : fmtTok(msg.tokens_total);
+  delta.textContent = hasCost
+    ? signed(msg.cost_delta, (n) => "$" + n.toFixed(4))
+    : signed(msg.tokens_delta, fmtTok);
+}
+
 function handleState(msg: StateMsg): void {
   // Window inputs
   setInputVal("n", msg.window.n);
@@ -1178,12 +1492,12 @@ function handleState(msg: StateMsg): void {
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
   setProc(false, msg.latency_ms);
 
-  // Probes
+  // Probes — rebuild the descriptor map, then mirror it onto the cards.
   probeState.clear();
   for (const p of msg.probes) {
     probeState.set(p.id, p);
   }
-  renderProbes();
+  syncCardsFromState();
 
   // A state frame is the ack of an ask-bar rewrite — restore the send button.
   if (askPending) setAskPending(false);
@@ -1239,6 +1553,9 @@ function connectDashboard(): void {
       case "proc":
         setProc(msg.active, msg.latency_ms);
         break;
+      case "cost":
+        handleCost(msg);
+        break;
     }
   };
 }
@@ -1286,8 +1603,8 @@ let probeCounter = 0;
 // Ask-bar kind state + transient "rewriting…" tracking
 // ---------------------------------------------------------------------------
 
-type AskKind = "open" | "classify";
-let askKind: AskKind = "open";
+type AskKind = "auto" | "open" | "classify";
+let askKind: AskKind = "auto";
 
 // The ask-bar fires an async server-side rewrite; while it is in flight we
 // disable the send button. It is restored by the next state frame (the rewrite
@@ -1383,9 +1700,10 @@ function wireButtons(): void {
 
     send({ op: "upsert_probe", probe });
 
-    // Optimistically add to local state so UI updates immediately
+    // Optimistically add to local state so a card appears immediately; the
+    // server's state broadcast reconciles it shortly after.
     probeState.set(id, probe as unknown as ProbeDescriptor);
-    renderProbes();
+    syncCardsFromState();
 
     // Reset form
     setInputVal("probe-label", "");
@@ -1427,7 +1745,7 @@ function wireButtons(): void {
       added += 1;
     }
 
-    renderProbes();
+    syncCardsFromState();
     el<HTMLTextAreaElement>("probe-json").value = "";
     statusEl.textContent = added > 0 ? `Imported ${added} probe(s).` : "No probes found.";
   });
@@ -1436,9 +1754,11 @@ function wireButtons(): void {
 
   function setAskKind(kind: AskKind): void {
     askKind = kind;
+    el<HTMLButtonElement>("ask-auto").classList.toggle("ask-chip-active", kind === "auto");
     el<HTMLButtonElement>("ask-open").classList.toggle("ask-chip-active", kind === "open");
     el<HTMLButtonElement>("ask-classify").classList.toggle("ask-chip-active", kind === "classify");
     const catsEl = el<HTMLInputElement>("ask-categories");
+    // Categories only matter for the explicit "classify" kind.
     if (kind === "classify") {
       catsEl.classList.remove("hidden");
     } else {
@@ -1446,6 +1766,7 @@ function wireButtons(): void {
     }
   }
 
+  el("ask-auto").addEventListener("click", () => setAskKind("auto"));
   el("ask-open").addEventListener("click", () => setAskKind("open"));
   el("ask-classify").addEventListener("click", () => setAskKind("classify"));
 
@@ -1456,14 +1777,17 @@ function wireButtons(): void {
 
     // The "smart" path: the server rewrites this prompt into a probe spec, then
     // builds + stores the probe (assigning its id) and broadcasts a state frame.
+    // In "auto" the LLM also DECIDES the kind (open vs classification).
     const cats = el<HTMLInputElement>("ask-categories").value
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
+    const kind =
+      askKind === "auto" ? "auto" : askKind === "classify" ? "classification" : "open";
     const op: Record<string, unknown> = {
       op: "rewrite_probe",
-      kind: askKind === "classify" ? "classification" : "open",
+      kind,
       text,
     };
     if (askKind === "classify" && cats.length > 0) {
