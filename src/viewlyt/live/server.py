@@ -369,7 +369,7 @@ SNIPPET_JS = """(function () {
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
   (document.body || document.documentElement).appendChild(badge);
-  function status() { paint("connected | captured " + captured + " | sent " + sent, "#14532d"); }
+  function status() { paint("connected | captured " + captured, "#14532d"); }
   function connect() {
     try { ws = new WebSocket(WS_URL); } catch (e) { paint("cannot open socket", "#7f1d1d"); return; }
     ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
