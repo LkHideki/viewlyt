@@ -15,6 +15,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 import time
 import webbrowser
 import zipfile
@@ -26,7 +27,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import persistence
-from .llm import LLMClient, LLMConfig, LLMRunner, run_probes
+from .llm import LLMClient, LLMConfig, LLMRunner, rewrite_probe_spec, run_probes
 from .messages import clean_chat, message_from_ingest
 from .probes import Probe, probe_from_dict
 from .window import WindowBuffer, WindowConfig
@@ -124,6 +125,18 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         if op == "upsert_probe":
             p = probe_from_dict(data["probe"])
             server.probes[p.id] = p
+        elif op == "rewrite_probe":
+            # Off-loop: an LLM rewrites the casual ask into a full probe spec, then
+            # the task itself stores/persists/broadcasts (so we don't block here and
+            # the trailing state frame below reflects the pre-rewrite state).
+            asyncio.create_task(
+                _rewrite_and_add(
+                    server,
+                    str(data.get("kind") or "open"),
+                    str(data.get("text") or ""),
+                    list(data.get("categories") or []),
+                )
+            )
         elif op == "remove_probe":
             server.probes.pop(str(data.get("id")), None)
         elif op == "set_window":
@@ -164,6 +177,69 @@ async def apply_control(server: LiveServer, data: dict) -> None:
     if op in {"upsert_probe", "remove_probe", "set_window", "set_model"}:
         await persist(server)
     await server.dash.broadcast(server.state_message())
+
+
+def _slugify_probe_id(server: LiveServer, label: str) -> str:
+    """Turn a label into a unique probe id: lowercase, non-alnum → '-', strip '-'.
+
+    Empty slugs fall back to ``rewrite-<count+1>``; collisions with an existing
+    probe id are disambiguated by suffixing ``-2``, ``-3``, ...
+    """
+    base = re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")
+    if not base:
+        base = f"rewrite-{len(server.probes) + 1}"
+    if base not in server.probes:
+        return base
+    n = 2
+    while f"{base}-{n}" in server.probes:
+        n += 1
+    return f"{base}-{n}"
+
+
+async def _rewrite_and_add(server: LiveServer, kind: str, text: str, categories: list[str]) -> None:
+    """LLM-rewrite the ask-bar text into a probe, store it, persist, and broadcast.
+
+    Runs as its own task (never raises out of it). On any failure it falls back to
+    a raw probe built straight from ``text`` and also emits an ``error`` frame so
+    the dashboard tells the user their text was added as-is.
+    """
+    try:
+        try:
+            spec = await rewrite_probe_spec(server.client(), kind, text, categories)
+            probe_id = _slugify_probe_id(server, str(spec.get("label") or ""))
+            probe_dict = {"kind": kind, "id": probe_id, **spec}
+            if kind == "classification" and not probe_dict.get("categories") and categories:
+                probe_dict["categories"] = categories
+        except Exception:
+            logger.exception("probe rewrite failed; adding raw text")
+            probe_id = _slugify_probe_id(server, text)
+            if kind == "classification":
+                probe_dict = {
+                    "kind": "classification",
+                    "id": probe_id,
+                    "label": "",
+                    "question": text,
+                    "categories": categories or [],
+                }
+            else:
+                probe_dict = {
+                    "kind": "open",
+                    "id": probe_id,
+                    "label": "",
+                    "instruction": text,
+                }
+            await server.dash.broadcast(
+                {
+                    "type": "error",
+                    "message": "Probe rewrite failed; added your text as-is.",
+                }
+            )
+        p = probe_from_dict(probe_dict)
+        server.probes[p.id] = p
+        await persist(server)
+        await server.dash.broadcast(server.state_message())
+    except Exception:
+        logger.exception("rewrite task failed entirely for %r", text)
 
 
 async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
