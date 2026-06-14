@@ -43,10 +43,16 @@ class LLMConfig:
     model: str = "google/gemini-3.1-flash-lite"  # OpenRouter model (or override with --model)
     timeout: float = 60.0
     budget_usd: float = 0.0  # spending cap in USD; 0 = off (no cap)
+    language: str = "Portuguese (Brazil)"  # language the LLM writes its analyses in
 
     def to_public_dict(self) -> dict:
         # Never leak the api_key to the dashboard.
-        return {"base_url": self.base_url, "model": self.model, "budget": self.budget_usd}
+        return {
+            "base_url": self.base_url,
+            "model": self.model,
+            "budget": self.budget_usd,
+            "language": self.language,
+        }
 
 
 def parse_json_loose(content: str) -> dict:
@@ -94,6 +100,7 @@ class LLMClient:
 
         self.cfg = cfg
         self.model = cfg.model
+        self.language = cfg.language
         self.total_tokens = 0
         self.total_cost = 0.0
         kwargs: dict = {
@@ -138,6 +145,10 @@ class LLMClient:
 
     async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
         system, user = probe.build_prompt(messages)
+        # Free-text output (open summaries) follows the chosen language; classification
+        # is left untouched so its labels keep matching the categories.
+        if self.language and probe.kind == "open":
+            system = f"{system}\n\nWrite the answer in {self.language}."
         msgs = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -179,6 +190,10 @@ class LLMClient:
         providers that don't support structured outputs. The plain call is left
         unguarded so a real failure (endpoint/key/network) propagates to the caller.
         """
+        # Generated human-readable text (probe labels, questions, instructions) follows
+        # the chosen language too.
+        if self.language:
+            system = f"{system}\n\nWrite any human-readable text in {self.language}."
         msgs = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

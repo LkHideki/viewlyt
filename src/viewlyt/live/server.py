@@ -119,6 +119,7 @@ async def persist(server: LiveServer) -> None:
             "model": server.llm_cfg.model,
             "api_key": server.llm_cfg.api_key,
             "budget": server.llm_cfg.budget_usd,
+            "language": server.llm_cfg.language,
         },
         [p.to_dict() for p in server.probes.values()],
     )
@@ -136,7 +137,12 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         op = data.get("op")
         if op == "upsert_probe":
             p = probe_from_dict(data["probe"])
+            is_new = p.id not in server.probes
             server.probes[p.id] = p
+            if is_new:
+                # A brand-new probe is analyzed on the next loop iteration instead of
+                # waiting for the refresh timer (no-op while the buffer is still empty).
+                server.force_now = True
         elif op == "rewrite_probe":
             # Off-loop: an LLM rewrites the casual ask into a full probe spec, then
             # the task itself stores/persists/broadcasts (so we don't block here and
@@ -167,6 +173,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 api_key=data.get("api_key") or server.llm_cfg.api_key,
                 model=data.get("model") or server.llm_cfg.model,
                 budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
+                language=str(data.get("language") or server.llm_cfg.language),
             )
             server._client = None
         elif op == "pause":
@@ -266,6 +273,7 @@ async def _rewrite_and_add(server: LiveServer, kind: str, text: str, categories:
             )
         p = probe_from_dict(probe_dict)
         server.probes[p.id] = p
+        server.force_now = True  # analyze the just-created probe right away
         await persist(server)
         await server.dash.broadcast(server.state_message())
     except Exception:
@@ -698,6 +706,7 @@ def run(
             api_key=m.get("api_key", ""),
             model=m["model"],
             budget_usd=float(m.get("budget", 0.0)),
+            language=str(m.get("language") or "Portuguese (Brazil)"),
         )
         server._client = None
         for pd in st.get("probes", []):
@@ -715,6 +724,7 @@ def run(
                 "model": server.llm_cfg.model,
                 "api_key": server.llm_cfg.api_key,
                 "budget": server.llm_cfg.budget_usd,
+                "language": server.llm_cfg.language,
             },
             [p.to_dict() for p in server.probes.values()],
         )
