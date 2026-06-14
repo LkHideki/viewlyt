@@ -8,6 +8,7 @@ pull it in.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -206,23 +207,40 @@ class LLMClient:
         return parse_json_loose(resp.choices[0].message.content or "")
 
 
+# Max probes whose LLM calls run at once. Probes are independent and I/O-bound, so
+# running them sequentially makes a window's latency scale with the probe COUNT
+# (P x per-call latency) instead of staying ~one call. The semaphore caps how many
+# requests hit the provider simultaneously (rate-limit / connection courtesy).
+_PROBE_CONCURRENCY = 8
+
+
 async def run_probes(
     client: LLMRunner, probes: list[Probe], messages: list[ChatMessage]
 ) -> list[ProbeResult]:
-    """Run every probe over the same window; one failing probe never kills the rest.
+    """Run every probe over the same window CONCURRENTLY; one failure never kills the rest.
 
-    Pure orchestration over the (real or fake) ``client`` — no FastAPI here, so it
-    unit-tests with a stub client and ``asyncio.run``. Returns one aggregated
-    :class:`ProbeResult` per probe that succeeded, in order.
+    The probes are independent (distinct prompts, distinct state) and dominated by
+    the LLM round-trip, so their calls are fanned out with ``asyncio.gather`` (bounded
+    by :data:`_PROBE_CONCURRENCY`) — a window's wall-clock becomes ~max(call) instead
+    of sum(call). Pure orchestration over the (real or fake) ``client`` — no FastAPI
+    here, so it unit-tests with a stub client and ``asyncio.run``. Input order is
+    preserved; a probe that raises is logged and dropped (returns no result).
     """
-    results: list[ProbeResult] = []
-    for probe in probes:
-        try:
-            parsed = await client.run(probe, messages)
-            results.append(probe.aggregate(parsed, messages))
-        except Exception:
-            logger.exception("probe %r failed", getattr(probe, "id", "?"))
-    return results
+    if not probes:
+        return []
+    sem = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+    async def _one(probe: Probe) -> ProbeResult | None:
+        async with sem:
+            try:
+                parsed = await client.run(probe, messages)
+                return probe.aggregate(parsed, messages)
+            except Exception:
+                logger.exception("probe %r failed", getattr(probe, "id", "?"))
+                return None
+
+    gathered = await asyncio.gather(*(_one(p) for p in probes))
+    return [r for r in gathered if r is not None]
 
 
 # Chart visualizations a classification probe may request, in the dashboard's order.

@@ -124,3 +124,23 @@ def test_open_result_text_starts_with_ok() -> None:
     assert opn_result.text is not None
     assert opn_result.text.startswith("ok:"), f"unexpected text: {opn_result.text!r}"
     print("ok: open_result_text_starts_with_ok")
+
+
+def test_run_probes_isolates_a_failing_probe() -> None:
+    # One probe whose LLM call raises must not take down the others, and the
+    # surviving results keep input order (the concurrent gather preserves it).
+    class _Flaky(FakeLLMClient):
+        async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
+            if probe.id == "boom":
+                raise RuntimeError("simulated provider error")
+            return await super().run(probe, messages)
+
+    a = ClassificationProbe(id="a", label="A", question="q", categories=["x", "y"])
+    boom = ClassificationProbe(id="boom", label="Boom", question="q", categories=["x", "y"])
+    b = OpenSummaryProbe(id="b", label="B", instruction="Summarize.")
+
+    results = asyncio.run(run_probes(_Flaky(), [a, boom, b], _msgs(6)))
+
+    ids = [r.probe_id for r in results]
+    assert ids == ["a", "b"], f"expected the failing probe dropped, order kept: {ids}"
+    print("ok: run_probes_isolates_a_failing_probe")
