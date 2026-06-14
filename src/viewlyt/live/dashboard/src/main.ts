@@ -1100,7 +1100,16 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
   const snap = history[index];
   if (!snap || !snap.pct) return body;
 
-  const entries = Object.entries(snap.pct);
+  // Order categories by the probe's CURRENT order (so an Edit-panel reorder reflects
+  // immediately, even on an already-captured snapshot), then append any leftover keys
+  // the snapshot still carries from a previous category set so nothing is dropped.
+  const pct = snap.pct;
+  const ordered = (probeState.get(probeId)?.categories ?? []).filter((c) => c in pct);
+  const seen = new Set(ordered);
+  for (const c of Object.keys(pct)) {
+    if (!seen.has(c)) ordered.push(c);
+  }
+  const entries: [string, number][] = ordered.map((c) => [c, pct[c]]);
   const views: CatView[] = entries.map(([cat, pct], i) => {
     const series = history
       .slice(0, index + 1)
