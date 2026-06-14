@@ -21,6 +21,7 @@ import webbrowser
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -41,6 +42,39 @@ from .window import WindowBuffer, WindowConfig
 
 logger = logging.getLogger("viewlyt.live")
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: bool) -> bool:
+    """Decide whether a WebSocket handshake's ``Origin`` may connect (anti-CSWSH).
+
+    A browser ALWAYS sends ``Origin``; without this check a malicious tab could open
+    ``ws://127.0.0.1:<port>/control`` and reconfigure the server (e.g. redirect the LLM
+    ``base_url`` to exfiltrate the stored API key, or burn it with forced runs). So:
+
+    * a **missing** Origin is allowed — that's a non-browser client (curl, a local
+      script); it cannot mount a CSWSH attack and carries no ambient credentials;
+    * a **same-origin** http Origin (the dashboard page this server itself serves) is allowed;
+    * for ``/ingest`` only, a ``https://*.youtube.com`` Origin is allowed (the chat
+      popout / capture snippet legitimately connect from there);
+    * anything else is rejected.
+    """
+    if not origin:
+        return True
+    try:
+        u = urlsplit(origin)
+    except Exception:
+        return False
+    oh = (u.hostname or "").lower()
+    oport = u.port or (443 if u.scheme == "https" else 80)
+    if u.scheme == "http" and oport == port and oh in {host.lower(), "127.0.0.1", "localhost"}:
+        return True
+    if (
+        allow_youtube
+        and u.scheme == "https"
+        and (oh == "youtube.com" or oh.endswith(".youtube.com"))
+    ):
+        return True
+    return False
 
 
 class ConnectionManager:
@@ -203,7 +237,13 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             except Exception:
                 pass
     except Exception:
-        logger.exception("control op failed: %r", data)
+        # Redact the api_key before logging — a failed set_model op carries it in `data`.
+        safe = (
+            {k: ("***" if k == "api_key" else v) for k, v in data.items()}
+            if isinstance(data, dict)
+            else data
+        )
+        logger.exception("control op failed: %r", safe)
     if op in {"upsert_probe", "remove_probe", "set_window", "set_model"}:
         await persist(server)
     await server.dash.broadcast(server.state_message())
@@ -634,6 +674,14 @@ def create_app(server: LiveServer) -> FastAPI:
 
     @app.websocket("/ingest")
     async def ingest(ws: WebSocket) -> None:
+        if not _origin_allowed(
+            ws.headers.get("origin"),
+            ws.url.hostname or "127.0.0.1",
+            ws.url.port or 8000,
+            allow_youtube=True,
+        ):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         try:
             while True:
@@ -658,6 +706,14 @@ def create_app(server: LiveServer) -> FastAPI:
 
     @app.websocket("/dashboard")
     async def dashboard(ws: WebSocket) -> None:
+        if not _origin_allowed(
+            ws.headers.get("origin"),
+            ws.url.hostname or "127.0.0.1",
+            ws.url.port or 8000,
+            allow_youtube=False,
+        ):
+            await ws.close(code=1008)
+            return
         await server.dash.connect(ws)
         try:
             await ws.send_json(server.state_message())
@@ -670,6 +726,14 @@ def create_app(server: LiveServer) -> FastAPI:
 
     @app.websocket("/control")
     async def control(ws: WebSocket) -> None:
+        if not _origin_allowed(
+            ws.headers.get("origin"),
+            ws.url.hostname or "127.0.0.1",
+            ws.url.port or 8000,
+            allow_youtube=False,
+        ):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         try:
             while True:
@@ -729,6 +793,12 @@ def run(
             [p.to_dict() for p in server.probes.values()],
         )
     app = create_app(server)
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        logger.warning(
+            "binding to %s exposes the dashboard AND the stored LLM API key to the network "
+            "with NO authentication — only do this on a trusted network.",
+            host,
+        )
     if open_browser:
         try:
             webbrowser.open("http://" + host + ":" + str(port) + "/")
