@@ -1653,6 +1653,7 @@ function wireButtons(): void {
   el("pause").addEventListener("click", () => send({ op: "pause" }));
   el("resume").addEventListener("click", () => send({ op: "resume" }));
   el("clear").addEventListener("click", () => send({ op: "clear" }));
+  el("force-run").addEventListener("click", () => send({ op: "force_run" }));
 
   el("apply-model").addEventListener("click", () => {
     const apiKey = inputVal("api_key");

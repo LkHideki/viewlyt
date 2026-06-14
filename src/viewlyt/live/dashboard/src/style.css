@@ -805,6 +805,19 @@ input.scrub-range:focus-visible {
   text-transform: uppercase;
 }
 
+/* Live Results heading row: title + 'Analyze now' force button. */
+.results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.results-head h2 {
+  margin-bottom: 0;
+}
+
 /* Two columns: Live Results (wide) + Live Chat (narrow, own scroll). */
 .results-cols {
   display: flex;
@@ -822,6 +835,12 @@ input.scrub-range:focus-visible {
 
 .results-col-chat {
   flex: 1 1 0;
+  /* Don't stretch to the (possibly very tall) results column; stay a bounded,
+     sticky panel with its own scroll so the feed never grows the page height. */
+  align-self: flex-start;
+  position: sticky;
+  top: var(--gap);
+  max-height: calc(100vh - 2 * var(--gap));
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--border);
@@ -834,7 +853,8 @@ input.scrub-range:focus-visible {
   letter-spacing: 0.06em;
 }
 
-/* R2 — full-height chat feed: grows to fill the flex column, no fixed cap. */
+/* Chat feed fills the bounded chat column and scrolls internally (the column is
+   capped to the viewport via max-height) so it never grows the page height. */
 #feed {
   flex: 1 1 auto;
   min-height: 0;
@@ -861,6 +881,9 @@ input.scrub-range:focus-visible {
     border-top: 1px solid var(--border);
     padding-left: 0;
     padding-top: var(--gap);
+    /* stacked: drop the sticky/viewport cap; the #feed cap below bounds it */
+    position: static;
+    max-height: none;
   }
 
   /* R2 — sensible mobile cap when columns are stacked */

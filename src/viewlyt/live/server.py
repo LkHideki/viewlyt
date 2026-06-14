@@ -76,6 +76,7 @@ class LiveServer:
         self.ingested = 0
         self.total_tokens = 0
         self.total_cost = 0.0
+        self.force_now = False  # set by the 'force_run' op → worker analyzes immediately
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
@@ -162,6 +163,9 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.paused = True
         elif op == "resume":
             server.paused = False
+        elif op == "force_run":
+            # Analyze the current buffer immediately, bypassing the refresh timer.
+            server.force_now = True
         elif op == "clear":
             server.buffer = WindowBuffer()
         elif op == "reset_state":
@@ -360,14 +364,19 @@ async def worker(server: LiveServer) -> None:
                     # Safety bound only; normal operation flushes every 0.25s, never near this.
                     pending = pending[-5000:]
             now = time.monotonic()
-            # Emit a window only when it is due AND new messages arrived since the last
-            # analysis — so an idle/quiet chat never triggers a paid LLM request.
-            if (
+            # A user 'force_run' analyzes the current buffer immediately, bypassing the
+            # pause state, the refresh timer, and the idle cost-guard.
+            forced = server.force_now
+            if forced:
+                server.force_now = False
+            # Otherwise emit a window only when it is due AND new messages arrived since the
+            # last analysis — so an idle/quiet chat never triggers a paid LLM request.
+            due = (
                 not server.paused
-                and not server.processing
                 and server.ingested != last_analyzed
                 and server.buffer.due(server.window, now)
-            ):
+            )
+            if not server.processing and server.probes and len(server.buffer) and (forced or due):
                 server.buffer.emit(server.window, now)  # reset windowing timers only
                 raw = server.buffer.snapshot()
                 last_analyzed = server.ingested
