@@ -40,6 +40,7 @@ def save_state(window: dict, model: dict, probes: list[dict]) -> None:
             "model": {
                 "base_url": model["base_url"],
                 "model": model["model"],
+                "budget": float(model.get("budget", 0.0)),
                 "api_key_enc": _fernet().encrypt(str(model.get("api_key") or "").encode()).decode(),
             },
             "probes": probes,
@@ -63,6 +64,7 @@ def load_state() -> dict | None:
             "model": {
                 "base_url": model["base_url"],
                 "model": model["model"],
+                "budget": float(model.get("budget", 0.0)),
                 "api_key": api_key,
             },
             "probes": list(payload.get("probes", [])),

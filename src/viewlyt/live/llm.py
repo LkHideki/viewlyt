@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .messages import ChatMessage
-from .probes import Probe, ProbeResult
+from .probes import Probe, ProbeResult, _numbered
 
 logger = logging.getLogger("viewlyt.live")
 
@@ -41,10 +41,11 @@ class LLMConfig:
     api_key: str = ""  # empty by default; provide via --api-key or OPENROUTER_API_KEY env var
     model: str = "google/gemini-3.1-flash-lite"  # OpenRouter model (or override with --model)
     timeout: float = 60.0
+    budget_usd: float = 0.0  # spending cap in USD; 0 = off (no cap)
 
     def to_public_dict(self) -> dict:
         # Never leak the api_key to the dashboard.
-        return {"base_url": self.base_url, "model": self.model}
+        return {"base_url": self.base_url, "model": self.model, "budget": self.budget_usd}
 
 
 def parse_json_loose(content: str) -> dict:
@@ -467,3 +468,114 @@ async def _rewrite_auto(client: LLMRunner, system: str, text: str, caller_cats: 
         "max_words": max_words,
         "label": label,
     }
+
+
+def _normalize_suggested_probe(raw: object) -> dict:
+    """Normalize ONE suggested probe (a raw dict from the model) into a full spec.
+
+    Mirrors the per-kind normalization of :func:`rewrite_probe_spec`/:func:`_rewrite_auto`
+    EXACTLY: an ``open`` spec yields ``{kind, instruction, max_words, label}`` and a
+    ``classification`` spec yields ``{kind, question, categories(3-6), label, chart}``
+    (chart forced into :data:`CHART_TYPES`, ≥2 categories guaranteed). Never raises:
+    a non-dict / missing kind defaults to a usable ``open`` spec.
+    """
+    spec = raw if isinstance(raw, dict) else {}
+    label = str(spec.get("label") or "").strip()
+    chosen = str(spec.get("kind") or "").strip().lower()
+    if chosen == "classification":
+        question = str(spec.get("question") or "").strip()
+        cats = _clean_categories(spec.get("categories"))
+        if len(cats) < 2:
+            cats = ["positive", "negative", "neutral"]
+        chart = str(spec.get("chart") or "").strip().lower()
+        if chart not in CHART_TYPES:
+            chart = "bars"
+        return {
+            "kind": "classification",
+            "question": question,
+            "categories": cats,
+            "label": label,
+            "chart": chart,
+        }
+    # Default (and the explicit 'open' choice) → open synthesis.
+    instruction = str(spec.get("instruction") or "").strip()
+    max_words = _clamp_int(spec.get("max_words"), 60, 10, 200)
+    return {
+        "kind": "open",
+        "instruction": instruction,
+        "max_words": max_words,
+        "label": label,
+    }
+
+
+async def suggest_probes(client: LLMRunner, text: str, messages: list[ChatMessage]) -> list[dict]:
+    """Propose EXACTLY TWO probes worth running right now over a SAMPLE of chat.
+
+    A meta-prompt that, given the user's (possibly empty) request AND the chat
+    sample, proposes two distinct, direct, cohesive probes (a mix of ``open``
+    synthesis and categorical ``classification``, whichever fits each). Each
+    returned dict is a full probe spec (carrying its ``kind``) normalized the same
+    way as :func:`rewrite_probe_spec`. Defensive: NEVER raises — returns ``[]`` on
+    total failure (and may return fewer than two if the model returns junk).
+    """
+    sample = _numbered(messages) if messages else "(the chat sample is empty)"
+    request = text.strip() or "(no specific request — propose what is most useful)"
+    system = (
+        "You design analysis probes that each run over a SAMPLE of MANY YouTube "
+        "live-chat messages at once (the whole 'mass' of chat), NEVER a single "
+        "message. Given the user's request (which may be empty) and the chat "
+        "sample, propose EXACTLY TWO distinct, direct, cohesive probes most worth "
+        "running right now. Each probe is either 'open' (a short synthesis across "
+        "all messages) or 'classification' (sort EACH message into 3-6 mutually-"
+        "exclusive categories for live percentages) — pick whichever fits each. "
+        "Make the two probes complement each other. Answer ONLY with the required JSON."
+    )
+    user = (
+        f"User request: {request}\n\n"
+        f"Chat sample:\n{sample}\n\n"
+        "Propose the two best probes. For an 'open' probe set 'instruction' (start "
+        "it like \"Across all the sampled live-chat messages, ...\") and 'max_words'. "
+        "For a 'classification' probe set 'question' (how to classify each message), "
+        f"'categories' (3-6, lowercase, mutually exclusive), and 'chart' (one of "
+        f"{', '.join(CHART_TYPES)}). Every probe needs a short 2-4 word 'label' and "
+        "its 'kind'. Return {\"probes\":[{...},{...}]} with EXACTLY two entries."
+    )
+    schema = {
+        "name": "suggested_probes",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "probes": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["open", "classification"]},
+                            "label": {"type": "string"},
+                            "instruction": {"type": "string"},
+                            "max_words": {"type": "integer"},
+                            "question": {"type": "string"},
+                            "categories": {"type": "array", "items": {"type": "string"}},
+                            "chart": {"type": "string"},
+                        },
+                        "required": ["kind", "label"],
+                    },
+                }
+            },
+            "required": ["probes"],
+        },
+    }
+    try:
+        parsed = await client.complete_json(system, user, schema)
+    except Exception:
+        return []
+    parsed = parsed if isinstance(parsed, dict) else {}
+    raw_probes = parsed.get("probes")
+    if not isinstance(raw_probes, list):
+        return []
+    return [_normalize_suggested_probe(p) for p in raw_probes[:2]]

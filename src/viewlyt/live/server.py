@@ -27,7 +27,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import persistence
-from .llm import LLMClient, LLMConfig, LLMRunner, rewrite_probe_spec, run_probes
+from .llm import (
+    LLMClient,
+    LLMConfig,
+    LLMRunner,
+    rewrite_probe_spec,
+    run_probes,
+    suggest_probes,
+)
 from .messages import clean_chat, message_from_ingest
 from .probes import Probe, probe_from_dict
 from .window import WindowBuffer, WindowConfig
@@ -77,6 +84,7 @@ class LiveServer:
         self.total_tokens = 0
         self.total_cost = 0.0
         self.force_now = False  # set by the 'force_run' op → worker analyzes immediately
+        self.budget_blocked = False  # True once the budget-cap error has been broadcast
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
@@ -110,6 +118,7 @@ async def persist(server: LiveServer) -> None:
             "base_url": server.llm_cfg.base_url,
             "model": server.llm_cfg.model,
             "api_key": server.llm_cfg.api_key,
+            "budget": server.llm_cfg.budget_usd,
         },
         [p.to_dict() for p in server.probes.values()],
     )
@@ -157,6 +166,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 base_url=data.get("base_url") or server.llm_cfg.base_url,
                 api_key=data.get("api_key") or server.llm_cfg.api_key,
                 model=data.get("model") or server.llm_cfg.model,
+                budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
             )
             server._client = None
         elif op == "pause":
@@ -166,6 +176,10 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         elif op == "force_run":
             # Analyze the current buffer immediately, bypassing the refresh timer.
             server.force_now = True
+        elif op == "suggest_probes":
+            # Off-loop: an LLM proposes two probes from the typed text + live sample,
+            # then the task itself broadcasts the 'suggestions' frame (not persisted).
+            asyncio.create_task(_suggest(server, str(data.get("text") or "")))
         elif op == "clear":
             server.buffer = WindowBuffer()
         elif op == "reset_state":
@@ -176,6 +190,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server._client = None
             server.total_tokens = 0
             server.total_cost = 0.0
+            server.budget_blocked = False
             try:
                 persistence.STATE_FILE.unlink(missing_ok=True)
             except Exception:
@@ -255,6 +270,48 @@ async def _rewrite_and_add(server: LiveServer, kind: str, text: str, categories:
         await server.dash.broadcast(server.state_message())
     except Exception:
         logger.exception("rewrite task failed entirely for %r", text)
+
+
+async def _suggest(server: LiveServer, text: str) -> None:
+    """LLM-propose two probes from ``text`` + the live sample, then broadcast them.
+
+    Runs as its own task (never raises out of it). Samples the buffer the same way
+    :func:`process_window` does (clean → last ``window.n``), asks the LLM for two
+    full probe specs, assigns each a unique slug id, and emits a ``suggestions``
+    frame the dashboard renders as clickable chips. On empty/failed suggestions it
+    emits an ``error`` frame instead. NOT persisted — the user picks a chip to add.
+    """
+    try:
+        sample = clean_chat(
+            server.buffer.snapshot(),
+            dedupe=server.window.dedupe,
+            merge_authors=server.window.merge_authors,
+        )[-server.window.n :]
+        try:
+            specs = await suggest_probes(server.client(), text, sample)
+        except Exception:
+            logger.exception("suggest_probes failed for %r", text)
+            specs = []
+        assigned: set[str] = set()
+        for spec in specs:
+            pid = _slugify_probe_id(server, str(spec.get("label") or ""))
+            # The specs aren't added to server.probes, so also keep the two ids
+            # distinct from each other (same label → bump the second).
+            if pid in assigned:
+                n = 2
+                while f"{pid}-{n}" in assigned or f"{pid}-{n}" in server.probes:
+                    n += 1
+                pid = f"{pid}-{n}"
+            assigned.add(pid)
+            spec["id"] = pid
+        if specs:
+            await server.dash.broadcast({"type": "suggestions", "probes": specs})
+        else:
+            await server.dash.broadcast(
+                {"type": "error", "message": "Could not suggest probes right now."}
+            )
+    except Exception:
+        logger.exception("suggest task failed entirely for %r", text)
 
 
 async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
@@ -376,7 +433,33 @@ async def worker(server: LiveServer) -> None:
                 and server.ingested != last_analyzed
                 and server.buffer.due(server.window, now)
             )
-            if not server.processing and server.probes and len(server.buffer) and (forced or due):
+            # Spending cap: once cumulative cost reaches the budget, no analysis (auto
+            # OR forced) launches. We tell the dashboard ONCE (budget_blocked latch) and
+            # clear the latch as soon as we're back under budget (e.g. after a raise).
+            over_budget = (
+                server.llm_cfg.budget_usd > 0 and server.total_cost >= server.llm_cfg.budget_usd
+            )
+            if over_budget:
+                if (forced or due) and not server.budget_blocked:
+                    await server.dash.broadcast(
+                        {
+                            "type": "error",
+                            "message": (
+                                f"Budget ${server.llm_cfg.budget_usd:.2f} reached — analyses "
+                                "paused. Raise the budget or reset."
+                            ),
+                        }
+                    )
+                    server.budget_blocked = True
+            else:
+                server.budget_blocked = False
+            if (
+                not server.processing
+                and server.probes
+                and len(server.buffer)
+                and (forced or due)
+                and not over_budget
+            ):
                 server.buffer.emit(server.window, now)  # reset windowing timers only
                 raw = server.buffer.snapshot()
                 last_analyzed = server.ingested
@@ -611,7 +694,10 @@ def run(
         server.buffer = WindowBuffer(maxlen=server.window.capacity)
         m = st["model"]
         server.llm_cfg = LLMConfig(
-            base_url=m["base_url"], api_key=m.get("api_key", ""), model=m["model"]
+            base_url=m["base_url"],
+            api_key=m.get("api_key", ""),
+            model=m["model"],
+            budget_usd=float(m.get("budget", 0.0)),
         )
         server._client = None
         for pd in st.get("probes", []):
@@ -628,6 +714,7 @@ def run(
                 "base_url": server.llm_cfg.base_url,
                 "model": server.llm_cfg.model,
                 "api_key": server.llm_cfg.api_key,
+                "budget": server.llm_cfg.budget_usd,
             },
             [p.to_dict() for p in server.probes.values()],
         )
