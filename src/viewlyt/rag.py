@@ -276,6 +276,12 @@ class RagConfig:
     embed_base_url: str = ""
     embed_api_key: str = ""
     embed_max_tokens: int = 8192
+    # Cost knobs for the (expensive) ingestion — applied in build_rag.
+    extract_model: str = ""  # LLM_EXTRACT_NAME; "" -> reuse llm_model (no cheap-extract split)
+    max_gleaning: int = 0  # RAG_MAX_GLEANING; 0 = skip the re-extraction pass (cheaper; default)
+    chunk_tokens: int | None = (
+        None  # RAG_CHUNK_TOKENS; None = LightRAG default; larger = fewer chunks
+    )
     language: str = _DEFAULT_LANGUAGE
 
     @classmethod
@@ -316,12 +322,20 @@ class RagConfig:
             embed_dim=int(e.get("EMBEDDING_DIM") or d_dim),
             embed_base_url=d_base,
             embed_api_key=d_key,
+            extract_model=e.get("LLM_EXTRACT_NAME") or "",
+            max_gleaning=int(e.get("RAG_MAX_GLEANING") or 0),
+            chunk_tokens=int(e["RAG_CHUNK_TOKENS"]) if e.get("RAG_CHUNK_TOKENS") else None,
             language=e.get("VIEWLYT_RAG_LANG") or _DEFAULT_LANGUAGE,
         )
 
 
-def _make_llm_func(cfg: RagConfig):
-    """Build a LightRAG ``llm_model_func`` calling cfg's OpenAI-compatible chat endpoint."""
+def _make_llm_func(cfg: RagConfig, model: str | None = None):
+    """Build a LightRAG ``llm_model_func`` calling cfg's OpenAI-compatible chat endpoint.
+
+    ``model`` overrides ``cfg.llm_model`` so the extraction/keyword roles can run on a
+    cheaper model than the query/answer role (see :func:`build_rag`).
+    """
+    use_model = model or cfg.llm_model
 
     async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
         from lightrag.llm.openai import openai_complete_if_cache
@@ -329,7 +343,7 @@ def _make_llm_func(cfg: RagConfig):
         kwargs.pop("keyword_extraction", None)  # LightRAG flag the openai client doesn't take
         kwargs.pop("hashing_kv", None)
         return await openai_complete_if_cache(
-            cfg.llm_model,
+            use_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages or [],
@@ -385,16 +399,38 @@ async def build_rag(cfg: RagConfig, store_dir: str | Path):
 
     The graph/vectors/KV persist under ``store_dir`` (default ``out/.rag``), so a later
     query reuses the index without re-ingesting.
+
+    Ingestion is the costly part — the LLM extracts entities/relations per chunk — so a
+    few knobs trim it: ``cfg.max_gleaning`` (0 skips the second re-extraction pass), an
+    optional larger ``cfg.chunk_tokens`` (fewer chunks -> fewer calls), and, when
+    ``cfg.extract_model`` differs from the answer model, routing the extraction/keyword
+    roles to that cheaper model via LightRAG's role configs (the query/answer role keeps
+    ``cfg.llm_model``).
     """
     from lightrag import LightRAG
     from lightrag.kg.shared_storage import initialize_pipeline_status
 
     Path(store_dir).mkdir(parents=True, exist_ok=True)
-    rag = LightRAG(
-        working_dir=str(store_dir),
-        llm_model_func=_make_llm_func(cfg),
-        embedding_func=_make_embedding_func(cfg),
-    )
+    kwargs: dict = {
+        "working_dir": str(store_dir),
+        "llm_model_func": _make_llm_func(cfg),
+        "llm_model_name": cfg.llm_model,
+        "embedding_func": _make_embedding_func(cfg),
+        "entity_extract_max_gleaning": cfg.max_gleaning,
+    }
+    if cfg.chunk_tokens:
+        kwargs["chunk_token_size"] = cfg.chunk_tokens
+    extract_model = cfg.extract_model or cfg.llm_model
+    if extract_model != cfg.llm_model:
+        from lightrag.llm_roles import RoleLLMConfig
+
+        extract_func = _make_llm_func(cfg, model=extract_model)
+        kwargs["role_llm_configs"] = {
+            "extract": RoleLLMConfig(func=extract_func),
+            "keyword": RoleLLMConfig(func=extract_func),
+        }
+        logger.info("ingestion extract/keyword routed to cheaper model: %s", extract_model)
+    rag = LightRAG(**kwargs)
     await rag.initialize_storages()
     await initialize_pipeline_status()
     return rag
@@ -496,7 +532,16 @@ def build_ask_parser() -> argparse.ArgumentParser:
         "--mode", choices=QUERY_MODES, default="mix", help="LightRAG retrieval mode (default: mix)"
     )
     p.add_argument(
-        "--model", default=None, metavar="NAME", help="override the LLM model (else $LLM_NAME)"
+        "--model",
+        default=None,
+        metavar="NAME",
+        help="override the LLM answer model (else $LLM_NAME)",
+    )
+    p.add_argument(
+        "--extract-model",
+        default=None,
+        metavar="NAME",
+        help="cheaper model for entity extraction during ingest (else $LLM_EXTRACT_NAME, else --model)",
     )
     p.add_argument(
         "--lang",
@@ -520,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = RagConfig.from_env()
     if args.model:
         cfg.llm_model = args.model
+    if args.extract_model:
+        cfg.extract_model = args.extract_model
     if args.lang:
         cfg.language = args.lang
     if not cfg.llm_api_key:

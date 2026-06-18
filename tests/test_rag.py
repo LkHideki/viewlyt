@@ -164,6 +164,8 @@ def test_ragconfig_from_env_defaults() -> None:
     # embeddings are local by default -> no key, multilingual model, dim 1024
     assert cfg.embed_provider == "fastembed" and cfg.embed_api_key == ""
     assert cfg.embed_dim == 1024 and "e5" in cfg.embed_model
+    # cost knobs: cheap-extract off (reuse llm_model), gleaning off, default chunk size
+    assert cfg.extract_model == "" and cfg.max_gleaning == 0 and cfg.chunk_tokens is None
     print("ok: ragconfig_from_env_defaults")
 
 
@@ -190,6 +192,20 @@ def test_ragconfig_from_env_embedding_providers() -> None:
     print("ok: ragconfig_from_env_embedding_providers")
 
 
+def test_ragconfig_cost_knobs() -> None:
+    # the ingestion cost levers come from env and override the cheap defaults
+    cfg = RagConfig.from_env(
+        {
+            "LLM_EXTRACT_NAME": "openai/gpt-4o-mini",
+            "RAG_MAX_GLEANING": "1",
+            "RAG_CHUNK_TOKENS": "2400",
+        }
+    )
+    assert cfg.extract_model == "openai/gpt-4o-mini"
+    assert cfg.max_gleaning == 1 and cfg.chunk_tokens == 2400
+    print("ok: ragconfig_cost_knobs")
+
+
 def test_split_inputs() -> None:
     import tempfile
 
@@ -211,6 +227,7 @@ def test_build_ask_parser() -> None:
     d = p.parse_args([])
     assert d.mode == "mix" and d.store == "out/.rag"
     assert d.model is None and d.lang is None and d.quiet is False
+    assert d.extract_model is None
     a = p.parse_args(
         [
             "out/x.md",
@@ -219,11 +236,14 @@ def test_build_ask_parser() -> None:
             "hybrid",
             "--model",
             "openai/gpt-4o",
+            "--extract-model",
+            "google/gemini-2.5-flash-lite",
             "--lang",
             "English",
         ]
     )
     assert a.mode == "hybrid" and a.model == "openai/gpt-4o" and a.lang == "English"
+    assert a.extract_model == "google/gemini-2.5-flash-lite"
     assert a.inputs == ["out/x.md", "pergunta"]
     try:  # an unknown --mode is rejected by argparse (choices)
         p.parse_args(["--mode", "bogus"])
@@ -245,6 +265,7 @@ if __name__ == "__main__":
     test_ragconfig_from_env_defaults()
     test_ragconfig_from_env_openrouter_llm()
     test_ragconfig_from_env_embedding_providers()
+    test_ragconfig_cost_knobs()
     test_split_inputs()
     test_build_ask_parser()
     print("ALL TESTS PASSED")

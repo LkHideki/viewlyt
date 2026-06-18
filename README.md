@@ -75,6 +75,13 @@ uv run viewlyt-ask 'summarize the top complaints across the videos'
 - **Retrieval mode.** `--mode` is one of `naive|local|global|hybrid|mix` (default
   `mix`). `--lang` sets the answer language (default Portuguese (Brazil)); `--model`
   overrides `$LLM_NAME`.
+- **Cost.** The pricey part is *ingestion* (the LLM extracts entities per chunk to
+  build the graph), not the questions. By default the re-extraction pass is **off**,
+  and you can route extraction to a model cheaper than the answer model with
+  `--extract-model NAME` (or `$LLM_EXTRACT_NAME`) — the answer keeps `$LLM_NAME`.
+  Tune further with `RAG_MAX_GLEANING=1` (more thorough, pricier) and
+  `RAG_CHUNK_TOKENS=2400` (bigger chunks → fewer calls). Re-asking over an existing
+  `out/.rag` index costs nothing extra.
 - **Library use.** `from viewlyt.rag import analyze; analyze(paths, "question")`
   (and the pure `prepare_documents` / `build_document`, which need no extra).
 - **Limitation.** LightRAG targets semantic/relational questions, not exact

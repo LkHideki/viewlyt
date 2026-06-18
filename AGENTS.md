@@ -42,8 +42,12 @@ em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 responde perguntas livres sobre os `.md` **já coletados** (sem re-coletar), indexando-os num
 grafo de conhecimento **LightRAG**. O LLM fala com o **OpenRouter** (`OPENROUTER_API_KEY` +
 `LLM_NAME`); os **embeddings** rodam locais via `fastembed` (sem chave; `EMBEDDING_PROVIDER`
-troca p/ openai/ollama/openrouter). O índice persiste em `out/.rag/`. Código em
-`src/viewlyt/rag.py` (puro: preparação de documentos; I/O lazy: LightRAG/openai/fastembed).
+troca p/ openai/ollama/openrouter). O índice persiste em `out/.rag/`. **Custo:** o caro é a
+ingestão (o LLM extrai entidades por chunk p/ montar o grafo) — por padrão o gleaning fica OFF
+(`RAG_MAX_GLEANING=0`) e dá p/ rotear a extração a um modelo barato (`--extract-model` /
+`LLM_EXTRACT_NAME`, via `role_llm_configs` do LightRAG) e usar chunks maiores (`RAG_CHUNK_TOKENS`),
+mantendo `LLM_NAME` na resposta. Código em `src/viewlyt/rag.py` (puro: preparação de documentos;
+I/O lazy: LightRAG/openai/fastembed).
 
 ## Estrutura
 
