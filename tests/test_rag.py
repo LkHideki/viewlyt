@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from viewlyt.rag import (  # noqa: E402
     RagConfig,
     RagDocument,
+    _chat_messages,
     _split_inputs,
     build_ask_parser,
+    build_chat_context,
     build_document,
     comment_metrics,
     parse_count,
@@ -206,6 +208,30 @@ def test_ragconfig_cost_knobs() -> None:
     print("ok: ragconfig_cost_knobs")
 
 
+def test_build_chat_context() -> None:
+    docs = [
+        RagDocument("a.md", "out/a.md", "A", "id1", "comments", "# A\n\ncorpo do A"),
+        RagDocument("b.md", "out/b.md", "B", "id2", "transcript", "# B\n\ncorpo do B"),
+    ]
+    ctx = build_chat_context(docs)
+    assert "corpo do A" in ctx and "corpo do B" in ctx and "# A" in ctx and "# B" in ctx
+    assert build_chat_context([]) == ""
+    print("ok: build_chat_context")
+
+
+def test_chat_messages() -> None:
+    cfg = RagConfig.from_env({"VIEWLYT_RAG_LANG": "English"})
+    msgs = _chat_messages(cfg, "DATA-BLOCK-XYZ", [{"role": "user", "content": "hi"}])
+    assert msgs[0]["role"] == "system"
+    system = msgs[0]["content"]
+    # prompt hardening: the collected text is untrusted DATA, not instructions
+    assert "UNTRUSTED DATA" in system and "NEVER follow" in system
+    assert "English" in system  # answer language injected
+    assert "DATA-BLOCK-XYZ" in system  # the context block is embedded in the system message
+    assert msgs[1] == {"role": "user", "content": "hi"}  # history follows verbatim
+    print("ok: chat_messages")
+
+
 def test_split_inputs() -> None:
     import tempfile
 
@@ -228,6 +254,7 @@ def test_build_ask_parser() -> None:
     assert d.mode == "mix" and d.store == "out/.rag"
     assert d.model is None and d.lang is None and d.quiet is False
     assert d.extract_model is None
+    assert d.persist is False  # ephemeral chat is the default; LightRAG is opt-in
     a = p.parse_args(
         [
             "out/x.md",
@@ -251,6 +278,7 @@ def test_build_ask_parser() -> None:
         pass
     else:  # pragma: no cover
         raise AssertionError("expected --mode to reject an unknown value")
+    assert p.parse_args(["--persist", "out/x.md"]).persist is True
     print("ok: build_ask_parser")
 
 
@@ -266,6 +294,8 @@ if __name__ == "__main__":
     test_ragconfig_from_env_openrouter_llm()
     test_ragconfig_from_env_embedding_providers()
     test_ragconfig_cost_knobs()
+    test_build_chat_context()
+    test_chat_messages()
     test_split_inputs()
     test_build_ask_parser()
     print("ALL TESTS PASSED")

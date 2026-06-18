@@ -2648,6 +2648,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ask = [
+    { name = "openai" },
+]
 live = [
     { name = "cryptography" },
     { name = "fastapi" },
@@ -2677,13 +2680,14 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'live'", specifier = ">=0.110" },
     { name = "fastembed", marker = "extra == 'rag'", specifier = ">=0.3" },
     { name = "lightrag-hku", marker = "extra == 'rag'", specifier = ">=1.4" },
+    { name = "openai", marker = "extra == 'ask'", specifier = ">=1.30" },
     { name = "openai", marker = "extra == 'live'", specifier = ">=1.30" },
     { name = "openai", marker = "extra == 'rag'", specifier = ">=1.30" },
     { name = "selenium", specifier = ">=4.21" },
     { name = "tqdm", specifier = ">=4.66.3" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'live'", specifier = ">=0.29" },
 ]
-provides-extras = ["live", "live-serverside", "rag"]
+provides-extras = ["live", "live-serverside", "ask", "rag"]
 
 [package.metadata.requires-dev]
 dev = [
