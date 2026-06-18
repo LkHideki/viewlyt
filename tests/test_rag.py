@@ -12,6 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from datetime import UTC
+
 from viewlyt.rag import (  # noqa: E402
     RagConfig,
     RagDocument,
@@ -232,6 +234,24 @@ def test_chat_messages() -> None:
     print("ok: chat_messages")
 
 
+def test_expired_doc_ids() -> None:
+    from datetime import datetime
+
+    from viewlyt.rag import _expired_doc_ids
+
+    now = datetime(2026, 6, 18, 12, 0, tzinfo=UTC)
+    created = {
+        "old.md": "2026-06-01T00:00:00+00:00",  # 17d before now
+        "fresh.md": "2026-06-10T00:00:00",  # 8d before, naive -> treated as UTC
+        "edge.md": "2026-06-03T12:00:00+00:00",  # exactly 15d -> NOT strictly older
+        "junk.md": "not-a-date",  # unparseable -> never purged (kept on error)
+    }
+    assert _expired_doc_ids(created, now, 15) == ["old.md"]
+    assert _expired_doc_ids(created, now, 0) == []  # ttl 0 disables expiry
+    assert set(_expired_doc_ids(created, now, 5)) == {"old.md", "fresh.md", "edge.md"}
+    print("ok: expired_doc_ids")
+
+
 def test_split_inputs() -> None:
     import tempfile
 
@@ -279,6 +299,9 @@ def test_build_ask_parser() -> None:
     else:  # pragma: no cover
         raise AssertionError("expected --mode to reject an unknown value")
     assert p.parse_args(["--persist", "out/x.md"]).persist is True
+    assert isinstance(d.ttl_days, int)  # default from $RAG_TTL_DAYS or 15
+    assert p.parse_args(["--ttl-days", "7"]).ttl_days == 7
+    assert p.parse_args(["--ttl-days", "0"]).ttl_days == 0  # 0 = keep all
     print("ok: build_ask_parser")
 
 
@@ -296,6 +319,7 @@ if __name__ == "__main__":
     test_ragconfig_cost_knobs()
     test_build_chat_context()
     test_chat_messages()
+    test_expired_doc_ids()
     test_split_inputs()
     test_build_ask_parser()
     print("ALL TESTS PASSED")

@@ -26,6 +26,7 @@ import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 WATCH_URL = "https://www.youtube.com/watch?v="
@@ -457,14 +458,64 @@ async def ask(rag, question: str, *, mode: str = "mix") -> str:
     return result if isinstance(result, str) else str(result)
 
 
+def _parse_iso(ts: str) -> datetime | None:
+    """Parse a LightRAG ISO timestamp into an aware UTC datetime (None on junk)."""
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _expired_doc_ids(created_by_id: dict[str, str], now: datetime, ttl_days: int) -> list[str]:
+    """Pure: doc_ids whose ``created_at`` is more than ``ttl_days`` before ``now``.
+
+    ``ttl_days <= 0`` disables expiry (keep everything); an unparseable timestamp is
+    kept (never purged on a parse error).
+    """
+    if ttl_days <= 0:
+        return []
+    cutoff = now - timedelta(days=ttl_days)
+    return [
+        doc_id
+        for doc_id, created in created_by_id.items()
+        if (dt := _parse_iso(created)) is not None and dt < cutoff
+    ]
+
+
+async def purge_expired(rag, ttl_days: int) -> int:
+    """Drop documents older than ``ttl_days`` from the index — a sliding window.
+
+    Reads each document's ``created_at`` from LightRAG's own doc-status store and
+    deletes the stale ones by id, so a ``--persist`` base never grows without bound.
+    Returns how many were purged; ``ttl_days <= 0`` is a no-op.
+    """
+    if ttl_days <= 0:
+        return 0
+    from lightrag.base import DocStatus
+
+    docs = await rag.doc_status.get_docs_by_statuses(list(DocStatus))
+    created = {doc_id: getattr(st, "created_at", "") for doc_id, st in docs.items()}
+    stale = _expired_doc_ids(created, datetime.now(UTC), ttl_days)
+    for doc_id in stale:
+        try:
+            await rag.adelete_by_doc_id(doc_id)
+        except Exception:  # one bad delete shouldn't abort the whole run
+            logger.exception("failed to purge document %s", doc_id)
+    if stale:
+        logger.info("purged %d document(s) older than %d days", len(stale), ttl_days)
+    return len(stale)
+
+
 async def _run_async(
-    cfg: RagConfig, paths: list[str], question: str, store_dir: str, mode: str
+    cfg: RagConfig, paths: list[str], question: str, store_dir: str, mode: str, ttl_days: int
 ) -> str:
     docs = prepare_documents(paths)
     if question and cfg.language:
         question = f"{question}\n\nWrite the answer in {cfg.language}."
     rag = await build_rag(cfg, store_dir)
     try:
+        await purge_expired(rag, ttl_days)  # sliding window: drop stale docs before using
         if docs:
             await ingest(rag, docs)
         return await ask(rag, question, mode=mode) if question else ""
@@ -481,15 +532,19 @@ def analyze(
     cfg: RagConfig | None = None,
     store_dir: str = _DEFAULT_STORE,
     mode: str = "mix",
+    ttl_days: int = 15,
 ) -> str:
     """Prepare ``paths``, ingest them into LightRAG at ``store_dir``, answer ``question``.
 
     The synchronous, library-friendly entry point: it drives its own event loop. Pass
     an empty ``question`` to only (re)build the index. ``cfg`` defaults to
-    :meth:`RagConfig.from_env`.
+    :meth:`RagConfig.from_env`. ``ttl_days`` drops documents older than that on open
+    (sliding window; ``0`` keeps everything).
     """
     cfg = cfg or RagConfig.from_env()
-    return asyncio.run(_run_async(cfg, [str(p) for p in paths], question, store_dir, mode))
+    return asyncio.run(
+        _run_async(cfg, [str(p) for p in paths], question, store_dir, mode, ttl_days)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -644,6 +699,13 @@ def build_ask_parser() -> argparse.ArgumentParser:
         help=f"[--persist] LightRAG working dir (default: {_DEFAULT_STORE})",
     )
     p.add_argument(
+        "--ttl-days",
+        type=int,
+        default=int(os.environ.get("RAG_TTL_DAYS") or 15),
+        metavar="N",
+        help="[--persist] drop documents older than N days on open (default: 15; 0 = keep all)",
+    )
+    p.add_argument(
         "--mode",
         choices=QUERY_MODES,
         default="mix",
@@ -698,7 +760,14 @@ def main(argv: list[str] | None = None) -> int:
         if paths:
             logger.info("ingesting %d file(s) into %s ...", len(paths), args.store)
         try:
-            answer = analyze(paths, question, cfg=cfg, store_dir=args.store, mode=args.mode)
+            answer = analyze(
+                paths,
+                question,
+                cfg=cfg,
+                store_dir=args.store,
+                mode=args.mode,
+                ttl_days=args.ttl_days,
+            )
         except ImportError:
             print(
                 "error: --persist needs the 'rag' extra. Run: uv sync --extra rag", file=sys.stderr
