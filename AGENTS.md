@@ -21,7 +21,8 @@ uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unifi
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
-uv run viewlyt-ask out/*.md 'qual vídeo teve mais aceitação?'  # IA sobre o já coletado (opt-in: uv sync --extra rag)
+uv run viewlyt-ask out/*.md 'qual vídeo teve mais aceitação?'  # chat efêmero sobre o já coletado (opt-in: uv sync --extra ask)
+uv run viewlyt-ask --persist out/*.md '<pergunta>'  # base LightRAG persistente c/ janela de 15 dias (uv sync --extra rag)
 
 uv run pytest                                       # toda a suíte (sem navegador; e2e pulado)
 VIEWLYT_E2E=1 uv run pytest -m e2e                  # e2e real (Chrome + rede), opt-in
@@ -38,16 +39,17 @@ sobe um servidor FastAPI + dashboard que analisa o chat ao vivo com LLM. O códi
 em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 `persistence`; dashboard Vite+TS em `dashboard/` → `static/`). Veja @how-to.md.
 
-**Modo análise/RAG (opt-in, `uv sync --extra rag`):** `uv run viewlyt-ask out/*.md '<pergunta>'`
-responde perguntas livres sobre os `.md` **já coletados** (sem re-coletar), indexando-os num
-grafo de conhecimento **LightRAG**. O LLM fala com o **OpenRouter** (`OPENROUTER_API_KEY` +
-`LLM_NAME`); os **embeddings** rodam locais via `fastembed` (sem chave; `EMBEDDING_PROVIDER`
-troca p/ openai/ollama/openrouter). O índice persiste em `out/.rag/`. **Custo:** o caro é a
-ingestão (o LLM extrai entidades por chunk p/ montar o grafo) — por padrão o gleaning fica OFF
-(`RAG_MAX_GLEANING=0`) e dá p/ rotear a extração a um modelo barato (`--extract-model` /
-`LLM_EXTRACT_NAME`, via `role_llm_configs` do LightRAG) e usar chunks maiores (`RAG_CHUNK_TOKENS`),
-mantendo `LLM_NAME` na resposta. Código em `src/viewlyt/rag.py` (puro: preparação de documentos;
-I/O lazy: LightRAG/openai/fastembed).
+**Modo análise (opt-in):** `uv run viewlyt-ask out/*.md '<pergunta>'` dialoga com os `.md`
+**já coletados** (sem re-coletar). **Padrão = chat efêmero** (`uv sync --extra ask`, só `openai`):
+carrega os documentos no contexto e responde — **nada persiste**; com pergunta = one-shot, sem
+pergunta = REPL. **`--persist`** (`uv sync --extra rag`) usa um índice **LightRAG** em `out/.rag/`
+com **janela deslizante**: ao abrir, expurga documentos com mais de `--ttl-days` (default 15;
+`RAG_TTL_DAYS`; 0 = mantém tudo) — não é base cumulativa ad infinitum. LLM no **OpenRouter**
+(`OPENROUTER_API_KEY` + `LLM_NAME`); embeddings locais via `fastembed`. **Custo (--persist):** o
+caro é a ingestão (LLM extrai entidades por chunk); gleaning OFF por padrão, e `--extract-model` /
+`LLM_EXTRACT_NAME` roteia a extração a um modelo barato (via `role_llm_configs`), `RAG_CHUNK_TOKENS`
+ajusta o chunk. Código em `src/viewlyt/rag.py` (puro: preparação dos documentos; I/O lazy:
+chat=`openai`, `--persist`=LightRAG/fastembed).
 
 ## Estrutura
 
@@ -66,11 +68,12 @@ I/O lazy: LightRAG/openai/fastembed).
   `ScrapeResult` (`comment_lines`/`transcript_lines`/`related_lines`/`write`). Tudo sobre o helper
   compartilhado `_scrape_url` (driver já construído/primed); depende só de `driver`/`scraper`/
   `htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API (lazy p/ Selenium, eager p/ puras).
-- `src/viewlyt/rag.py` — subsistema **opt-in** de análise por IA (`uv sync --extra rag`, comando
-  `viewlyt-ask`). Parte **pura** (preparação dos `out/*.md` em documentos auto-descritivos:
-  `parse_out_filename`, `comment_metrics`, `build_document`, `prepare_documents`) + parte **I/O**
-  com LightRAG/openai/fastembed em **import lazy** (`RagConfig.from_env`, `build_rag`, `ingest`,
-  `ask`, `analyze`). Espelha o `live/llm.py` no diferimento de deps; não depende de `cli`/`scraper`.
+- `src/viewlyt/rag.py` — subsistema **opt-in** de análise por IA (comando `viewlyt-ask`). Parte
+  **pura** (preparação dos `out/*.md` em documentos auto-descritivos: `parse_out_filename`,
+  `comment_metrics`, `build_document`, `prepare_documents`; expiração `_expired_doc_ids`) + duas
+  engines com **import lazy**: **chat efêmero** padrão (`chat`/`chat_repl`, só `openai`, extra `ask`)
+  e **`--persist`** LightRAG com janela deslizante (`build_rag`/`ingest`/`ask`/`analyze`/`purge_expired`,
+  extra `rag`). Espelha o `live/llm.py` no diferimento de deps; não depende de `cli`/`scraper`.
   Testes em `tests/test_rag.py`.
 - `tests/test_units.py` — testes das funções puras (roda também standalone via `python`).
 - `tests/conftest.py` — fakes/helpers pytest-only (FakeDriver, builders de registros, `cli_run`, marca e2e).

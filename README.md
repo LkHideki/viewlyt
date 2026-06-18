@@ -41,53 +41,69 @@ uv sync --extra live
 uv run viewlyt-live 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
 
-## AI analysis over your collected data (RAG)
+## Chat with your collected data
 
-`viewlyt[rag]` adds **`viewlyt-ask`**: it answers free-form questions over the
-`out/*.md` files you've **already collected** — no re-scraping — by indexing them
-into a **[LightRAG](https://github.com/HKUDS/LightRAG)** knowledge graph. Each
-document is tagged with its video (title, id, url) and engagement metrics, so you
-can ask questions that *compare* videos ("which one got more love?", "how do they
-relate?").
+`viewlyt[ask]` adds **`viewlyt-ask`**: talk to the `out/*.md` (transcripts +
+comments) you've **already collected** — no re-scraping. By default it's an
+**ephemeral chat**: it loads the files straight into the model's context and
+answers, and **nothing is saved** — built for "collect, ask around for a couple of
+days, then forget it". Each document is tagged with its video (title, id, url) and
+engagement metrics, so you can *compare* videos ("which one got more love?", "how do
+they relate?").
 
 ```bash
-uv sync --extra rag
-export OPENROUTER_API_KEY=sk-or-...         # the LLM (chat) provider
+uv sync --extra ask
+export OPENROUTER_API_KEY=sk-or-...         # the LLM provider
 export LLM_NAME=google/gemini-2.5-flash     # any OpenRouter model id
 
-# Ingest the files and ask in one go (the shell expands out/*.md):
+# One-shot (the shell expands out/*.md into files; the leftover text is the question):
 uv run viewlyt-ask out/*.md 'which video had the better reception, and why?'
 
-# The index persists under out/.rag, so later questions skip re-ingesting:
-uv run viewlyt-ask 'summarize the top complaints across the videos'
+# No question -> interactive REPL over the same loaded base (Ctrl-D to quit):
+uv run viewlyt-ask out/*.md
+> qual vídeo teve mais aceitação?
+> e o que mais reclamam nos comentários?
 ```
 
-- **LLM on OpenRouter, embeddings local.** The chat model is whatever `LLM_NAME`
-  points to on OpenRouter. Embeddings (which OpenRouter doesn't reliably serve)
-  run **locally** via [`fastembed`](https://github.com/qdrant/fastembed) — no API
-  key, on CPU. The first run downloads a small multilingual model
-  (`intfloat/multilingual-e5-large`, ~1 GB); set
-  `EMBEDDING_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` for
-  a lighter one. Switch providers with `EMBEDDING_PROVIDER=openai|ollama|openrouter`
-  (then `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_DIM` as needed).
-- **Persistent index.** The graph/vectors live in `out/.rag/` (override with
-  `--store DIR`). Re-ingesting the same files is a cheap no-op (deduped by id).
-- **Retrieval mode.** `--mode` is one of `naive|local|global|hybrid|mix` (default
-  `mix`). `--lang` sets the answer language (default Portuguese (Brazil)); `--model`
-  overrides `$LLM_NAME`.
-- **Cost.** The pricey part is *ingestion* (the LLM extracts entities per chunk to
-  build the graph), not the questions. By default the re-extraction pass is **off**,
-  and you can route extraction to a model cheaper than the answer model with
-  `--extract-model NAME` (or `$LLM_EXTRACT_NAME`) — the answer keeps `$LLM_NAME`.
-  Tune further with `RAG_MAX_GLEANING=1` (more thorough, pricier) and
-  `RAG_CHUNK_TOKENS=2400` (bigger chunks → fewer calls). Re-asking over an existing
-  `out/.rag` index costs nothing extra.
-- **Library use.** `from viewlyt.rag import analyze; analyze(paths, "question")`
-  (and the pure `prepare_documents` / `build_document`, which need no extra).
-- **Limitation.** LightRAG targets semantic/relational questions, not exact
-  number-crunching. To help with "which got more likes?", each document's header
-  carries pre-computed counts (comments, replies, summed/top likes) — but treat
-  aggregate figures as approximate.
+- **Nothing persists.** The default chat keeps no index and writes no files — close
+  it and it's gone. It only needs `openai` (the light `ask` extra). `--lang` sets the
+  answer language (default Portuguese (Brazil)); `--model` overrides `$LLM_NAME`.
+- **Fits the context.** One to a few videos (transcript + ~150 comments each) fit a
+  flash model's context comfortably; you get a warning if the base is very large
+  (then pass fewer files, or use `--persist`).
+
+### Persistent base with a sliding window (`--persist`)
+
+For a base you reuse for a while — but **not forever** — add `--persist`. It builds a
+**[LightRAG](https://github.com/HKUDS/LightRAG)** knowledge-graph index under
+`out/.rag/` and, **on every open, drops documents older than `--ttl-days`** (default
+`15`; `$RAG_TTL_DAYS`; `0` keeps all). So the base is a rolling window, not a pile
+that grows without bound.
+
+```bash
+uv sync --extra rag       # heavier: lightrag + local fastembed embeddings
+uv run viewlyt-ask --persist out/*.md 'how do these relate?'
+uv run viewlyt-ask --persist 'summarize the recurring complaints'   # reuses the index
+```
+
+- **LLM on OpenRouter, embeddings local.** Embeddings (which OpenRouter doesn't
+  reliably serve) run **locally** via [`fastembed`](https://github.com/qdrant/fastembed)
+  — no key, on CPU; the first run downloads a small multilingual model
+  (`intfloat/multilingual-e5-large`, ~1 GB; set
+  `EMBEDDING_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` for a
+  lighter one). Switch providers with `EMBEDDING_PROVIDER=openai|ollama|openrouter`.
+- **Cost.** Here the pricey part is *ingestion* (the LLM extracts entities per chunk
+  to build the graph). By default the re-extraction pass is **off**; route extraction
+  to a cheaper model with `--extract-model NAME` (or `$LLM_EXTRACT_NAME`; the answer
+  keeps `$LLM_NAME`), and tune `RAG_MAX_GLEANING` / `RAG_CHUNK_TOKENS`. `--mode` picks
+  the retrieval mode (`naive|local|global|hybrid|mix`, default `mix`).
+- **Limitation.** A graph RAG targets semantic/relational questions, not exact
+  number-crunching; each document's header carries pre-computed counts (comments,
+  replies, summed/top likes), but treat aggregate figures as approximate.
+
+**Library use:** `from viewlyt.rag import chat; chat(paths, "question")` (ephemeral),
+or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
+`prepare_documents` / `build_document` need no extra.
 
 ## Requirements
 
@@ -333,7 +349,7 @@ src/viewlyt/
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
   htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
-  rag.py                  viewlyt-ask: prep out/*.md + LightRAG ingest/query (opt-in 'rag' extra; lazy)
+  rag.py                  viewlyt-ask: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
 tests/test_units.py       browser-free tests for the pure functions
 tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
 ```
