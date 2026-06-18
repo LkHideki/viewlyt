@@ -39,6 +39,9 @@ dependencies = [
 [project.optional-dependencies]
 live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30", "cryptography>=42"]
 live-serverside = ["chat-downloader>=0.2"]
+# AI analysis over collected out/*.md via a LightRAG knowledge graph. LLM on
+# OpenRouter (openai client); embeddings default to local fastembed (no API key).
+rag = ["lightrag-hku>=1.4", "openai>=1.30", "fastembed>=0.3"]
 
 [project.urls]
 Homepage = "https://github.com/LkHideki/viewlyt"
@@ -48,6 +51,7 @@ Issues = "https://github.com/LkHideki/viewlyt/issues"
 [project.scripts]
 viewlyt = "viewlyt.cli:main"
 viewlyt-live = "viewlyt.live.cli:main"
+viewlyt-ask = "viewlyt.rag:main"
 
 [build-system]
 requires = ["hatchling"]

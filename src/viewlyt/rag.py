@@ -18,7 +18,12 @@ importing this module never drags those in.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import logging
+import os
 import re
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -234,3 +239,310 @@ def prepare_documents(paths: Iterable[str | Path]) -> list[RagDocument]:
             continue
         docs.append(build_document(str(path), text))
     return docs
+
+
+# --------------------------------------------------------------------------- #
+# LightRAG ingest + query (I/O layer).
+#
+# ``lightrag`` / ``openai`` / ``fastembed`` / ``numpy`` are imported LAZILY inside
+# the functions below — the same discipline ``viewlyt.live.llm`` uses for ``openai``
+# — so the pure helpers above (and ``import viewlyt.rag``) never pull them in. The
+# layer is opt-in: ``uv sync --extra rag``. The LLM speaks to OpenRouter; embeddings
+# default to a local fastembed model (no API key, runs on CPU).
+# --------------------------------------------------------------------------- #
+
+logger = logging.getLogger("viewlyt.rag")
+
+_DEFAULT_STORE = "out/.rag"
+_DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1"
+_DEFAULT_LLM_MODEL = "google/gemini-3.1-flash-lite"
+_DEFAULT_FASTEMBED_MODEL = (
+    "intfloat/multilingual-e5-large"  # multilingual (pt/en), fastembed-supported
+)
+_DEFAULT_LANGUAGE = "Portuguese (Brazil)"
+QUERY_MODES = ("naive", "local", "global", "hybrid", "mix")
+
+
+@dataclass(slots=True)
+class RagConfig:
+    """Resolved LLM + embedding settings for a LightRAG run (see :meth:`from_env`)."""
+
+    llm_base_url: str = _DEFAULT_LLM_BASE_URL
+    llm_api_key: str = ""
+    llm_model: str = _DEFAULT_LLM_MODEL
+    embed_provider: str = "fastembed"  # fastembed | openai | openrouter | ollama
+    embed_model: str = _DEFAULT_FASTEMBED_MODEL
+    embed_dim: int = 1024
+    embed_base_url: str = ""
+    embed_api_key: str = ""
+    embed_max_tokens: int = 8192
+    language: str = _DEFAULT_LANGUAGE
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> RagConfig:
+        """Resolve a config from environment variables.
+
+        LLM (always OpenAI-compatible): ``OPENROUTER_API_KEY`` (key) + ``LLM_NAME``
+        (model), OpenRouter base by default (override with ``LLM_BASE_URL``).
+
+        Embeddings: ``EMBEDDING_PROVIDER`` selects ``fastembed`` (default — local,
+        no key, CPU), ``openai``, ``openrouter`` or ``ollama``. Per-provider defaults
+        (model/dim/base/key) are overridable via ``EMBEDDING_NAME``/``EMBEDDING_DIM``/
+        ``EMBEDDING_BASE_URL``/``EMBEDDING_API_KEY`` — for an OpenAI-compatible
+        provider the key falls back to ``OPENROUTER_API_KEY``.
+        """
+        e = os.environ if env is None else env
+        provider = (e.get("EMBEDDING_PROVIDER") or "fastembed").strip().lower()
+        if provider == "fastembed":
+            d_model, d_dim, d_base, d_key = _DEFAULT_FASTEMBED_MODEL, 1024, "", ""
+        elif provider == "ollama":
+            d_model, d_dim = "nomic-embed-text", 768
+            d_base = e.get("EMBEDDING_BASE_URL") or "http://localhost:11434/v1"
+            d_key = e.get("EMBEDDING_API_KEY") or ""
+        else:  # openai / openrouter / any OpenAI-compatible embeddings endpoint
+            d_model, d_dim = "text-embedding-3-small", 1536
+            d_base = e.get("EMBEDDING_BASE_URL") or (
+                "https://openrouter.ai/api/v1"
+                if provider == "openrouter"
+                else "https://api.openai.com/v1"
+            )
+            d_key = e.get("EMBEDDING_API_KEY") or e.get("OPENROUTER_API_KEY") or ""
+        return cls(
+            llm_base_url=e.get("LLM_BASE_URL") or _DEFAULT_LLM_BASE_URL,
+            llm_api_key=e.get("OPENROUTER_API_KEY") or e.get("LLM_API_KEY") or "",
+            llm_model=e.get("LLM_NAME") or _DEFAULT_LLM_MODEL,
+            embed_provider=provider,
+            embed_model=e.get("EMBEDDING_NAME") or e.get("EMBEDDING_MODEL") or d_model,
+            embed_dim=int(e.get("EMBEDDING_DIM") or d_dim),
+            embed_base_url=d_base,
+            embed_api_key=d_key,
+            language=e.get("VIEWLYT_RAG_LANG") or _DEFAULT_LANGUAGE,
+        )
+
+
+def _make_llm_func(cfg: RagConfig):
+    """Build a LightRAG ``llm_model_func`` calling cfg's OpenAI-compatible chat endpoint."""
+
+    async def llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+        from lightrag.llm.openai import openai_complete_if_cache
+
+        kwargs.pop("keyword_extraction", None)  # LightRAG flag the openai client doesn't take
+        kwargs.pop("hashing_kv", None)
+        return await openai_complete_if_cache(
+            cfg.llm_model,
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages or [],
+            base_url=cfg.llm_base_url,
+            api_key=cfg.llm_api_key or "x",
+            **kwargs,
+        )
+
+    return llm_model_func
+
+
+def _make_embedding_func(cfg: RagConfig):
+    """Build a LightRAG ``EmbeddingFunc`` for cfg's provider (fastembed | OpenAI-compatible).
+
+    fastembed runs locally on CPU (no key); its real output dimension is probed once
+    so swapping ``EMBEDDING_NAME`` needs no ``EMBEDDING_DIM``. Other providers go
+    through LightRAG's ``openai_embed`` with cfg's base_url/key.
+    """
+    from lightrag.utils import EmbeddingFunc
+
+    if cfg.embed_provider == "fastembed":
+        import numpy as np
+        from fastembed import TextEmbedding
+
+        model = TextEmbedding(model_name=cfg.embed_model)
+        dim = len(next(iter(model.embed(["dimension probe"]))))  # probe the real dim once
+
+        async def embed(texts: list[str]):
+            # fastembed is sync + CPU-bound: offload so we don't block the event loop.
+            return await asyncio.to_thread(
+                lambda: np.array(list(model.embed(list(texts))), dtype=np.float32)
+            )
+
+        return EmbeddingFunc(embedding_dim=dim, max_token_size=cfg.embed_max_tokens, func=embed)
+
+    from lightrag.llm.openai import openai_embed
+
+    async def embed(texts: list[str]):
+        return await openai_embed(
+            list(texts),
+            model=cfg.embed_model,
+            base_url=cfg.embed_base_url or cfg.llm_base_url,
+            api_key=cfg.embed_api_key or cfg.llm_api_key or "x",
+        )
+
+    return EmbeddingFunc(
+        embedding_dim=cfg.embed_dim, max_token_size=cfg.embed_max_tokens, func=embed
+    )
+
+
+async def build_rag(cfg: RagConfig, store_dir: str | Path):
+    """Construct and initialize a LightRAG instance bound to cfg's LLM + embeddings.
+
+    The graph/vectors/KV persist under ``store_dir`` (default ``out/.rag``), so a later
+    query reuses the index without re-ingesting.
+    """
+    from lightrag import LightRAG
+    from lightrag.kg.shared_storage import initialize_pipeline_status
+
+    Path(store_dir).mkdir(parents=True, exist_ok=True)
+    rag = LightRAG(
+        working_dir=str(store_dir),
+        llm_model_func=_make_llm_func(cfg),
+        embedding_func=_make_embedding_func(cfg),
+    )
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+    return rag
+
+
+async def ingest(rag, docs: list[RagDocument]) -> None:
+    """Insert RagDocuments, passing ``ids``/``file_paths`` for dedup + citation.
+
+    LightRAG dedups by content/id, so re-ingesting the same files is a cheap no-op."""
+    if not docs:
+        return
+    await rag.ainsert(
+        [d.content for d in docs],
+        ids=[d.doc_id for d in docs],
+        file_paths=[d.file_path for d in docs],
+    )
+
+
+async def ask(rag, question: str, *, mode: str = "mix") -> str:
+    """Query the knowledge graph (``mode`` in :data:`QUERY_MODES`) and return the answer."""
+    from lightrag import QueryParam
+
+    result = await rag.aquery(question, param=QueryParam(mode=mode))
+    return result if isinstance(result, str) else str(result)
+
+
+async def _run_async(
+    cfg: RagConfig, paths: list[str], question: str, store_dir: str, mode: str
+) -> str:
+    docs = prepare_documents(paths)
+    if question and cfg.language:
+        question = f"{question}\n\nWrite the answer in {cfg.language}."
+    rag = await build_rag(cfg, store_dir)
+    try:
+        if docs:
+            await ingest(rag, docs)
+        return await ask(rag, question, mode=mode) if question else ""
+    finally:
+        finalize = getattr(rag, "finalize_storages", None)
+        if finalize is not None:
+            await finalize()
+
+
+def analyze(
+    paths: Iterable[str | Path],
+    question: str,
+    *,
+    cfg: RagConfig | None = None,
+    store_dir: str = _DEFAULT_STORE,
+    mode: str = "mix",
+) -> str:
+    """Prepare ``paths``, ingest them into LightRAG at ``store_dir``, answer ``question``.
+
+    The synchronous, library-friendly entry point: it drives its own event loop. Pass
+    an empty ``question`` to only (re)build the index. ``cfg`` defaults to
+    :meth:`RagConfig.from_env`.
+    """
+    cfg = cfg or RagConfig.from_env()
+    return asyncio.run(_run_async(cfg, [str(p) for p in paths], question, store_dir, mode))
+
+
+def _split_inputs(inputs: list[str]) -> tuple[list[str], str]:
+    """Split positional args into existing file paths vs the free-text question.
+
+    Mirrors the approved UX ``viewlyt-ask out/*.md "question"``: the shell expands the
+    glob into real files (kept as paths), and any arg that isn't an existing file joins
+    into the question text.
+    """
+    paths, words = [], []
+    for item in inputs:
+        if Path(item).is_file():
+            paths.append(item)
+        else:
+            words.append(item)
+    return paths, " ".join(words).strip()
+
+
+def build_ask_parser() -> argparse.ArgumentParser:
+    """The ``viewlyt-ask`` CLI parser (kept separate so it's unit-testable)."""
+    p = argparse.ArgumentParser(
+        prog="viewlyt-ask",
+        description=(
+            "Ask free-form questions over already-collected out/*.md files using a "
+            "LightRAG knowledge graph (LLM on OpenRouter, local fastembed embeddings)."
+        ),
+    )
+    p.add_argument(
+        "inputs",
+        nargs="*",
+        help='out/*.md files to ingest and/or the question text (e.g. out/*.md "which got more love?")',
+    )
+    p.add_argument(
+        "--store",
+        default=_DEFAULT_STORE,
+        metavar="DIR",
+        help=f"LightRAG working dir (default: {_DEFAULT_STORE})",
+    )
+    p.add_argument(
+        "--mode", choices=QUERY_MODES, default="mix", help="LightRAG retrieval mode (default: mix)"
+    )
+    p.add_argument(
+        "--model", default=None, metavar="NAME", help="override the LLM model (else $LLM_NAME)"
+    )
+    p.add_argument(
+        "--lang",
+        default=None,
+        metavar="LANG",
+        help="answer language (default: Portuguese (Brazil))",
+    )
+    p.add_argument("-q", "--quiet", action="store_true", help="only log warnings/errors")
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Console entry point for ``viewlyt-ask``."""
+    args = build_ask_parser().parse_args(argv)
+    logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
+    paths, question = _split_inputs(args.inputs)
+    if not paths and not question:
+        build_ask_parser().print_help()
+        return 2
+
+    cfg = RagConfig.from_env()
+    if args.model:
+        cfg.llm_model = args.model
+    if args.lang:
+        cfg.language = args.lang
+    if not cfg.llm_api_key:
+        print(
+            "error: no LLM key found. Set OPENROUTER_API_KEY (and optionally LLM_NAME).",
+            file=sys.stderr,
+        )
+        return 2
+
+    if paths:
+        logger.info("ingesting %d file(s) into %s ...", len(paths), args.store)
+    try:
+        answer = analyze(paths, question, cfg=cfg, store_dir=args.store, mode=args.mode)
+    except ImportError:
+        print(
+            "error: the 'rag' extra is not installed. Run: uv sync --extra rag",
+            file=sys.stderr,
+        )
+        return 1
+    if question:
+        print(answer)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -13,7 +13,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from viewlyt.rag import (  # noqa: E402
+    RagConfig,
     RagDocument,
+    _split_inputs,
+    build_ask_parser,
     build_document,
     comment_metrics,
     parse_count,
@@ -154,6 +157,83 @@ def test_build_document_no_video_id() -> None:
     print("ok: build_document_no_video_id")
 
 
+def test_ragconfig_from_env_defaults() -> None:
+    cfg = RagConfig.from_env({})  # nothing set
+    assert cfg.llm_base_url == "https://openrouter.ai/api/v1"
+    assert cfg.llm_api_key == "" and cfg.llm_model  # key empty, model has a default
+    # embeddings are local by default -> no key, multilingual model, dim 1024
+    assert cfg.embed_provider == "fastembed" and cfg.embed_api_key == ""
+    assert cfg.embed_dim == 1024 and "e5" in cfg.embed_model
+    print("ok: ragconfig_from_env_defaults")
+
+
+def test_ragconfig_from_env_openrouter_llm() -> None:
+    cfg = RagConfig.from_env({"OPENROUTER_API_KEY": "sk-or-test", "LLM_NAME": "openai/gpt-4o-mini"})
+    assert cfg.llm_api_key == "sk-or-test" and cfg.llm_model == "openai/gpt-4o-mini"
+    assert cfg.embed_provider == "fastembed" and cfg.embed_api_key == ""  # embeddings stay local
+    print("ok: ragconfig_from_env_openrouter_llm")
+
+
+def test_ragconfig_from_env_embedding_providers() -> None:
+    # openai embeddings: defaults + key falls back to OPENROUTER_API_KEY
+    oa = RagConfig.from_env({"EMBEDDING_PROVIDER": "openai", "OPENROUTER_API_KEY": "k"})
+    assert oa.embed_model == "text-embedding-3-small" and oa.embed_dim == 1536
+    assert oa.embed_base_url == "https://api.openai.com/v1" and oa.embed_api_key == "k"
+    # ollama: local base, no key
+    ol = RagConfig.from_env({"EMBEDDING_PROVIDER": "ollama"})
+    assert ol.embed_base_url == "http://localhost:11434/v1" and ol.embed_dim == 768
+    # explicit overrides win over the per-provider defaults
+    ov = RagConfig.from_env(
+        {"EMBEDDING_PROVIDER": "openai", "EMBEDDING_NAME": "m", "EMBEDDING_DIM": "256"}
+    )
+    assert ov.embed_model == "m" and ov.embed_dim == 256
+    print("ok: ragconfig_from_env_embedding_providers")
+
+
+def test_split_inputs() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        f1, f2 = Path(d) / "a.md", Path(d) / "b.md"
+        f1.write_text("x", encoding="utf-8")
+        f2.write_text("y", encoding="utf-8")
+        # existing files -> paths; everything else joins into the question
+        paths, q = _split_inputs([str(f1), str(f2), "qual", "teve", "mais", "aceitação?"])
+        assert paths == [str(f1), str(f2)] and q == "qual teve mais aceitação?"
+        # only a question (no files), and only files (no question)
+        assert _split_inputs(["como", "se", "relacionam?"]) == ([], "como se relacionam?")
+        assert _split_inputs([str(f1)]) == ([str(f1)], "")
+    print("ok: split_inputs")
+
+
+def test_build_ask_parser() -> None:
+    p = build_ask_parser()
+    d = p.parse_args([])
+    assert d.mode == "mix" and d.store == "out/.rag"
+    assert d.model is None and d.lang is None and d.quiet is False
+    a = p.parse_args(
+        [
+            "out/x.md",
+            "pergunta",
+            "--mode",
+            "hybrid",
+            "--model",
+            "openai/gpt-4o",
+            "--lang",
+            "English",
+        ]
+    )
+    assert a.mode == "hybrid" and a.model == "openai/gpt-4o" and a.lang == "English"
+    assert a.inputs == ["out/x.md", "pergunta"]
+    try:  # an unknown --mode is rejected by argparse (choices)
+        p.parse_args(["--mode", "bogus"])
+    except SystemExit:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("expected --mode to reject an unknown value")
+    print("ok: build_ask_parser")
+
+
 if __name__ == "__main__":
     test_parse_out_filename()
     test_parse_count()
@@ -162,4 +242,9 @@ if __name__ == "__main__":
     test_build_document_unified_dedups_title()
     test_build_document_transcript_has_no_metrics()
     test_build_document_no_video_id()
+    test_ragconfig_from_env_defaults()
+    test_ragconfig_from_env_openrouter_llm()
+    test_ragconfig_from_env_embedding_providers()
+    test_split_inputs()
+    test_build_ask_parser()
     print("ALL TESTS PASSED")
