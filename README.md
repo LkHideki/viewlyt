@@ -41,6 +41,47 @@ uv sync --extra live
 uv run viewlyt-live 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
 
+## AI analysis over your collected data (RAG)
+
+`viewlyt[rag]` adds **`viewlyt-ask`**: it answers free-form questions over the
+`out/*.md` files you've **already collected** — no re-scraping — by indexing them
+into a **[LightRAG](https://github.com/HKUDS/LightRAG)** knowledge graph. Each
+document is tagged with its video (title, id, url) and engagement metrics, so you
+can ask questions that *compare* videos ("which one got more love?", "how do they
+relate?").
+
+```bash
+uv sync --extra rag
+export OPENROUTER_API_KEY=sk-or-...         # the LLM (chat) provider
+export LLM_NAME=google/gemini-2.5-flash     # any OpenRouter model id
+
+# Ingest the files and ask in one go (the shell expands out/*.md):
+uv run viewlyt-ask out/*.md 'which video had the better reception, and why?'
+
+# The index persists under out/.rag, so later questions skip re-ingesting:
+uv run viewlyt-ask 'summarize the top complaints across the videos'
+```
+
+- **LLM on OpenRouter, embeddings local.** The chat model is whatever `LLM_NAME`
+  points to on OpenRouter. Embeddings (which OpenRouter doesn't reliably serve)
+  run **locally** via [`fastembed`](https://github.com/qdrant/fastembed) — no API
+  key, on CPU. The first run downloads a small multilingual model
+  (`intfloat/multilingual-e5-large`, ~1 GB); set
+  `EMBEDDING_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` for
+  a lighter one. Switch providers with `EMBEDDING_PROVIDER=openai|ollama|openrouter`
+  (then `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` / `EMBEDDING_DIM` as needed).
+- **Persistent index.** The graph/vectors live in `out/.rag/` (override with
+  `--store DIR`). Re-ingesting the same files is a cheap no-op (deduped by id).
+- **Retrieval mode.** `--mode` is one of `naive|local|global|hybrid|mix` (default
+  `mix`). `--lang` sets the answer language (default Portuguese (Brazil)); `--model`
+  overrides `$LLM_NAME`.
+- **Library use.** `from viewlyt.rag import analyze; analyze(paths, "question")`
+  (and the pure `prepare_documents` / `build_document`, which need no extra).
+- **Limitation.** LightRAG targets semantic/relational questions, not exact
+  number-crunching. To help with "which got more likes?", each document's header
+  carries pre-computed counts (comments, replies, summed/top likes) — but treat
+  aggregate figures as approximate.
+
 ## Requirements
 
 - `uv` (installs/manages Python; requires **Python ≥ 3.11**, and the
@@ -285,7 +326,9 @@ src/viewlyt/
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
   htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
+  rag.py                  viewlyt-ask: prep out/*.md + LightRAG ingest/query (opt-in 'rag' extra; lazy)
 tests/test_units.py       browser-free tests for the pure functions
+tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
 ```
 
 ## Use as a library

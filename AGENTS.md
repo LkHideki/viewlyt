@@ -21,6 +21,8 @@ uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unifi
 uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
+uv run viewlyt-ask out/*.md 'qual vídeo teve mais aceitação?'  # IA sobre o já coletado (opt-in: uv sync --extra rag)
+
 uv run pytest                                       # toda a suíte (sem navegador; e2e pulado)
 VIEWLYT_E2E=1 uv run pytest -m e2e                  # e2e real (Chrome + rede), opt-in
 uv run ruff check --fix                             # lint
@@ -35,6 +37,13 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 sobe um servidor FastAPI + dashboard que analisa o chat ao vivo com LLM. O código vive
 em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 `persistence`; dashboard Vite+TS em `dashboard/` → `static/`). Veja @how-to.md.
+
+**Modo análise/RAG (opt-in, `uv sync --extra rag`):** `uv run viewlyt-ask out/*.md '<pergunta>'`
+responde perguntas livres sobre os `.md` **já coletados** (sem re-coletar), indexando-os num
+grafo de conhecimento **LightRAG**. O LLM fala com o **OpenRouter** (`OPENROUTER_API_KEY` +
+`LLM_NAME`); os **embeddings** rodam locais via `fastembed` (sem chave; `EMBEDDING_PROVIDER`
+troca p/ openai/ollama/openrouter). O índice persiste em `out/.rag/`. Código em
+`src/viewlyt/rag.py` (puro: preparação de documentos; I/O lazy: LightRAG/openai/fastembed).
 
 ## Estrutura
 
@@ -53,6 +62,12 @@ em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
   `ScrapeResult` (`comment_lines`/`transcript_lines`/`related_lines`/`write`). Tudo sobre o helper
   compartilhado `_scrape_url` (driver já construído/primed); depende só de `driver`/`scraper`/
   `htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API (lazy p/ Selenium, eager p/ puras).
+- `src/viewlyt/rag.py` — subsistema **opt-in** de análise por IA (`uv sync --extra rag`, comando
+  `viewlyt-ask`). Parte **pura** (preparação dos `out/*.md` em documentos auto-descritivos:
+  `parse_out_filename`, `comment_metrics`, `build_document`, `prepare_documents`) + parte **I/O**
+  com LightRAG/openai/fastembed em **import lazy** (`RagConfig.from_env`, `build_rag`, `ingest`,
+  `ask`, `analyze`). Espelha o `live/llm.py` no diferimento de deps; não depende de `cli`/`scraper`.
+  Testes em `tests/test_rag.py`.
 - `tests/test_units.py` — testes das funções puras (roda também standalone via `python`).
 - `tests/conftest.py` — fakes/helpers pytest-only (FakeDriver, builders de registros, `cli_run`, marca e2e).
 - `tests/test_integration.py` — integração sem navegador (monkeypatch do boundary Selenium em `cli`/`api`).
