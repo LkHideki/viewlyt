@@ -40,6 +40,7 @@ from .htmltext import (
     format_unified,
     join_unified,
     slugify,
+    strip_timestamps,
 )
 from .htmltext import format_comment_lines as _format_comment_lines
 from .scraper import (
@@ -65,13 +66,13 @@ UNIFIED_ALL_FILENAME = "unified-all.md"  # the single --unify-all output
 
 _EXAMPLES = """\
 exemplos:
-  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # comentários -> out/<slug>-<id>.md
+  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # só a transcrição (default) -> *.transcript.md
+  viewlyt -c '<url>'                               # só comentários -> out/<slug>-<id>.md
   viewlyt -c -t '<url>'                            # comentários + transcrição
-  viewlyt -t '<url>'                               # só a transcrição (mais rápido)
-  viewlyt --transcript-only '<url>'                # idem (alias de -t sem -c)
-  viewlyt --no-merge-comments '<url>'              # não funde comentários do mesmo autor
-  viewlyt --limit-comments 50 --no-replies '<url>' # coleta enxuta e rápida
-  viewlyt --unify '<url>'                          # todos os produtos num só arquivo
+  viewlyt -t --no-ts '<url>'                       # transcrição sem os timestamps [m:ss]
+  viewlyt -r 17 '<url>'                            # 17 vídeos relacionados -> *.related.md
+  viewlyt -u '<url>'                               # todos os produtos num só arquivo (--unify)
+  viewlyt -u --copy '<url>'                        # unifica e copia para a área de transferência
   viewlyt --unify-all '<url1>' '<url2>'            # todos os vídeos num arquivo só
   viewlyt --from-file urls.txt -j 4                # vários vídeos (.txt/.csv), 4 navegadores
   viewlyt --headed '<url>'                         # navegador visível (contra o bot wall)
@@ -212,18 +213,17 @@ def resolve_modes(
 
     ``-c/--comments``, ``-t/--transcript`` and ``-r/--related N`` are independent
     toggles (``related`` is the count; ``> 0`` enables it), with the back-compat
-    ``--transcript-only`` alias. Comments are the implicit default ONLY when no
-    other selector is given, mirroring how ``-t`` alone means transcript-only:
-    no flags -> comments; ``-c`` -> comments; ``-t`` -> transcript; ``-r N`` ->
-    related; any combination selects exactly those; ``--transcript-only`` forces
-    comments off regardless of ``-c``.
+    ``--transcript-only`` alias. The **transcript** is the implicit default ONLY
+    when no selector is given: no flags -> transcript; ``-c`` -> comments;
+    ``-t`` -> transcript; ``-c -t`` -> both; ``-r N`` -> related; any combination
+    selects exactly those; ``--transcript-only`` forces comments off regardless
+    of ``-c``.
     """
     with_transcript = transcript or transcript_only
     with_related = related > 0
-    if transcript_only:
-        with_comments = False
-    else:
-        with_comments = comments or not (with_transcript or with_related)
+    with_comments = False if transcript_only else comments
+    if not (with_comments or with_transcript or with_related):
+        with_transcript = True  # bare invocation defaults to transcript-only
     return with_comments, with_transcript, with_related
 
 
@@ -302,6 +302,8 @@ def run_batch(
     unify_all: bool,
     inner_progress: bool,
     quiet: bool,
+    strip_ts: bool = False,
+    copy: bool = False,
 ) -> list[dict]:
     """Process every (video_id, url) using ``jobs`` worker threads, each owning a
     reused, primed driver. Failures are isolated per-video; a poisoned session is
@@ -319,6 +321,10 @@ def run_batch(
     # document is joined and written once, in input order, after the pool drains.
     unified_blocks: dict[str, list[str]] = {}
     ub_lock = threading.Lock()
+    # --copy: each worker stashes its per-video output document here; joined (input
+    # order) into one text and copied to the clipboard after the pool drains.
+    copy_docs: dict[str, list[str]] = {}
+    cp_lock = threading.Lock()
     s_lock = threading.Lock()
     bar = tqdm(
         total=len(targets), desc="vídeos", unit="vídeo", disable=(len(targets) == 1 or quiet)
@@ -387,6 +393,8 @@ def run_batch(
                     tlines = (
                         format_transcript(transcript) if (with_transcript and transcript) else []
                     )
+                    if strip_ts and tlines:
+                        tlines = strip_timestamps(tlines)
                     rlines = format_related(related) if (with_related and related) else []
                     # Count rendered top-level blocks (a non-blank line that isn't an
                     # indented reply), so the summary matches the file after merging.
@@ -403,6 +411,7 @@ def run_batch(
                                 ("Related videos", rlines),
                             ],
                         )
+                        copy_doc = block  # --copy: the unified document
                         if unify_all:
                             with ub_lock:
                                 unified_blocks[vid] = block
@@ -419,6 +428,12 @@ def run_batch(
                             related_file = str(
                                 _write(slug, vid, rlines, out_dir, suffix=".related")
                             )
+                        # --copy: the separate product files, blank-line joined (a
+                        # single product copies verbatim as its own file's content).
+                        copy_doc = join_unified([clines, tlines, rlines])
+                    if copy:
+                        with cp_lock:
+                            copy_docs[vid] = copy_doc
                     add(
                         {
                             "url": url,
@@ -472,7 +487,44 @@ def run_batch(
             for s in summaries:
                 if not s.get("error"):
                     s["unified_file"] = gp
+
+    # --copy: join every per-video document (input order) into one text and put it
+    # on the clipboard. Mirrors the written output (unified doc, or the separate
+    # product files blank-line joined — a lone product copies verbatim).
+    if copy and copy_docs:
+        ordered = [copy_docs[v] for v in sorted(copy_docs, key=lambda v: order.get(v, 1 << 30))]
+        text = "\n".join(join_unified(ordered))
+        if text and _copy_to_clipboard(text):
+            log.info("copied %d chars to the clipboard", len(text))
+        elif text:
+            log.warning("could not copy to the clipboard (no pbcopy/xclip/xsel/clip found)")
     return summaries
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Put ``text`` on the system clipboard via the first available OS tool.
+
+    Tries pbcopy (macOS), clip (Windows), then xclip/xsel (Linux/X11). Returns
+    True on success, False if no tool is found or the copy fails — the caller
+    warns but never aborts (the files are already written)."""
+    import shutil
+    import subprocess
+
+    candidates = (
+        ["pbcopy"],
+        ["clip"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+    )
+    for cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+            return True
+        except Exception:  # tool present but failed (e.g. no DISPLAY) -> try next
+            continue
+    return False
 
 
 def _safe_quit(driver) -> None:
@@ -558,15 +610,15 @@ def build_parser() -> argparse.ArgumentParser:
         "-c",
         "--comments",
         action="store_true",
-        help="collect comments (the default when no selector is given); combine with -t for both",
+        help="collect comments -> out/<slug>-<id>.md; combine with -t for comments + transcript",
     )
     p.add_argument(
         "-t",
         "--transcript",
         action="store_true",
         help="collect the transcript -> out/<slug>-<id>.transcript.md (skipped if the video has "
-        "none, e.g. many music videos). Without -c this selects the transcript ONLY; add -c for "
-        "both. NOTE: this changes the old meaning of --transcript, which also kept comments.",
+        "none, e.g. many music videos). This is also the DEFAULT when no selector is given; add "
+        "-c for comments too.",
     )
     p.add_argument(
         "--transcript-only",
@@ -580,11 +632,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         metavar="N",
         help="collect the first N related videos -> out/<slug>-<id>.related.md "
-        "(0 = off). Without -c this selects related ONLY; combine with -c/-t. "
+        "(0 = off). Selects related; combine with -c/-t. "
         "Lists 'N. [<views> views. <title>](<url>)' — the sidebar exposes views, not likes.",
     )
     unify_group = p.add_mutually_exclusive_group()
     unify_group.add_argument(
+        "-u",
         "--unify",
         action="store_true",
         help="write all of a video's products into ONE file out/<slug>-<id>.unified.md "
@@ -597,6 +650,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=f"like --unify but combine ALL videos into a single out/{UNIFIED_ALL_FILENAME} "
         "(no per-video files). Same collect-everything-when-alone rule as --unify.",
+    )
+    p.add_argument(
+        "--no-ts",
+        dest="no_ts",
+        action="store_true",
+        help="strip the [m:ss]/[mm:ss] timestamps from transcript lines (h:mm:ss is kept)",
+    )
+    p.add_argument(
+        "--copy",
+        action="store_true",
+        help="also copy the full output (the unified doc, or the produced file's content) "
+        "to the system clipboard",
     )
     p.add_argument(
         "--headed",
@@ -678,6 +743,8 @@ def main(argv: list[str] | None = None) -> int:
         unify_all=args.unify_all,
         inner_progress=inner_progress,
         quiet=args.quiet,
+        strip_ts=args.no_ts,
+        copy=args.copy,
     )
 
     ok = [s for s in summaries if not s["error"]]

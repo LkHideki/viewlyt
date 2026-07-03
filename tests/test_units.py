@@ -33,6 +33,7 @@ from viewlyt.htmltext import (  # noqa: E402
     join_unified,
     parse_relative_date,
     slugify,
+    strip_timestamps,
 )
 from viewlyt.scraper import extract_video_id  # noqa: E402
 
@@ -375,7 +376,7 @@ def test_group_consecutive_comments_shape() -> None:
 
 def test_resolve_modes() -> None:
     # (comments, transcript, transcript_only, related) -> (comments, transcript, related)
-    assert resolve_modes(False, False, False) == (True, False, False)  # no flags -> comments
+    assert resolve_modes(False, False, False) == (False, True, False)  # no flags -> transcript
     assert resolve_modes(True, False, False) == (True, False, False)  # -c -> comments only
     assert resolve_modes(False, True, False) == (False, True, False)  # -t -> transcript only
     assert resolve_modes(True, True, False) == (True, True, False)  # -c -t -> both
@@ -385,8 +386,8 @@ def test_resolve_modes() -> None:
         True,
         False,
     )  # --transcript-only wins over -c
-    # related is a count (0 = off); >0 enables it and, alone, suppresses the comment default
-    assert resolve_modes(False, False, False, 0) == (True, False, False)  # -r 0 -> comments
+    # related is a count (0 = off); >0 enables it and, alone, suppresses the transcript default
+    assert resolve_modes(False, False, False, 0) == (False, True, False)  # -r 0 -> transcript
     assert resolve_modes(False, False, False, 5) == (False, False, True)  # -r 5 -> related only
     assert resolve_modes(True, False, False, 5) == (True, False, True)  # -c -r 5 -> both
     assert resolve_modes(False, True, False, 5) == (False, True, True)  # -t -r 5 -> tx + related
@@ -408,10 +409,15 @@ def test_flag_plumbing() -> None:
     assert p.parse_args([]).related == 0
     assert p.parse_args(["-r", "17"]).related == 17
     assert p.parse_args(["--related", "23"]).related == 23
-    # --unify / --unify-all are mutually-exclusive store_true flags
+    # --unify / --unify-all are mutually-exclusive store_true flags (-u aliases --unify)
     assert p.parse_args([]).unify is False and p.parse_args([]).unify_all is False
     assert p.parse_args(["--unify"]).unify is True
+    assert p.parse_args(["-u"]).unify is True
     assert p.parse_args(["--unify-all"]).unify_all is True
+    # --no-ts / --copy default off
+    assert p.parse_args([]).no_ts is False and p.parse_args([]).copy is False
+    assert p.parse_args(["--no-ts"]).no_ts is True
+    assert p.parse_args(["--copy"]).copy is True
     try:  # mutually exclusive -> argparse exits (SystemExit) if both are given
         p.parse_args(["--unify", "--unify-all"])
     except SystemExit:
@@ -715,6 +721,27 @@ def test_format_transcript() -> None:
     print("ok: format_transcript")
 
 
+def test_strip_timestamps() -> None:
+    # --no-ts: drop [m:ss]/[mm:ss] prefixes and strip; h:mm:ss is left intact
+    # (matches the exact \[\d?\d:\d\d\] regex), lines without a stamp pass through.
+    lines = [
+        "[0:05] hi there",
+        "[1:02] multi line text",
+        "[1:10:33] [Music]",  # h:mm:ss not matched -> kept
+        "sem timestamp",
+        "",
+    ]
+    assert strip_timestamps(lines) == [
+        "hi there",
+        "multi line text",
+        "[1:10:33] [Music]",
+        "sem timestamp",
+        "",
+    ]
+    assert strip_timestamps([]) == []
+    print("ok: strip_timestamps")
+
+
 def test_html_to_text_img_fallbacks() -> None:
     # <img> alt -> aria-label -> shared-tooltip-text fallback chain, and no-attr drop.
     assert html_to_text('<img aria-label=":wave:">') == ":wave:"
@@ -853,6 +880,7 @@ if __name__ == "__main__":
     test_format_unified()
     test_join_unified()
     test_format_transcript()
+    test_strip_timestamps()
     test_html_to_text_img_fallbacks()
     test_html_to_text_blocks_and_nested_anchor()
     test_parse_relative_date_edges()

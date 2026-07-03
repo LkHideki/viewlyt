@@ -109,6 +109,32 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     assert sums[0]["segments"] == 2 and sums[0]["with_transcript"] is True
 
 
+def test_run_batch_no_ts_strips_timestamps(monkeypatch, tmp_path):
+    segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+
+    _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, strip_ts=True)
+
+    tx = tmp_path / f"{slugify('Titulo')}-vid.transcript.md"
+    assert tx.read_text(encoding="utf-8") == "ola mundo\nsegunda linha\n"
+
+
+def test_run_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
+    segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    grabbed = {}
+    monkeypatch.setattr(
+        cli, "_copy_to_clipboard", lambda text: grabbed.setdefault("t", text) or True
+    )
+
+    _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, copy=True)
+
+    # --copy mirrors the produced file's content (single product -> verbatim)
+    assert grabbed["t"] == "[0:00] ola mundo\n[0:02] segunda linha"
+
+
 def test_run_batch_related_writes_file(monkeypatch, tmp_path):
     related = [
         {
@@ -322,7 +348,8 @@ def test_main_success_returns_zero_and_wires_modes(monkeypatch, capsys):
     assert rc == 0
     assert captured["targets"] == [("dQw4w9WgXcQ", "dQw4w9WgXcQ")]
     kw = captured["kw"]
-    assert kw["with_comments"] is True and kw["with_transcript"] is False
+    # no selector -> transcript-only is the default
+    assert kw["with_comments"] is False and kw["with_transcript"] is True
     assert kw["headless"] is True and kw["fallback"] is True and kw["jobs"] == 1
     assert "Done: 1/1" in capsys.readouterr().out
 

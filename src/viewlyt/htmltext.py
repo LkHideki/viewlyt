@@ -219,6 +219,21 @@ def format_transcript(segments: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
+# The [m:ss] / [mm:ss] prefix format_transcript emits (a trailing space included),
+# stripped by `strip_timestamps` for the CLI's --no-ts. Note: only minute:second
+# stamps match — h:mm:ss (long videos) is left intact by design (this exact regex).
+_TIMESTAMP_RE = re.compile(r"\[\d?\d:\d\d\] ")
+
+
+def strip_timestamps(lines: list[str]) -> list[str]:
+    """Drop ``[m:ss]``/``[mm:ss]`` timestamp prefixes from transcript lines.
+
+    Pure/testable; powers ``--no-ts``. Removes every ``\\[\\d?\\d:\\d\\d\\] ``
+    match and strips each line's surrounding whitespace.
+    """
+    return [_TIMESTAMP_RE.sub("", ln).strip() for ln in lines]
+
+
 def format_related(items: list[dict]) -> list[str]:
     """Format related-video records as a 1-based numbered Markdown list.
 
