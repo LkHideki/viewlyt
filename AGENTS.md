@@ -8,17 +8,19 @@ gerenciado com `uv`. Veja @README.md para o uso completo.
 
 ```bash
 uv sync                                             # cria o ambiente e instala as deps (Python >= 3.11; dev em 3.14)
-uv run viewlyt '<url-do-youtube>'                # coleta (headless por padrão) -> out/
+uv run viewlyt '<url-do-youtube>'                # DEFAULT = só a transcrição -> *.transcript.md
 uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
 uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run viewlyt --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
-uv run viewlyt -c -t '<url>'                     # comentários + transcrição -> *.transcript.md
-uv run viewlyt -t '<url>'                        # só a transcrição (== --transcript-only)
-uv run viewlyt --transcript-only '<url>'         # só a transcrição (alias de -t sem -c)
+uv run viewlyt -c '<url>'                         # só comentários -> out/<slug>-<id>.md
+uv run viewlyt -c -t '<url>'                     # comentários + transcrição
+uv run viewlyt -c --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
+uv run viewlyt -t '<url>'                        # só a transcrição (== default == --transcript-only)
+uv run viewlyt -t --no-ts '<url>'                # transcrição sem os timestamps [m:ss] (h:mm:ss fica)
 uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.md (views, não likes)
-uv run viewlyt --unify '<url>'                   # todos os produtos -> *.unified.md (1 arquivo)
+uv run viewlyt -u '<url>'                         # todos os produtos -> *.unified.md (1 arquivo; alias de --unify)
+uv run viewlyt -u --copy '<url>'                 # unifica e copia o conteúdo para a área de transferência
 uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.md (1 arquivo só)
-uv run viewlyt --no-merge-comments '<url>'       # não funde comentários consecutivos do mesmo autor
+uv run viewlyt --no-merge-comments -c '<url>'    # não funde comentários consecutivos do mesmo autor
 uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
 uv run viewlyt-ask out/*.md 'qual vídeo teve mais aceitação?'  # chat efêmero sobre o já coletado (opt-in: uv sync --extra ask)
@@ -117,7 +119,13 @@ chat=`openai`, `--persist`=LightRAG/fastembed).
   gera `N. [<views>. <título>](<url>)`. O modo espelha `-t`: `-r N` sozinho = só relacionados;
   combine com `-c`/`-t`. **Seletores nunca podem usar `class`-substring** (`[class*=…]`) — o teste
   `test_transcript_timestamp_exact_token` proíbe em todo o `scraper.py`; use tokens exatos.
-- **Unificação (`--unify`/`--unify-all`):** unem os produtos num arquivo. `--unify` = 1 por vídeo
+- **Default de seleção (`resolve_modes`):** sem nenhum seletor, coleta a **transcrição** (só). `-c`
+  = comentários; `-c -t` = ambos; `-t`/`--transcript-only` = transcrição; `-r N` = relacionados.
+- **`--no-ts`:** remove o prefixo de timestamp `[m:ss]`/`[mm:ss]` das linhas da transcrição (puro
+  `htmltext.strip_timestamps`; `h:mm:ss` é mantido — casa o regex exato `\[\d?\d:\d\d\] `).
+- **`--copy`:** além de escrever, põe o output completo no clipboard (doc unificado, ou o conteúdo do
+  arquivo produzido — verbatim para 1 produto) via `pbcopy`/`clip`/`xclip`/`xsel` (`cli._copy_to_clipboard`).
+- **Unificação (`-u`/`--unify`/`--unify-all`):** unem os produtos num arquivo. `--unify` (alias `-u`) = 1 por vídeo
   (`<slug>-<id>.unified.md`); `--unify-all` = 1 global (`out/unified-all.md`), mutuamente
   exclusivos. **Sozinhos** (sem `-c`/`-t`/`--transcript-only`) coletam TUDO (comments + transcript
   + 20 related); `-r N` só ajusta o count (não é seletor aqui); com `-c`/`-t` unem só aqueles. A

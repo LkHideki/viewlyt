@@ -19,14 +19,16 @@ batches (the `alt` of emojis/emotes and the link text are preserved), and the
 result is written grouped into blocks — a comment followed by its replies,
 blocks separated by a blank line.
 
-Optionally, with `-t`/`--transcript`, it also collects the **full transcript**
-of the video (opening the panel via the transcript button in the description)
-into `out/<title-slug>-<video_id>.transcript.md`. Use `-c -t` for comments
-**and** transcript, or `-t` alone for the transcript only.
+**By default** (no selector) it collects the **full transcript** only, into
+`out/<title-slug>-<video_id>.transcript.md`. Pass `-c`/`--comments` to collect
+the comments instead (`out/<title-slug>-<video_id>.md`), `-c -t` for **both**,
+and `-t`/`--transcript` is the explicit transcript-only form. Add `--no-ts` to
+drop the `[m:ss]` timestamps from the transcript.
 
-> **Behavior change:** `-t`/`--transcript` alone now collects ONLY the
-> transcript (previously, `--transcript` also kept the comments). For both,
-> use `-c -t`.
+> **Behavior change:** a bare `viewlyt <url>` now collects the TRANSCRIPT only
+> (it used to collect comments). Use `-c` for comments, `-c -t` for both. Also
+> `-t`/`--transcript` collects ONLY the transcript (previously `--transcript`
+> also kept the comments).
 
 ## Live mode (real-time)
 
@@ -125,20 +127,23 @@ uv sync
 ## Usage
 
 ```bash
-# Default: headless. Writes out/<title-slug>-dQw4w9WgXcQ.md
+# Default: headless, TRANSCRIPT only. Writes out/<title-slug>-dQw4w9WgXcQ.transcript.md
 uv run viewlyt 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Also accepts youtu.be, /shorts/, /embed/ and the bare id:
 uv run viewlyt 'https://youtu.be/dQw4w9WgXcQ'
 
+# Comments only -> out/<title-slug>-<video_id>.md:
+uv run viewlyt -c 'https://youtu.be/dQw4w9WgXcQ'
+
 # Visible browser (more reliable against the bot wall):
 uv run viewlyt --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
-# Collects at most 50 comments and skips replies (much faster):
-uv run viewlyt --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
+# Comments: at most 50, skipping replies (much faster):
+uv run viewlyt -c --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
-# Keeps up to 25 replies per comment:
-uv run viewlyt --limit-replies 25 'https://youtu.be/dQw4w9WgXcQ'
+# Comments: up to 25 replies per comment:
+uv run viewlyt -c --limit-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
 # Writes to another directory:
 uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
@@ -146,20 +151,26 @@ uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 # Comments + full video transcript (the -c and -t selectors together):
 uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 
-# Transcript only (skips the comments — much faster):
-uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'             # == --transcript-only
+# Transcript only (== the default; == --transcript-only):
+uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'
+
+# Transcript without the [m:ss] timestamps (h:mm:ss is left intact):
+uv run viewlyt -t --no-ts 'https://youtu.be/dQw4w9WgXcQ'
 
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
 uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
 
 # Everything in ONE file out/<slug>-<id>.unified.md (comments + transcript + related):
-uv run viewlyt --unify 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt -u 'https://youtu.be/dQw4w9WgXcQ'        # -u == --unify
+
+# Also copy the full output to the system clipboard:
+uv run viewlyt -u --copy 'https://youtu.be/dQw4w9WgXcQ'
 
 # Combine several videos into a single out/unified-all.md:
 uv run viewlyt --unify-all '<url1>' '<url2>' '<url3>'
 
 # Don't merge consecutive comments from the same author (merging is the default):
-uv run viewlyt --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
+uv run viewlyt -c --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
 
 # Several videos at once (pool of reused instances):
 uv run viewlyt '<url1>' '<url2>' '<url3>'
@@ -182,12 +193,14 @@ uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 | `--no-replies` | off | Does not expand/collect replies (faster) |
 | `--limit-replies N` | `5` | Maximum replies per comment (`0` disables it). `--max-replies` is a kept alias. |
 | `--no-merge-comments` | off | Does not merge consecutive top-level comments from the same author (merging is the default; `--prevent-comment-group` is an alias) |
-| `-c, --comments` | off | Collects comments (the default when no selector is given; combine with `-t` for both) |
-| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. Without `-c`, collects ONLY the transcript; with `-c`, both. **Changes** the old meaning of `--transcript` (which also kept the comments). |
+| `-c, --comments` | off | Collects comments → `out/<title-slug>-<video_id>.md`; combine with `-t` for both |
+| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. This is also the **default** when no selector is given; add `-c` for comments too. |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
-| `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Without `-c` it selects related ONLY; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
-| `--unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
+| `--no-ts` | off | Strips the `[m:ss]`/`[mm:ss]` timestamps from transcript lines (`h:mm:ss` on long videos is kept) |
+| `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Selects related; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
+| `-u, --unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
 | `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
+| `--copy` | off | Also copies the full output (the unified doc, or the produced file's content) to the system clipboard (needs `pbcopy`/`clip`/`xclip`/`xsel`) |
 | `--headed` | off | Uses a visible browser instead of headless |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
