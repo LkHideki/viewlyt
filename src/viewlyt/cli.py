@@ -21,8 +21,10 @@ import argparse
 import csv
 import logging
 import os
+import random
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from importlib.metadata import version as _pkg_version
@@ -312,10 +314,16 @@ def run_batch(
 
     Output modes: by default one file per product; ``unify`` writes one
     ``<slug>-<id>.unified.md`` per video instead; ``unify_all`` writes a single
-    ``unified-all.md`` combining every video (the per-video files are skipped)."""
-    q: Queue[tuple[str, str]] = Queue()
-    for t in targets:
-        q.put(t)
+    ``unified-all.md`` combining every video (the per-video files are skipped).
+
+    Large batches: each video gets ONE automatic retry (re-queued on a fresh
+    session) before it counts as failed, workers start staggered (not N Chromes
+    + N identical requests at t=0), and the overall bar carries live ok/fail
+    counters plus a ✓/✗ line per finished video."""
+    # (video_id, url, attempt): attempt 0 may be re-queued once on failure.
+    q: Queue[tuple[str, str, int]] = Queue()
+    for vid_url in targets:
+        q.put((*vid_url, 0))
 
     summaries: list[dict] = []
     # --unify-all: each worker stashes its per-video unified block here; the whole
@@ -344,19 +352,35 @@ def run_batch(
         related_limit=related_limit,
     )
 
+    announce = len(targets) > 1 and not quiet  # per-video ✓/✗ lines (multi only)
+    counters = {"ok": 0, "fail": 0, "retry": 0}
+
     def add(summary: dict) -> None:
         with s_lock:
             summaries.append(summary)
         with bar_lock:
+            counters["fail" if summary.get("error") else "ok"] += 1
+            bar.set_postfix(counters, refresh=False)
             bar.update(1)
 
+    def announce_line(text: str) -> None:
+        """Progress line above the bar (tqdm.write keeps the bar intact)."""
+        if announce:
+            with bar_lock:
+                bar.write(text)
+
     def worker(worker_id: int) -> None:
+        # Staggered start: N Chromes launching (and hitting YouTube) at the very
+        # same instant both spikes CPU/RAM and looks fleet-like. A few hundred ms
+        # of jittered offset per worker slot is invisible next to a scrape.
+        if worker_id:
+            time.sleep(min(worker_id * random.uniform(0.4, 0.8), 5.0))
         local_headless = headless
         driver = None
         try:
             while True:
                 try:
-                    video_id, url = q.get_nowait()
+                    video_id, url, attempt = q.get_nowait()
                 except Empty:
                     break
                 try:
@@ -459,10 +483,30 @@ def run_batch(
                             "unified_file": unified_file,
                         }
                     )
+                    done = []
+                    if with_comments:
+                        done.append(f"{n_top} comments")
+                    if with_transcript:
+                        done.append(f"{n_seg} segments")
+                    if with_related:
+                        done.append(f"{n_related} related")
+                    announce_line(f"{_color('✓', '32')} {vid}  {title[:48]}  ({', '.join(done)})")
                 except Exception as exc:  # isolate this video; recycle the session
-                    add({"url": url, "video_id": video_id, "error": str(exc) or type(exc).__name__})
+                    err = str(exc) or type(exc).__name__
                     _safe_quit(driver)
                     driver = None
+                    if attempt == 0:
+                        # One automatic retry on a fresh session: transient network
+                        # / stale-session / block hiccups shouldn't cost the video.
+                        with bar_lock:
+                            counters["retry"] += 1
+                            bar.set_postfix(counters, refresh=False)
+                        log.warning("%s failed (%s) — will retry once", video_id, err)
+                        announce_line(f"{_color('↻', '33')} {video_id}  {err} — retrying")
+                        q.put((video_id, url, 1))
+                    else:
+                        add({"url": url, "video_id": video_id, "error": err})
+                        announce_line(f"{_color('✗', '31')} {video_id}  {err}")
                 finally:
                     q.task_done()
         finally:

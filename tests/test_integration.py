@@ -328,7 +328,45 @@ def test_run_batch_blocked_not_retried_when_fallback_false(monkeypatch, tmp_path
     sums = _run_batch(
         [("vid", "id")], tmp_path, fallback=False, expand_replies=False, max_replies=0
     )
-    assert sums[0]["error"] == "consent" and calls == [True]
+    # The generic once-per-video retry still runs (fresh session, SAME mode) but
+    # with fallback=False the worker must never rebuild headed.
+    assert sums[0]["error"] == "consent"
+    assert calls and all(headless is True for headless in calls)
+
+
+def test_run_batch_retries_failed_video_once(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def flaky(driver, url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return ("vid", "T", [_c("@a", "oi")], [], [])
+
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", flaky)
+
+    sums = _run_batch([("vid", "id")], tmp_path, expand_replies=False, max_replies=0)
+    # transient first failure -> re-queued once on a fresh session -> success
+    assert calls["n"] == 2
+    assert len(sums) == 1 and sums[0]["error"] is None
+    assert (tmp_path / f"{slugify('T')}-vid.md").exists()
+
+
+def test_run_batch_gives_up_after_second_failure(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def always_fails(driver, url, **kw):
+        calls["n"] += 1
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", always_fails)
+
+    sums = _run_batch([("vid", "id")], tmp_path, expand_replies=False, max_replies=0)
+    # exactly ONE retry: 2 attempts total, a single (failed) summary, no dupes
+    assert calls["n"] == 2
+    assert len(sums) == 1 and sums[0]["error"] == "boom"
 
 
 # --------------------------------------------------------------------------- #
