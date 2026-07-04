@@ -74,3 +74,6 @@ xray.md
 how-to.md
 CLAUDE.md
 AGENTS.md
+
+# hd-secperf audit reports (do not commit)
+secperf-*.md
