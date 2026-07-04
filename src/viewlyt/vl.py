@@ -20,15 +20,29 @@ import sys
 _SUBCOMMANDS = ("ask", "live")
 
 
+def _subcommand_main(name: str):
+    """Lazily import the entry point for a reserved subcommand (deps only touched here)."""
+    if name == "ask":
+        from .rag import main as sub_main
+    else:
+        from .live.cli import main as sub_main
+    return sub_main
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in _SUBCOMMANDS:
-        sub, rest = argv[0], argv[1:]
-        if sub == "ask":
-            from .rag import main as sub_main
-        else:
-            from .live.cli import main as sub_main
-        return sub_main(rest)
+
+    # `vl help` / `vl help <sub>` -> the matching --help (git-style discoverability).
+    if argv and argv[0] == "help":
+        rest = argv[1:]
+        if rest and rest[0] in _SUBCOMMANDS:
+            return _subcommand_main(rest[0])(["--help"])
+        argv = ["--help"]
+    # A reserved token is a subcommand ONLY as the first argument; anywhere else
+    # (e.g. `vl '<url>' live`) it's an ordinary positional handed to the scraper.
+    elif argv and argv[0] in _SUBCOMMANDS:
+        return _subcommand_main(argv[0])(argv[1:])
+
     from .cli import main as scrape_main
 
     return scrape_main(argv)

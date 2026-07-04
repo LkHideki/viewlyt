@@ -15,7 +15,7 @@ from .window import WindowConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for viewlyt-live."""
+    """Build the argument parser for ``vl live``."""
     parser = argparse.ArgumentParser(
         prog="vl live",
         description="Real-time YouTube live-chat analysis with LLMs.",

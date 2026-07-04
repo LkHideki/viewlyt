@@ -27,6 +27,8 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 WATCH_URL = "https://www.youtube.com/watch?v="
@@ -672,7 +674,7 @@ def _split_inputs(inputs: list[str]) -> tuple[list[str], str]:
 
 
 def build_ask_parser() -> argparse.ArgumentParser:
-    """The ``viewlyt-ask`` CLI parser (kept separate so it's unit-testable)."""
+    """The ``vl ask`` CLI parser (kept separate so it's unit-testable)."""
     p = argparse.ArgumentParser(
         prog="vl ask",
         description=(
@@ -682,6 +684,11 @@ def build_ask_parser() -> argparse.ArgumentParser:
             "a reusable LightRAG index instead."
         ),
     )
+    try:
+        _ver = _pkg_version("viewlyt")
+    except PackageNotFoundError:
+        _ver = "0.0.0"
+    p.add_argument("--version", action="version", version=f"%(prog)s {_ver}")
     p.add_argument(
         "inputs",
         nargs="*",
@@ -734,7 +741,7 @@ def build_ask_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Console entry point for ``viewlyt-ask`` (ephemeral chat by default; --persist = LightRAG)."""
+    """Console entry point for ``vl ask`` (ephemeral chat by default; --persist = LightRAG)."""
     args = build_ask_parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING if args.quiet else logging.INFO, format="%(message)s")
     paths, question = _split_inputs(args.inputs)

@@ -77,8 +77,21 @@ def cli_run(args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def cli_run_vl(args: list[str]) -> subprocess.CompletedProcess:
+    """Run the unified ``vl`` dispatcher (``viewlyt.vl:main``) in a subprocess.
+
+    Goes through the real routing so subcommand ``prog=`` names (``vl`` / ``vl ask`` /
+    ``vl live``) and lazy imports are exercised end-to-end, without a browser.
+    """
+    code = "import sys\nfrom viewlyt.vl import main\nsys.exit(main(sys.argv[1:]))\n"
+    env = {**os.environ, "PYTHONPATH": SRC}
+    return subprocess.run(
+        [sys.executable, "-c", code, *args], capture_output=True, text=True, env=env
+    )
+
+
 def cli_run_live(args: list[str]) -> subprocess.CompletedProcess:
-    """Like :func:`cli_run`, but for the ``viewlyt-live`` entry point.
+    """Like :func:`cli_run`, but for the ``vl live`` entry point.
 
     ``viewlyt.live.cli`` imports only stdlib-light modules at parse time (the
     FastAPI server is imported lazily inside main), so --version/--help work

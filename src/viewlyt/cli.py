@@ -69,16 +69,20 @@ UNIFIED_ALL_FILENAME = "unified-all.md"  # the single --unify-all output
 
 _EXAMPLES = """\
 exemplos:
-  viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # só a transcrição (default) -> *.transcript.md
-  viewlyt -c '<url>'                               # só comentários -> out/<slug>-<id>.md
-  viewlyt -c -t '<url>'                            # comentários + transcrição
-  viewlyt -t --ts '<url>'                          # transcrição COM os timestamps [m:ss]
-  viewlyt -r 17 '<url>'                            # 17 vídeos relacionados -> *.related.md
-  viewlyt -u '<url>'                               # todos os produtos num só arquivo (--unify)
-  viewlyt -u --copy '<url>'                        # unifica e copia para a área de transferência
-  viewlyt --unify-all '<url1>' '<url2>'            # todos os vídeos num arquivo só
-  viewlyt --from-file urls.txt -j 4                # vários vídeos (.txt/.csv), 4 navegadores
-  viewlyt --headed '<url>'                         # navegador visível (contra o bot wall)
+  vl 'https://youtu.be/dQw4w9WgXcQ'               # só a transcrição (default) -> *.transcript.md
+  vl -c '<url>'                                    # só comentários -> out/<slug>-<id>.md
+  vl -c -t '<url>'                                 # comentários + transcrição
+  vl -t --ts '<url>'                               # transcrição COM os timestamps [m:ss]
+  vl -r 17 '<url>'                                 # 17 vídeos relacionados -> *.related.md
+  vl -u '<url>'                                    # todos os produtos num só arquivo (--unify)
+  vl -u --copy '<url>'                             # unifica e copia para a área de transferência
+  vl --unify-all '<url1>' '<url2>'                 # todos os vídeos num arquivo só
+  vl --from-file urls.txt -j 4                     # vários vídeos (.txt/.csv), 4 navegadores
+  vl --headed '<url>'                              # navegador visível (contra o bot wall)
+
+outros modos (use `vl <modo> --help` para as opções de cada um):
+  vl ask out/*.md '<pergunta>'                     # conversa sobre os .md já coletados
+  vl live '<url-da-live>'                          # análise do chat ao vivo em tempo real
 """
 
 
