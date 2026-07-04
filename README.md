@@ -22,13 +22,15 @@ blocks separated by a blank line.
 **By default** (no selector) it collects the **full transcript** only, into
 `out/<title-slug>-<video_id>.transcript.md`. Pass `-c`/`--comments` to collect
 the comments instead (`out/<title-slug>-<video_id>.md`), `-c -t` for **both**,
-and `-t`/`--transcript` is the explicit transcript-only form. Add `--no-ts` to
-drop the `[m:ss]` timestamps from the transcript.
+and `-t`/`--transcript` is the explicit transcript-only form. The transcript is
+written **token-lean by default**: no `[m:ss]` timestamps and **2 segments per
+line** (half the newlines); pass `--ts`/`--timestamps` to keep the stamps.
 
 > **Behavior change:** a bare `viewlyt <url>` now collects the TRANSCRIPT only
 > (it used to collect comments). Use `-c` for comments, `-c -t` for both. Also
 > `-t`/`--transcript` collects ONLY the transcript (previously `--transcript`
-> also kept the comments).
+> also kept the comments). And the transcript now ships WITHOUT timestamps by
+> default — `--ts` opts back in; the old `--no-ts` is a deprecated no-op.
 
 ## Live mode (real-time)
 
@@ -158,8 +160,8 @@ uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
 # Transcript only (== the default; == --transcript-only):
 uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'
 
-# Transcript without the [m:ss] timestamps (h:mm:ss is left intact):
-uv run viewlyt -t --no-ts 'https://youtu.be/dQw4w9WgXcQ'
+# Transcript WITH the [m:ss] timestamps (the default strips them):
+uv run viewlyt -t --ts 'https://youtu.be/dQw4w9WgXcQ'
 
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
 uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
@@ -200,7 +202,7 @@ uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
 | `-c, --comments` | off | Collects comments → `out/<title-slug>-<video_id>.md`; combine with `-t` for both |
 | `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. This is also the **default** when no selector is given; add `-c` for comments too. |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
-| `--no-ts` | off | Strips the `[m:ss]`/`[mm:ss]` timestamps from transcript lines (`h:mm:ss` on long videos is kept) |
+| `--ts, --timestamps` | off | Keeps the `[m:ss]`/`[mm:ss]` timestamps on transcript lines (default: stripped; `h:mm:ss` on long videos is always kept). `--no-ts` is a deprecated no-op. |
 | `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Selects related; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
 | `-u, --unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
 | `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
@@ -221,9 +223,13 @@ cost of launching Chrome), with up to `--jobs` browsers in parallel (default
 considerably.
 
 - Failures are isolated per video (one failing video doesn't bring down the
-  batch); a problematic session is recreated automatically.
+  batch); a problematic session is recreated automatically, and each video gets
+  **one automatic retry** on a fresh session before it counts as failed.
+- Workers start **staggered** (a jittered offset each) so N Chromes don't all
+  launch — and hit YouTube — at the same instant.
 - With **one** video, the detailed per-phase bars appear; with **several**, a
-  general "videos" bar appears plus a final per-video summary.
+  general "videos" bar carries live `ok`/`fail`/`retry` counters and a `✓`/`↻`/`✗`
+  line is printed per finished video, plus the final per-video summary.
 - Each video produces its own `out/<title-slug>-<video_id>.md`.
 
 > Each Chrome instance consumes memory (~300–500 MB). Adjust `--jobs` according to the available RAM.
@@ -232,22 +238,30 @@ considerably.
 
 With `-t`/`--transcript` (or `--transcript-only`), the collector expands the
 description, clicks the **"Show transcript"** button and reads the transcript
-panel, writing `out/<title-slug>-<video_id>.transcript.md` with **one segment
-per line**:
+panel, writing `out/<title-slug>-<video_id>.transcript.md`. The default output
+is **token-lean**: timestamps stripped and **2 segments joined per line** (half
+the newlines — cheaper to feed an LLM):
 
 ```
-[0:00] You're probably using the Cloud wrong.
-[0:02] It wasn't made just to answer you,
+You're probably using the Cloud wrong. It wasn't made just to answer you,
 ```
 
-- The timestamp is YouTube's own, **verbatim** (`m:ss` or `h:mm:ss` on long
-  videos) — never reformatted.
+With `--ts`/`--timestamps` each segment keeps its stamp (still 2 per line):
+
+```
+[0:00] You're probably using the Cloud wrong. [0:02] It wasn't made just to answer you,
+```
+
+- The timestamp (under `--ts`) is YouTube's own, **verbatim** (`m:ss` or
+  `h:mm:ss` on long videos) — never reformatted; `h:mm:ss` stamps survive even
+  the default stripping.
 - **No deduplication**: refrains and markers like `[Music]` repeat on purpose.
 - It is **opt-in** (keeps comment collection fast by default). `-t`/`--transcript-only`
   (without `-c`) skips the comments and is much faster.
 - Videos **without a transcript** (many music clips) are skipped gracefully —
   the final summary shows `transcript: unavailable` and no file is created.
-- For running text without timestamps: `sed 's/^\[[^]]*\] //' file.transcript.md`.
+- Library users: `ScrapeResult.transcript_lines(timestamps=True, pair=False)`
+  gives the verbatim one-segment-per-line form.
 
 ## Related videos
 
@@ -287,7 +301,7 @@ By default each product goes to its own file. To get **everything in one file**:
   @user [842 likes, 2026-06-04]: ...
 
   ## Transcript
-  [0:00] ...
+  <transcript text, 2 segments per line (add --ts for [m:ss] stamps)>
 
   ## Related videos
   1. [1.2B views. ...](https://www.youtube.com/watch?v=...)
@@ -312,13 +326,19 @@ The collector applies several layers to work on a fresh machine:
    "Before you continue to YouTube" notice is skipped on fresh profiles. A
    language-aware click on the consent button (Accept all / Aceitar tudo)
    remains as a fallback.
-2. **Chrome stealth** — a realistic (non-headless) user agent, a real
-   `--window-size` (mandatory, otherwise the comments never load in headless),
+2. **Chrome stealth with a coherent, rotated fingerprint** — the user agent
+   matches the REAL OS and the REAL installed Chrome major (read from the
+   running binary) and is overridden **together with its Client-Hint metadata**
+   via CDP `Network.setUserAgentOverride`, so the UA header and `Sec-CH-UA` can
+   never contradict each other; the major rotates per driver (current or
+   previous), the window size is drawn from a set of realistic viewports, and
+   scroll timing is jittered. Plus the classic layer: a real `--window-size`
+   (mandatory, otherwise the comments never load in headless),
    `--disable-blink-features=AutomationControlled`, `excludeSwitches`, and a CDP
    script that hides `navigator.webdriver` and adjusts plugins/languages.
 3. **Automatic fallback to visible mode** — if a consent/bot block is still
    detected in headless, the run is automatically retried with a visible
-   browser.
+   browser (and every video gets one automatic retry on a fresh session).
 
 If a flagged/datacenter IP still hits the *"Sign in to confirm you're not a
 robot"* wall, pass `--user-data-dir` pointing to a Chrome profile that has

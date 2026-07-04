@@ -15,7 +15,7 @@ uv run viewlyt -c '<url>'                         # só comentários -> out/<slu
 uv run viewlyt -c -t '<url>'                     # comentários + transcrição
 uv run viewlyt -c --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
 uv run viewlyt -t '<url>'                        # só a transcrição (== default == --transcript-only)
-uv run viewlyt -t --no-ts '<url>'                # transcrição sem os timestamps [m:ss] (h:mm:ss fica)
+uv run viewlyt -t --ts '<url>'                   # transcrição COM os timestamps [m:ss] (default: sem)
 uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.md (views, não likes)
 uv run viewlyt -u '<url>'                         # todos os produtos -> *.unified.md (1 arquivo; alias de --unify)
 uv run viewlyt -u --copy '<url>'                 # unifica e copia o conteúdo para a área de transferência
@@ -130,8 +130,22 @@ chat=`openai`, `--persist`=LightRAG/fastembed).
   `test_transcript_timestamp_exact_token` proíbe em todo o `scraper.py`; use tokens exatos.
 - **Default de seleção (`resolve_modes`):** sem nenhum seletor, coleta a **transcrição** (só). `-c`
   = comentários; `-c -t` = ambos; `-t`/`--transcript-only` = transcrição; `-r N` = relacionados.
-- **`--no-ts`:** remove o prefixo de timestamp `[m:ss]`/`[mm:ss]` das linhas da transcrição (puro
-  `htmltext.strip_timestamps`; `h:mm:ss` é mantido — casa o regex exato `\[\d?\d:\d\d\] `).
+- **Transcrição (saída):** o default é enxuto em tokens — timestamps `[m:ss]`/`[mm:ss]`
+  removidos (puro `htmltext.strip_timestamps`; `h:mm:ss` é mantido — casa o regex exato
+  `\[\d?\d:\d\d\] `) e **2 segmentos por linha** (puro `htmltext.pair_lines`, corta os `\n`
+  pela metade). `--ts`/`--timestamps` mantém os timestamps (o pareamento continua); `--no-ts`
+  é no-op oculto (deprecated). Na lib, `ScrapeResult.transcript_lines(timestamps=, pair=)` —
+  `(True, False)` devolve o `format_transcript` verbatim. O summary conta **segmentos
+  coletados**, não linhas pareadas.
+- **Anti-block:** o user agent é coerente com o SO real e com a major do Chrome instalado,
+  **rotacionado por driver** via CDP `Network.setUserAgentOverride` + `userAgentMetadata`
+  (UA header e Sec-CH-UA nunca se contradizem; header no formato congelado `{major}.0.0.0`
+  da UA Reduction — `driver.pick_user_agent` é puro/testado). Window-size sorteado de
+  `driver.WINDOW_SIZES`; sleeps de scroll com jitter (`scraper._sleep_jitter`). NÃO rotacione
+  o idioma (en-US fixo): `parse_relative_date` só entende datas relativas em inglês.
+- **Batch:** cada vídeo ganha 1 retry automático (re-enfileirado numa sessão nova) antes de
+  contar como falha; workers partem escalonados (jitter) e a barra geral traz postfix
+  ok/fail/retry + uma linha ✓/↻/✗ por vídeo via `tqdm.write`.
 - **`--copy`:** além de escrever, põe o output completo no clipboard (doc unificado, ou o conteúdo do
   arquivo produzido — verbatim para 1 produto) via `pbcopy`/`clip`/`xclip`/`xsel` (`cli._copy_to_clipboard`).
 - **Unificação (`-u`/`--unify`/`--unify-all`):** unem os produtos num arquivo. `--unify` (alias `-u`) = 1 por vídeo
