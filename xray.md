@@ -250,9 +250,29 @@ Se nenhum controle for encontrado: `_open_transcript_panel_direct` dispara o
 evento Polymer diretamente (sem click); budget de espera curto (`1.2s`) pois
 vídeos sem transcrição (clipes musicais) são o caso mais comum.
 
-`fetch_transcript` **nunca lança exceção** — retorna `[]` em qualquer falha.
-Isso garante que um problema na transcrição nunca aborte comentários já coletados
-nem recicle um driver do pool.
+### Modo de falha em página "suja" (verificado por probe) e a recuperação
+
+Após scroll pesado de comentários e/ou leitura da sidebar (`collect_related`),
+o clique em "Show transcript" abre o painel (`visibility=EXPANDED`) mas a
+requisição de dados **trava para sempre** — spinner infinito, 0 segmentos. O
+retry-click in-page é não-determinístico (recuperou página leve, falhou na
+pesada). A recuperação determinística em `fetch_transcript`:
+
+1. O fluxo de abertura vive em `_open_transcript_and_wait(driver, timeout,
+   button_timeout=0) -> (n_seg, had_button)`.
+2. Se `n_seg == 0` **e** `had_button` (o vídeo anuncia transcrição), recarrega a
+   watch page (`safe_get(driver.current_url)`) e refaz o fluxo UMA vez — em
+   página fresca o painel hidrata em ~1s.
+3. No retry pós-reload, `button_timeout=10.0` faz **poll** do botão (re-rodando
+   `_expand_description`): com `page_load_strategy=eager` a página fria ainda
+   não renderizou a seção da descrição, e o scan instantâneo degradaria
+   silenciosamente para o direct-open de 1.2s (gap pego em validação real).
+4. `had_button=False` (sem controle) NUNCA recarrega — vídeos sem transcrição
+   continuam rápidos.
+
+`fetch_transcript` **nunca lança exceção** — retorna `[]` em qualquer falha
+(inclusive durante o reload). Isso garante que um problema na transcrição nunca
+aborte comentários já coletados nem recicle um driver do pool.
 
 ---
 
