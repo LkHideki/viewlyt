@@ -548,6 +548,32 @@ def test_fetch_transcript_never_raises() -> None:
     print("ok: fetch_transcript_never_raises")
 
 
+def test_pick_user_agent_coherent() -> None:
+    # The drawn UA must be internally coherent: frozen {major}.0.0.0 form (UA
+    # Reduction), platform token matching the real OS, metadata brands aligned
+    # with the header major, major ∈ {real, real-1}, never "Headless".
+    import sys
+
+    from viewlyt.driver import WINDOW_SIZES, pick_user_agent
+
+    for _ in range(20):  # rotation is random — check invariants across draws
+        ua, nav_platform, meta = pick_user_agent(143)
+        assert "Headless" not in ua and ua.startswith("Mozilla/5.0 (")
+        major = int(ua.split("Chrome/")[1].split(".")[0])
+        assert major in (142, 143)
+        assert f"Chrome/{major}.0.0.0 Safari/537.36" in ua  # frozen build/patch
+        assert meta["platform"] in ("macOS", "Windows", "Linux")
+        assert not meta["mobile"] and meta["bitness"] == "64"
+        assert {b["brand"]: b["version"] for b in meta["brands"]}["Google Chrome"] == str(major)
+        if sys.platform == "darwin":
+            assert "Mac OS X" in ua and nav_platform == "MacIntel" and meta["platform"] == "macOS"
+    # no-arg form falls back to a sane default major
+    ua, _, _ = pick_user_agent()
+    assert int(ua.split("Chrome/")[1].split(".")[0]) >= 100
+    assert all(w >= 1440 and h >= 864 for w, h in WINDOW_SIZES)
+    print("ok: pick_user_agent_coherent")
+
+
 def test_transcript_timestamp_exact_token() -> None:
     # Guard: the transcript timestamp selector must be an EXACT class token so it
     # can never grab the sibling ...TimestampA11yLabel ("30 minutes, 40 seconds").
@@ -906,6 +932,7 @@ if __name__ == "__main__":
     test_harvest_thread_fallback()
     test_collect_related_resilience()
     test_fetch_transcript_never_raises()
+    test_pick_user_agent_coherent()
     test_transcript_timestamp_exact_token()
     test_format_related()
     test_format_unified()
