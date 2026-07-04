@@ -134,8 +134,9 @@ def test_window_buffer_count_mode() -> None:
     buf.add(_msg("m3"))
     assert buf.due(cfg, now)
 
-    # emit resets the count; messages returned in order; due() is False again
-    window = buf.emit(cfg, now)
+    # take the window (like the worker: tail + mark); due() is False again
+    window = buf.tail(cfg.n)
+    buf.mark_emitted(now)
     assert len(window) == 3  # min(n=5, len=3)
     assert [m.text for m in window] == ["m1", "m2", "m3"]
     assert not buf.due(cfg, now)
@@ -147,7 +148,8 @@ def test_window_buffer_count_mode() -> None:
     assert buf.due(cfg, now)
 
     # window now has up to n=5 most-recent messages
-    window2 = buf.emit(cfg, now)
+    window2 = buf.tail(cfg.n)
+    buf.mark_emitted(now)
     assert len(window2) == 5
     assert window2[-1].text == "m6"
     assert not buf.due(cfg, now)

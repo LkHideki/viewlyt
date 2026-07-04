@@ -88,9 +88,6 @@ class WindowBuffer:
         out.reverse()
         return out
 
-    def _window(self, cfg: WindowConfig) -> list[ChatMessage]:
-        return self.tail(max(1, cfg.n))
-
     def due(self, cfg: WindowConfig, now: float) -> bool:
         """Should a snapshot be emitted right now?"""
         if not self._buf:
@@ -108,11 +105,6 @@ class WindowBuffer:
         self._since_last = 0
         self._last_emit = now
 
-    def emit(self, cfg: WindowConfig, now: float) -> list[ChatMessage]:
-        """Mark a snapshot taken and return its window of messages."""
-        self.mark_emitted(now)
-        return self._window(cfg)
-
     def sample(self, cfg: WindowConfig) -> list[ChatMessage]:
         """The cleaned analysis window: the last ``n`` messages after spam hygiene.
 
@@ -124,14 +116,3 @@ class WindowBuffer:
         n = max(1, cfg.n)
         raw = self.tail(_CLEAN_MARGIN * n)
         return clean_chat(raw, dedupe=cfg.dedupe, merge_authors=cfg.merge_authors)[-n:]
-
-    def snapshot(self) -> list[ChatMessage]:
-        """Return all buffered messages without mutating the buffer."""
-        return list(self._buf)
-
-    def offer(self, msg: ChatMessage, cfg: WindowConfig, now: float) -> list[ChatMessage] | None:
-        """Add a message; return the window if this makes a snapshot due, else ``None``."""
-        self.add(msg)
-        if self.due(cfg, now):
-            return self.emit(cfg, now)
-        return None
