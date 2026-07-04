@@ -533,6 +533,16 @@ def test_collect_related_resilience() -> None:
     print("ok: collect_related_resilience")
 
 
+def test_fetch_transcript_never_raises() -> None:
+    # fetch_transcript must swallow ANY WebDriver error (incl. during the
+    # reload-and-retry path) and return [] — a transcript failure can't abort
+    # the video or poison the pooled driver.
+    from viewlyt.scraper import fetch_transcript
+
+    assert fetch_transcript(_StubDriver(raise_exc=True), progress=False) == []
+    print("ok: fetch_transcript_never_raises")
+
+
 def test_transcript_timestamp_exact_token() -> None:
     # Guard: the transcript timestamp selector must be an EXACT class token so it
     # can never grab the sibling ...TimestampA11yLabel ("30 minutes, 40 seconds").
@@ -875,6 +885,7 @@ if __name__ == "__main__":
     test_comments_disabled()
     test_harvest_thread_fallback()
     test_collect_related_resilience()
+    test_fetch_transcript_never_raises()
     test_transcript_timestamp_exact_token()
     test_format_related()
     test_format_unified()

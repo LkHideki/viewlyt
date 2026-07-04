@@ -978,6 +978,62 @@ def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
     return prev if prev > 0 else 0
 
 
+def _open_transcript_and_wait(
+    driver, timeout: float, button_timeout: float = 0.0
+) -> tuple[int, bool]:
+    """Open the transcript panel and wait for segments to hydrate.
+
+    Returns ``(segment_count, had_button)``. ``had_button`` tells "the video
+    advertises a transcript" (a real control was found) apart from "no transcript
+    at all", so the caller can decide whether an empty panel is worth a recovery
+    attempt. May raise WebDriverException — the caller handles it.
+
+    ``button_timeout`` polls for the transcript control instead of the default
+    instant scan. Needed right after a page (re)load: with the *eager* page-load
+    strategy the description section often hasn't rendered yet, so an instant
+    scan misses a button that appears 1–3s later and the flow silently degrades
+    to the short direct-open budget. On a long-settled page keep it at 0.
+
+    A real button gets the full timeout and one retry (a reused driver's first
+    click can no-op while a prior panel tears down); the speculative direct-open
+    (no button at all — usually a genuinely transcript-less video) gets a short
+    budget so music videos stay fast.
+    """
+    driver.execute_script("window.scrollTo(0, 600);")
+    _expand_description(driver)
+
+    btn = _find_transcript_button(driver)
+    if btn is None and button_timeout > 0:
+        deadline = time.time() + button_timeout
+        while btn is None and time.time() < deadline:
+            time.sleep(0.5)
+            _expand_description(driver)  # idempotent; the section lives inside it
+            btn = _find_transcript_button(driver)
+    if btn is not None:
+        if not _js_click(driver, btn):
+            log.warning("found the transcript button but could not click it")
+            return 0, True
+        seg_timeout, retry = timeout, True
+        # Panel host usually appears before the segments hydrate; don't block long.
+        try:
+            WebDriverWait(driver, min(seg_timeout, 4.0)).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
+            )
+        except TimeoutException:
+            pass
+    else:
+        if not _open_transcript_panel_direct(driver):
+            log.info("no transcript control — transcript unavailable for this video")
+            return 0, False
+        seg_timeout, retry = min(timeout, 1.2), False
+
+    n_seg = _wait_for_segments(driver, seg_timeout)
+    if n_seg == 0 and retry:
+        _js_click(driver, btn)
+        n_seg = _wait_for_segments(driver, seg_timeout)
+    return n_seg, btn is not None
+
+
 def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> list[tuple[str, str]]:
     """Open the transcript panel and return ``[(timestamp, text), ...]``.
 
@@ -990,41 +1046,25 @@ def fetch_transcript(driver, progress: bool = True, timeout: float = 12.0) -> li
     try:
         if progress:
             log.info("fetching transcript…")
-        driver.execute_script("window.scrollTo(0, 600);")
-        _expand_description(driver)
-
-        # Open the panel. A real button gets the full timeout and one retry (a
-        # reused driver's first click can no-op while a prior panel tears down);
-        # the speculative direct-open (no button at all — usually a genuinely
-        # transcript-less video) gets a short budget so music videos stay fast.
-        btn = _find_transcript_button(driver)
-        if btn is not None:
-            if not _js_click(driver, btn):
-                log.warning("found the transcript button but could not click it")
-                return []
-            seg_timeout, retry = timeout, True
-            # Panel host usually appears before the segments hydrate; don't block long.
-            try:
-                WebDriverWait(driver, min(seg_timeout, 4.0)).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
-                )
-            except TimeoutException:
-                pass
-        else:
-            # No reachable control: most such videos (music clips) genuinely have no
-            # transcript, so the speculative direct-open gets a SHORT budget and no
-            # extra panel-host wait — keep transcript-less videos fast.
-            if not _open_transcript_panel_direct(driver):
-                log.info("no transcript control — transcript unavailable for this video")
-                return []
-            seg_timeout, retry = min(timeout, 1.2), False
-
-        n_seg = _wait_for_segments(driver, seg_timeout)
-        if n_seg == 0 and retry:
-            _js_click(driver, btn)
-            n_seg = _wait_for_segments(driver, seg_timeout)
+        n_seg, had_button = _open_transcript_and_wait(driver, timeout)
+        if n_seg == 0 and had_button:
+            # Dirty-page failure mode (probe-verified): after heavy comment
+            # scrolling and/or sidebar collection, the panel opens EXPANDED but
+            # its transcript data request hangs forever — spinner stuck, zero
+            # segments — and the in-page retry click is unreliable (it recovered
+            # a light page, not a heavy one). Reloading the same watch URL is
+            # deterministic: on a fresh page the panel hydrates in ~1s. Only
+            # worth it when a real button existed (the video advertises a
+            # transcript) — keeps genuinely transcript-less videos fast.
+            log.info("transcript panel stuck empty — reloading the page and retrying once")
+            safe_get(driver, driver.current_url)
+            # The reloaded page is cold (eager load strategy): poll for the
+            # button instead of the instant scan, or the retry silently falls
+            # into the short direct-open budget and misses the transcript.
+            n_seg, had_button = _open_transcript_and_wait(driver, timeout, button_timeout=10.0)
         if n_seg == 0:
-            log.info("transcript panel opened but no segments — transcript unavailable")
+            if had_button:
+                log.info("transcript panel opened but no segments — transcript unavailable")
             return []
 
         _load_all_transcript_segments(driver)
