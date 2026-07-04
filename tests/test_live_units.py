@@ -240,7 +240,9 @@ def test_classification_aggregate_flat_string_labels() -> None:
     assert flat.pct is not None
     assert flat.pct["happy"] == 50.0
     assert flat.pct["angry"] == 25.0 and flat.pct["neutral"] == 25.0
-    legacy = probe.aggregate({"labels": [{"i": 1, "label": "happy"}, {"i": 2, "label": "angry"}]}, msgs)
+    legacy = probe.aggregate(
+        {"labels": [{"i": 1, "label": "happy"}, {"i": 2, "label": "angry"}]}, msgs
+    )
     assert legacy.pct is not None and legacy.pct["happy"] == 50.0
     print("ok: classification_aggregate_flat_string_labels")
 
