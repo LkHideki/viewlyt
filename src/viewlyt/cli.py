@@ -39,6 +39,7 @@ from .htmltext import (
     format_transcript,
     format_unified,
     join_unified,
+    pair_lines,
     slugify,
     strip_timestamps,
 )
@@ -69,7 +70,7 @@ exemplos:
   viewlyt 'https://youtu.be/dQw4w9WgXcQ'          # só a transcrição (default) -> *.transcript.md
   viewlyt -c '<url>'                               # só comentários -> out/<slug>-<id>.md
   viewlyt -c -t '<url>'                            # comentários + transcrição
-  viewlyt -t --no-ts '<url>'                       # transcrição sem os timestamps [m:ss]
+  viewlyt -t --ts '<url>'                          # transcrição COM os timestamps [m:ss]
   viewlyt -r 17 '<url>'                            # 17 vídeos relacionados -> *.related.md
   viewlyt -u '<url>'                               # todos os produtos num só arquivo (--unify)
   viewlyt -u --copy '<url>'                        # unifica e copia para a área de transferência
@@ -302,7 +303,7 @@ def run_batch(
     unify_all: bool,
     inner_progress: bool,
     quiet: bool,
-    strip_ts: bool = False,
+    with_ts: bool = False,
     copy: bool = False,
 ) -> list[dict]:
     """Process every (video_id, url) using ``jobs`` worker threads, each owning a
@@ -390,16 +391,21 @@ def run_batch(
                         if with_comments
                         else []
                     )
+                    # Transcript default is token-lean: timestamps stripped (--ts keeps
+                    # them) and every 2 segments joined into one line (halves the \n).
                     tlines = (
                         format_transcript(transcript) if (with_transcript and transcript) else []
                     )
-                    if strip_ts and tlines:
-                        tlines = strip_timestamps(tlines)
+                    if tlines:
+                        if not with_ts:
+                            tlines = strip_timestamps(tlines)
+                        tlines = pair_lines(tlines)
                     rlines = format_related(related) if (with_related and related) else []
                     # Count rendered top-level blocks (a non-blank line that isn't an
                     # indented reply), so the summary matches the file after merging.
                     n_top = sum(1 for ln in clines if ln and not ln.startswith(REPLY_INDENT))
-                    n_lines, n_seg, n_related = len(clines), len(tlines), len(rlines)
+                    # segments = real collected segments (pairing halves the line count)
+                    n_lines, n_seg, n_related = len(clines), len(transcript), len(rlines)
 
                     comment_file = transcript_file = related_file = unified_file = None
                     if unify or unify_all:
@@ -652,11 +658,15 @@ def build_parser() -> argparse.ArgumentParser:
         "(no per-video files). Same collect-everything-when-alone rule as --unify.",
     )
     p.add_argument(
-        "--no-ts",
-        dest="no_ts",
+        "--ts",
+        "--timestamps",
+        dest="with_ts",
         action="store_true",
-        help="strip the [m:ss]/[mm:ss] timestamps from transcript lines (h:mm:ss is kept)",
+        help="keep the [m:ss]/[mm:ss] timestamps on transcript lines (default: stripped; "
+        "h:mm:ss on long videos is always kept)",
     )
+    # Legacy no-op: stripping is the default now. Hidden, kept so old scripts don't break.
+    p.add_argument("--no-ts", dest="legacy_no_ts", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
         "--copy",
         action="store_true",
@@ -694,6 +704,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.WARNING if args.quiet else logging.INFO,
         format="%(levelname)s %(message)s",
     )
+
+    if args.legacy_no_ts:
+        log.warning(
+            "--no-ts is deprecated and a no-op: timestamps are stripped by default "
+            "(use --ts to keep them)"
+        )
 
     try:
         targets = gather_urls(args.inputs, args.from_file)
@@ -743,7 +759,7 @@ def main(argv: list[str] | None = None) -> int:
         unify_all=args.unify_all,
         inner_progress=inner_progress,
         quiet=args.quiet,
-        strip_ts=args.no_ts,
+        with_ts=args.with_ts,
         copy=args.copy,
     )
 

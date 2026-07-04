@@ -32,7 +32,9 @@ from .htmltext import (
     format_transcript,
     format_unified,
     html_to_text,
+    pair_lines,
     slugify,
+    strip_timestamps,
 )
 from .scraper import (
     BlockedError,
@@ -100,9 +102,16 @@ class ScrapeResult:
         :func:`viewlyt.format_comment_lines`)."""
         return format_comment_lines(self._records, today=today, merge=merge)
 
-    def transcript_lines(self) -> list[str]:
-        """Transcript as ``[ts] text`` lines (see :func:`viewlyt.format_transcript`)."""
-        return format_transcript(self.transcript)
+    def transcript_lines(self, *, timestamps: bool = False, pair: bool = True) -> list[str]:
+        """Transcript lines, token-lean by default (CLI parity): ``[m:ss]``
+        timestamps stripped (``timestamps=True`` keeps them; ``h:mm:ss`` on long
+        videos always stays) and every 2 segments joined into one line
+        (``pair=False`` for one segment per line). ``timestamps=True, pair=False``
+        gives the verbatim :func:`viewlyt.format_transcript` output."""
+        lines = format_transcript(self.transcript)
+        if not timestamps:
+            lines = strip_timestamps(lines)
+        return pair_lines(lines) if pair else lines
 
     def related_lines(self) -> list[str]:
         """Related videos as a numbered Markdown list (see :func:`viewlyt.format_related`)."""

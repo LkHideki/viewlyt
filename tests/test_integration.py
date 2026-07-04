@@ -17,7 +17,14 @@ from conftest import make_reply as _r
 import viewlyt.api as api
 import viewlyt.cli as cli
 from viewlyt.cli import format_comment_lines
-from viewlyt.htmltext import format_related, format_transcript, format_unified, slugify
+from viewlyt.htmltext import (
+    format_related,
+    format_transcript,
+    format_unified,
+    pair_lines,
+    slugify,
+    strip_timestamps,
+)
 from viewlyt.scraper import BlockedError
 
 
@@ -104,20 +111,24 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     plain = tmp_path / f"{slugify('Titulo')}-vid.md"
     tx = tmp_path / f"{slugify('Titulo')}-vid.transcript.md"
     assert not plain.exists() and tx.exists()
-    assert tx.read_text(encoding="utf-8") == "\n".join(format_transcript(segs)) + "\n"
+    # Default transcript output is token-lean: no [m:ss] stamps, 2 segments/line.
+    assert tx.read_text(encoding="utf-8") == "ola mundo segunda linha\n"
     assert sums[0]["file"] is None and sums[0]["comments"] == 0
     assert sums[0]["segments"] == 2 and sums[0]["with_transcript"] is True
 
 
-def test_run_batch_no_ts_strips_timestamps(monkeypatch, tmp_path):
-    segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
+def test_run_batch_ts_keeps_timestamps(monkeypatch, tmp_path):
+    segs = [("0:00", "ola mundo"), ("0:02", "segunda linha"), ("0:04", "terceira")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
 
-    _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, strip_ts=True)
+    _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, with_ts=True)
 
     tx = tmp_path / f"{slugify('Titulo')}-vid.transcript.md"
-    assert tx.read_text(encoding="utf-8") == "ola mundo\nsegunda linha\n"
+    # --ts keeps every stamp; pairing still joins 2 segments per line (odd tail kept).
+    assert tx.read_text(encoding="utf-8") == (
+        "[0:00] ola mundo [0:02] segunda linha\n[0:04] terceira\n"
+    )
 
 
 def test_run_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
@@ -131,8 +142,9 @@ def test_run_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
 
     _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, copy=True)
 
-    # --copy mirrors the produced file's content (single product -> verbatim)
-    assert grabbed["t"] == "[0:00] ola mundo\n[0:02] segunda linha"
+    # --copy mirrors the produced file's content (single product -> verbatim;
+    # default transcript = no stamps, 2 segments per line)
+    assert grabbed["t"] == "ola mundo segunda linha"
 
 
 def test_run_batch_related_writes_file(monkeypatch, tmp_path):
@@ -218,7 +230,8 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
         "T",
         [
             ("Comments", format_comment_lines(recs, progress=False, merge_comments=True)),
-            ("Transcript", format_transcript(segs)),
+            # default transcript treatment applies inside unified too: no stamps, paired
+            ("Transcript", pair_lines(strip_timestamps(format_transcript(segs)))),
             ("Related videos", format_related(rel)),
         ],
     )
@@ -592,7 +605,9 @@ def test_scrape_video_returns_structured_result(monkeypatch):
         len(r.top_level) == 1 and r.top_level[0].author == "@joao" and r.top_level[0].text == "oi"
     )
     assert len(r.replies) == 1 and r.replies[0].parent_author == "@joao"
-    assert r.transcript_lines() == format_transcript(segs)
+    # default: token-lean (no [m:ss], 2 segments/line); verbatim form still available
+    assert r.transcript_lines() == ["ola mundo"]
+    assert r.transcript_lines(timestamps=True, pair=False) == format_transcript(segs)
     assert drv.quit_calls == 1
 
 

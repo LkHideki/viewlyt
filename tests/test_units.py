@@ -415,9 +415,13 @@ def test_flag_plumbing() -> None:
     assert p.parse_args(["--unify"]).unify is True
     assert p.parse_args(["-u"]).unify is True
     assert p.parse_args(["--unify-all"]).unify_all is True
-    # --no-ts / --copy default off
-    assert p.parse_args([]).no_ts is False and p.parse_args([]).copy is False
-    assert p.parse_args(["--no-ts"]).no_ts is True
+    # timestamps are OFF by default; --ts/--timestamps opt back in; --copy default off
+    assert p.parse_args([]).with_ts is False and p.parse_args([]).copy is False
+    assert p.parse_args(["--ts"]).with_ts is True
+    assert p.parse_args(["--timestamps"]).with_ts is True
+    # legacy --no-ts still parses (deprecated no-op) and does NOT turn timestamps on
+    legacy = p.parse_args(["--no-ts"])
+    assert legacy.legacy_no_ts is True and legacy.with_ts is False
     assert p.parse_args(["--copy"]).copy is True
     try:  # mutually exclusive -> argparse exits (SystemExit) if both are given
         p.parse_args(["--unify", "--unify-all"])
