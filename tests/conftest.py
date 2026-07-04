@@ -75,3 +75,17 @@ def cli_run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-c", code, *args], capture_output=True, text=True, env=env
     )
+
+
+def cli_run_live(args: list[str]) -> subprocess.CompletedProcess:
+    """Like :func:`cli_run`, but for the ``viewlyt-live`` entry point.
+
+    ``viewlyt.live.cli`` imports only stdlib-light modules at parse time (the
+    FastAPI server is imported lazily inside main), so --version/--help work
+    without the optional 'live' extra installed.
+    """
+    code = "import sys\nfrom viewlyt.live.cli import main\nsys.exit(main(sys.argv[1:]))\n"
+    env = {**os.environ, "PYTHONPATH": SRC}
+    return subprocess.run(
+        [sys.executable, "-c", code, *args], capture_output=True, text=True, env=env
+    )

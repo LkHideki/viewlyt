@@ -45,3 +45,10 @@ def test_youtube_allowed_only_for_ingest() -> None:
 
 def test_wrong_port_rejected() -> None:
     assert _origin_allowed("http://127.0.0.1:9999", HOST, PORT, allow_youtube=False) is False
+
+
+def test_literal_null_origin_rejected() -> None:
+    # Safari/sandboxed iframes send the literal string "null" as the Origin; it is
+    # a browser context (CSWSH applies), so it must NOT pass the no-Origin exemption.
+    assert _origin_allowed("null", HOST, PORT, allow_youtube=False) is False
+    assert _origin_allowed("null", HOST, PORT, allow_youtube=True) is False
