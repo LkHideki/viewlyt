@@ -233,23 +233,41 @@ def resolve_modes(
 # --------------------------------------------------------------------------- #
 # Formatting / output
 # --------------------------------------------------------------------------- #
+# One shared, lazily-built converter pool for the whole process. _convert_all
+# runs once per video, and a batch of 100 videos was creating/tearing down 100
+# ThreadPoolExecutors; submit() is thread-safe, so the run_batch workers share
+# this single pool (it drains at interpreter exit via concurrent.futures' own
+# atexit hook). Still a THREAD pool by design — see the module docstring.
+_CONVERT_POOL: ThreadPoolExecutor | None = None
+_CONVERT_POOL_LOCK = threading.Lock()
+
+
+def _convert_pool() -> ThreadPoolExecutor:
+    global _CONVERT_POOL
+    with _CONVERT_POOL_LOCK:
+        if _CONVERT_POOL is None:
+            _CONVERT_POOL = ThreadPoolExecutor(
+                max_workers=min(8, (os.cpu_count() or 4)), thread_name_prefix="viewlyt-conv"
+            )
+        return _CONVERT_POOL
+
+
 def _convert_all(htmls: list[str], progress: bool = True) -> list[str]:
-    """HTML -> text for every fragment, in order, via a batched ThreadPoolExecutor."""
+    """HTML -> text for every fragment, in order, batched over the shared pool."""
     if not htmls:
         return []
     size = 64
     chunks = [htmls[i : i + size] for i in range(0, len(htmls), size)]
     results: list[list[str]] = [[] for _ in chunks]
-    workers = min(8, (os.cpu_count() or 4))
+    ex = _convert_pool()
     with tqdm(
         total=len(htmls), desc="parsing comments", unit="cmt", leave=False, disable=not progress
     ) as bar:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            fut_to_idx = {ex.submit(convert_batch, ch): i for i, ch in enumerate(chunks)}
-            for fut in as_completed(fut_to_idx):
-                i = fut_to_idx[fut]
-                results[i] = fut.result()
-                bar.update(len(chunks[i]))
+        fut_to_idx = {ex.submit(convert_batch, ch): i for i, ch in enumerate(chunks)}
+        for fut in as_completed(fut_to_idx):
+            i = fut_to_idx[fut]
+            results[i] = fut.result()
+            bar.update(len(chunks[i]))
     return [text for batch in results for text in batch]
 
 
