@@ -70,8 +70,55 @@ def test_caller_categories_win() -> None:
     print("ok: caller_categories_win")
 
 
+class _CapturingClient:
+    """Captures the (system, user) prompt suggest_probes builds; returns two valid probes."""
+
+    model = "x"
+    system = ""
+    user = ""
+
+    async def run(self, probe, messages) -> dict:  # noqa: ARG002 - no-op stub
+        return {}
+
+    async def complete_json(self, system: str, user: str, schema: dict) -> dict:  # noqa: ARG002
+        self.system, self.user = system, user
+        return {
+            "probes": [
+                {
+                    "kind": "open",
+                    "instruction": "Across all the sampled messages, gauge the mood.",
+                    "label": "Mood",
+                    "max_words": 40,
+                },
+                {
+                    "kind": "classification",
+                    "question": "Classify each message.",
+                    "categories": ["a", "b", "c"],
+                    "label": "Kind",
+                    "chart": "bars",
+                },
+            ]
+        }
+
+
+def test_suggest_probes_guards_untrusted_sample() -> None:
+    # secperf S9: suggest_probes must carry the same untrusted-content guard as its
+    # sibling decompose_probe — a warning in the system prompt AND the sample wrapped
+    # in a delimiter, so injected chat can't steer the proposed probes.
+    from viewlyt.live.llm import suggest_probes
+
+    client = _CapturingClient()
+    asyncio.run(suggest_probes(client, "what's the mood?", []))
+    assert "untrusted" in client.system.lower()
+    assert "never" in client.system.lower()
+    assert "<chat_sample>" in client.user
+    assert "<request>" in client.user
+    print("ok: suggest_probes_guards_untrusted_sample")
+
+
 if __name__ == "__main__":
     test_open_spec_builds_probe()
     test_classification_infers_categories()
     test_caller_categories_win()
+    test_suggest_probes_guards_untrusted_sample()
     print("ALL TESTS PASSED")
