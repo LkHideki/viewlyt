@@ -425,10 +425,18 @@ button:active {
    Result cards
    ------------------------------------------------------------------------- */
 
+/* Responsive card grid: side-by-side probes on wide screens, one column when
+   narrow. align-items:start keeps a collapsed card from stretching to match
+   its tall neighbor. */
 .results-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  align-items: start;
   gap: 0.75rem;
+}
+
+.results-list > .empty-hint {
+  grid-column: 1 / -1;
 }
 
 .result-card {
@@ -436,6 +444,17 @@ button:active {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.75rem 1rem;
+}
+
+/* Collapsed card: header (badge + label + meta) stays; body folds away. */
+.result-card.collapsed .result-display,
+.result-card.collapsed .result-scrubber,
+.result-card.collapsed .card-editor {
+  display: none;
+}
+
+.result-card.collapsed .result-header {
+  margin-bottom: 0;
 }
 
 /* .result-card.is-latest intentionally removed (R4: flat cards, no left accent bar) */
@@ -715,6 +734,92 @@ button:active {
   font-size: 0.88rem;
   color: var(--text);
   line-height: 1.6;
+}
+
+/* Markdown typography inside open-probe results (rendered by marked+DOMPurify).
+   Tight margins: these are short syntheses, not documents. */
+.result-text p {
+  margin: 0 0 0.5em;
+}
+
+.result-text p:last-child {
+  margin-bottom: 0;
+}
+
+.result-text ul,
+.result-text ol {
+  margin: 0.25em 0 0.6em;
+  padding-left: 1.3em;
+}
+
+.result-text li {
+  margin: 0.15em 0;
+}
+
+.result-text h1,
+.result-text h2,
+.result-text h3,
+.result-text h4,
+.result-text h5,
+.result-text h6 {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 0.6em 0 0.3em;
+}
+
+.result-text code {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 0.05em 0.35em;
+}
+
+.result-text pre {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  overflow-x: auto;
+  margin: 0.4em 0 0.6em;
+}
+
+.result-text pre code {
+  background: none;
+  padding: 0;
+}
+
+.result-text blockquote {
+  margin: 0.4em 0 0.6em;
+  padding: 0.1em 0 0.1em 0.75em;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.result-text a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.result-text table {
+  border-collapse: collapse;
+  margin: 0.4em 0 0.6em;
+  font-size: 0.82rem;
+}
+
+.result-text th,
+.result-text td {
+  border: 1px solid var(--border);
+  padding: 0.25em 0.55em;
+  text-align: left;
+}
+
+.result-text hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.6em 0;
 }
 
 /* R5 — scrubber row (hidden when only one snapshot) */
@@ -1443,6 +1548,30 @@ input[type="file"]::file-selector-button:hover {
 .edit-prompt {
   min-height: 3.5rem;
   resize: vertical;
+}
+
+/* --- Per-probe settings row inside the editor --- */
+
+.edit-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.edit-setting {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.edit-setting input {
+  width: 6.5rem;
+  font-size: 0.82rem;
+  padding: 0.2rem 0.45rem;
 }
 
 /* --- Category list inside the editor --- */

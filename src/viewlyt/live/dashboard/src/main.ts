@@ -1,5 +1,8 @@
 // viewlyt.live — Control Panel main script
-// Strict TypeScript, dependency-free.
+// Strict TypeScript. Runtime deps: marked + DOMPurify (bundled, no CDN).
+
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 // ---------------------------------------------------------------------------
 // Provider table
@@ -117,6 +120,9 @@ interface ProbeDescriptor {
   // Empty/missing entries fall back to the palette (getCategoryColor).
   colors?: Record<string, string>;
   max_words?: number;
+  // Per-probe overrides; 0/absent = follow the global Window config.
+  interval_s?: number; // own re-analysis cadence, seconds
+  sample_n?: number; // own sample size (messages per analysis)
 }
 
 // Server -> dashboard cost frame: broadcast once per analysed window, after the
@@ -214,80 +220,34 @@ function setStatus(connected: boolean): void {
 const probeState = new Map<string, ProbeDescriptor>();
 
 // ---------------------------------------------------------------------------
-// Markdown-lite renderer (safe — escapes HTML first, no raw injection)
+// Markdown renderer: full CommonMark/GFM via `marked`, then sanitized with
+// DOMPurify. LLM output is untrusted (chat content can steer the model into
+// emitting hostile markup), so sanitizing is NOT optional: a strict tag/attr
+// whitelist, and every link is forced to a safe new-tab target.
 // ---------------------------------------------------------------------------
 
+marked.setOptions({ gfm: true, breaks: true });
+
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A") {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+
+const MD_ALLOWED_TAGS = [
+  "p", "br", "hr", "strong", "em", "b", "i", "del", "code", "pre",
+  "ul", "ol", "li", "a", "blockquote", "span",
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  "table", "thead", "tbody", "tr", "th", "td",
+];
+
 function renderMarkdown(src: string): string {
-  // 1. Escape HTML entities so source text is never interpreted as markup.
-  const escaped = src
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-
-  // 2. Process line-by-line for block constructs, then apply inline transforms.
-  const lines = escaped.split("\n");
-  const out: string[] = [];
-  let inUl = false;
-  let inOl = false;
-
-  const closeList = (): void => {
-    if (inUl) { out.push("</ul>"); inUl = false; }
-    if (inOl) { out.push("</ol>"); inOl = false; }
-  };
-
-  const applyInline = (text: string): string =>
-    text
-      // Headings already handled at line level; inline bold/italic/code:
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/\*(.+?)\*/g, "<em>$1</em>")
-      .replace(/_(.+?)_/g, "<em>$1</em>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  for (const line of lines) {
-    // Headings: 1–6 hashes at start of line.
-    const headingMatch = /^(#{1,6}) (.+)$/.exec(line);
-    if (headingMatch) {
-      closeList();
-      out.push(`<strong>${applyInline(headingMatch[2])}</strong>`);
-      continue;
-    }
-    // Unordered list: lines starting with '- ' or '* '.
-    const ulMatch = /^[*-] (.+)$/.exec(line);
-    if (ulMatch) {
-      if (!inUl) { if (inOl) { out.push("</ol>"); inOl = false; } out.push("<ul>"); inUl = true; }
-      out.push(`<li>${applyInline(ulMatch[1])}</li>`);
-      continue;
-    }
-    // Ordered list: lines starting with 'N. '.
-    const olMatch = /^\d+\. (.+)$/.exec(line);
-    if (olMatch) {
-      if (!inOl) { if (inUl) { out.push("</ul>"); inUl = false; } out.push("<ol>"); inOl = true; }
-      out.push(`<li>${applyInline(olMatch[1])}</li>`);
-      continue;
-    }
-    // Regular line: close any open list, emit with inline transforms.
-    closeList();
-    out.push(applyInline(line));
-  }
-  closeList();
-
-  // 3. Join lines: list tags get no separator; other lines get <br>.
-  let html = "";
-  for (let i = 0; i < out.length; i++) {
-    const cur = out[i];
-    html += cur;
-    if (i < out.length - 1) {
-      const next = out[i + 1];
-      // Don't add <br> between/around block-level list tags.
-      const curIsBlock = /^<\/?(?:ul|ol|li)/.test(cur);
-      const nextIsBlock = /^<\/?(?:ul|ol|li)/.test(next);
-      if (!curIsBlock && !nextIsBlock) {
-        html += "<br>";
-      }
-    }
-  }
-  return html;
+  const html = marked.parse(src, { async: false }) as string;
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: MD_ALLOWED_TAGS,
+    ALLOWED_ATTR: ["href", "title", "start", "target", "rel"],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,7 +1145,8 @@ function buildOpenBody(probeId: string, index: number): HTMLElement {
   body.className = "result-display";
 
   const snap = resultHistory.get(probeId)?.[index];
-  const textEl = document.createElement("p");
+  // A div, not a <p>: the markdown can contain block elements (lists, headings).
+  const textEl = document.createElement("div");
   textEl.className = "result-text";
   if (snap && snap.text) {
     // Preprocess: insert newline before inline ordinal markers so list items
@@ -1340,6 +1301,24 @@ function ensureCard(probeId: string): HTMLDivElement {
     renderDisplay(card, probeId, domKind(card), vs ? vs.index : 0);
   });
 
+  // Collapse toggle: header stays visible (title + meta), body folds away.
+  const collapseBtn = document.createElement("button");
+  collapseBtn.className = "card-collapse btn-secondary btn-small";
+  collapseBtn.type = "button";
+  const collapsedKey = "viewlyt.cardcollapsed." + probeId;
+  const setCollapsed = (collapsed: boolean): void => {
+    card.classList.toggle("collapsed", collapsed);
+    collapseBtn.textContent = collapsed ? "▸" : "▾";
+    collapseBtn.title = collapsed ? "Expand" : "Collapse";
+    collapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  };
+  setCollapsed(lsGet(collapsedKey) === "1");
+  collapseBtn.addEventListener("click", () => {
+    const next = !card.classList.contains("collapsed");
+    setCollapsed(next);
+    lsSet(collapsedKey, next ? "1" : "0");
+  });
+
   const editBtn = document.createElement("button");
   editBtn.className = "card-edit btn-secondary btn-small";
   editBtn.type = "button";
@@ -1365,6 +1344,7 @@ function ensureCard(probeId: string): HTMLDivElement {
   right.appendChild(select);
   right.appendChild(editBtn);
   right.appendChild(removeBtn);
+  right.appendChild(collapseBtn);
   header.appendChild(right);
   card.appendChild(header);
 
@@ -1393,6 +1373,33 @@ function ensureCard(probeId: string): HTMLDivElement {
   const editCats = document.createElement("div");
   editCats.className = "edit-categories";
   editor.appendChild(editCats);
+
+  // Per-probe settings: own refresh cadence + own sample size (blank = global).
+  const settings = document.createElement("div");
+  settings.className = "edit-settings";
+  const mkSetting = (cls: string, labelText: string, step: string): HTMLInputElement => {
+    const wrap = document.createElement("label");
+    wrap.className = "edit-setting";
+    const span = document.createElement("span");
+    span.textContent = labelText;
+    const input = document.createElement("input");
+    input.className = cls;
+    input.type = "number";
+    input.min = "0";
+    input.step = step;
+    input.placeholder = "global";
+    wrap.appendChild(span);
+    wrap.appendChild(input);
+    settings.appendChild(wrap);
+    return input;
+  };
+  mkSetting("edit-interval", "Refresh (s)", "5");
+  mkSetting("edit-sample", "Sample (msgs)", "10");
+  const settingsHint = document.createElement("span");
+  settingsHint.className = "hint";
+  settingsHint.textContent = "blank/0 = follow the global Window config";
+  settings.appendChild(settingsHint);
+  editor.appendChild(settings);
 
   const buttonRow = document.createElement("div");
   buttonRow.className = "button-row";
@@ -1645,6 +1652,11 @@ function openEditor(probeId: string): void {
     }
   }
 
+  const intervalInput = card.querySelector<HTMLInputElement>(".edit-interval");
+  if (intervalInput) intervalInput.value = probe?.interval_s ? String(probe.interval_s) : "";
+  const sampleInput = card.querySelector<HTMLInputElement>(".edit-sample");
+  if (sampleInput) sampleInput.value = probe?.sample_n ? String(probe.sample_n) : "";
+
   const editor = card.querySelector<HTMLDivElement>(".card-editor");
   if (editor) editor.classList.remove("hidden");
 }
@@ -1692,6 +1704,12 @@ function saveEditor(probeId: string): void {
       max_words: prev?.max_words ?? 60,
     };
   }
+
+  // Per-probe overrides (blank/0 = follow the global Window config).
+  const interval = Number(card.querySelector<HTMLInputElement>(".edit-interval")?.value) || 0;
+  const sample = Number(card.querySelector<HTMLInputElement>(".edit-sample")?.value) || 0;
+  if (interval > 0) probe.interval_s = interval;
+  if (sample > 0) probe.sample_n = Math.round(sample);
 
   send({ op: "upsert_probe", probe });
   probeState.set(probeId, probe);
@@ -2178,6 +2196,24 @@ function setSuggestPending(pending: boolean): void {
   }
 }
 
+// The Split button mirrors Suggest: an off-loop server task decomposes the
+// typed request into elementary probes, answered by the same suggestions frame.
+let splitPending = false;
+let splitRestoreTimer: number | undefined;
+
+function setSplitPending(pending: boolean): void {
+  splitPending = pending;
+  const btn = document.getElementById("ask-split") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = pending;
+    btn.textContent = pending ? "Splitting…" : "Split";
+  }
+  if (!pending && splitRestoreTimer !== undefined) {
+    clearTimeout(splitRestoreTimer);
+    splitRestoreTimer = undefined;
+  }
+}
+
 /**
  * Render the (up to two) suggested probes as clickable chips in #suggestions.
  * Each chip shows the probe label plus a short hint of its kind/question/
@@ -2187,11 +2223,13 @@ function setSuggestPending(pending: boolean): void {
  */
 function renderSuggestions(probes: ProbeDescriptor[]): void {
   setSuggestPending(false);
+  setSplitPending(false);
   const container = document.getElementById("suggestions");
   if (!container) return;
   container.innerHTML = "";
 
-  const shown = probes.slice(0, 2);
+  // Suggest sends 2; Split (decompose) sends up to 4 elementary probes.
+  const shown = probes.slice(0, 4);
   for (const probe of shown) {
     if (typeof probe !== "object" || probe === null) continue;
 
@@ -2219,7 +2257,10 @@ function renderSuggestions(probes: ProbeDescriptor[]): void {
         probeState.set(probe.id, probe);
         syncCardsFromState();
       }
-      container.innerHTML = "";
+      // Remove only this chip — a Split proposes several probes and the user
+      // may want to add more than one. Clear the tray when the last chip goes.
+      chip.remove();
+      if (!container.querySelector(".suggest-chip")) container.innerHTML = "";
     });
 
     container.appendChild(chip);
@@ -2461,6 +2502,25 @@ function wireButtons(): void {
 
   const suggestBtn = document.getElementById("ask-suggest");
   if (suggestBtn) suggestBtn.addEventListener("click", requestSuggestions);
+
+  // Split: decompose the typed request into elementary probes (server-side,
+  // one cheap LLM call at creation time); answered by a suggestions frame.
+  function requestSplit(): void {
+    if (splitPending) return;
+    const text = el<HTMLInputElement>("ask-text").value.trim();
+    if (!text) {
+      showToast("Type the broad question to split first.", "info");
+      return;
+    }
+    send({ op: "decompose_probe", text });
+    setSplitPending(true);
+    splitRestoreTimer = window.setTimeout(() => {
+      setSplitPending(false);
+    }, 15000);
+  }
+
+  const splitBtn = document.getElementById("ask-split");
+  if (splitBtn) splitBtn.addEventListener("click", requestSplit);
 
   el<HTMLInputElement>("ask-text").addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.key === "Enter") {
