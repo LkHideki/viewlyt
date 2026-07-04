@@ -23,13 +23,26 @@ STATE_FILE = STATE_DIR / "live-state.json"
 KEY_FILE = STATE_DIR / "key"
 
 
+_FERNETS: dict[Path, Fernet] = {}
+
+
 def _fernet() -> Fernet:
-    """Return a Fernet bound to ``KEY_FILE``, generating the key on first use."""
+    """Return a Fernet bound to ``KEY_FILE``, generating the key on first use.
+
+    Cached per key path: save/load run on every control op, and re-reading +
+    re-deriving the key each time is wasted I/O (tests monkeypatch ``KEY_FILE``,
+    hence a dict keyed by path instead of a single memo).
+    """
+    cached = _FERNETS.get(KEY_FILE)
+    if cached is not None:
+        return cached
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     if not KEY_FILE.exists():
         KEY_FILE.write_bytes(Fernet.generate_key())
         KEY_FILE.chmod(0o600)
-    return Fernet(KEY_FILE.read_bytes())
+    f = Fernet(KEY_FILE.read_bytes())
+    _FERNETS[KEY_FILE] = f
+    return f
 
 
 def save_state(window: dict, model: dict, probes: list[dict]) -> None:

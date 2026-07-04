@@ -155,6 +155,53 @@ def test_window_buffer_count_mode() -> None:
     print("ok: window_buffer_count_mode")
 
 
+def test_window_buffer_tail_bounds() -> None:
+    buf = WindowBuffer(maxlen=10)
+    for i in range(6):
+        buf.add(_msg(f"m{i}"))
+    assert [m.text for m in buf.tail(3)] == ["m3", "m4", "m5"]
+    assert [m.text for m in buf.tail(99)] == [f"m{i}" for i in range(6)]
+    assert buf.tail(0) == []
+    assert buf.tail(-1) == []
+    print("ok: window_buffer_tail_bounds")
+
+
+def test_window_buffer_mark_emitted_resets_counters() -> None:
+    cfg = WindowConfig(n=2, overlap=0, mode="count")
+    buf = WindowBuffer()
+    buf.add(_msg("a"))
+    buf.add(_msg("b"))
+    assert buf.due(cfg, 0.0)
+    buf.mark_emitted(0.0)
+    assert not buf.due(cfg, 0.0)
+    print("ok: window_buffer_mark_emitted_resets_counters")
+
+
+def test_window_buffer_sample_cleans_spam_within_margin() -> None:
+    # 40 identical spam lines then 3 unique ones: the sample only cleans a bounded
+    # tail (margin × n) yet still returns the n most-recent CLEANED messages.
+    cfg = WindowConfig(n=3, mode="count")
+    buf = WindowBuffer(maxlen=100)
+    for _ in range(40):
+        buf.add(_msg("REPEAT", author="spammer"))
+    for i in range(3):
+        buf.add(_msg(f"unique {i}", author=f"u{i}"))
+    out = buf.sample(cfg)
+    assert [m.text for m in out] == ["unique 0", "unique 1", "unique 2"]
+    print("ok: window_buffer_sample_cleans_spam_within_margin")
+
+
+def test_window_buffer_sample_respects_hygiene_toggles() -> None:
+    cfg = WindowConfig(n=4, mode="count", dedupe=False, merge_authors=False)
+    buf = WindowBuffer()
+    for _ in range(3):
+        buf.add(_msg("same", author="a"))
+    buf.add(_msg("tail", author="b"))
+    out = buf.sample(cfg)
+    assert [m.text for m in out] == ["same", "same", "same", "tail"]
+    print("ok: window_buffer_sample_respects_hygiene_toggles")
+
+
 # ---------------------------------------------------------------------------
 # ClassificationProbe.aggregate
 # ---------------------------------------------------------------------------
@@ -338,6 +385,10 @@ if __name__ == "__main__":
     test_window_config_stride()
     test_window_config_from_dict_clamps()
     test_window_buffer_count_mode()
+    test_window_buffer_tail_bounds()
+    test_window_buffer_mark_emitted_resets_counters()
+    test_window_buffer_sample_cleans_spam_within_margin()
+    test_window_buffer_sample_respects_hygiene_toggles()
     test_classification_aggregate_sums_to_100()
     test_classification_aggregate_ignores_unknown_labels()
     test_classification_aggregate_empty_labels_gives_all_zeros()

@@ -36,12 +36,16 @@ from .llm import (
     run_probes,
     suggest_probes,
 )
-from .messages import clean_chat, message_from_ingest
+from .messages import message_from_ingest
 from .probes import Probe, probe_from_dict
 from .window import WindowBuffer, WindowConfig
 
 logger = logging.getLogger("viewlyt.live")
 STATIC_DIR = Path(__file__).parent / "static"
+
+# A dashboard tab that can't take a frame within this window is dropped (it
+# reconnects on its own); without it one hung socket would stall the worker loop.
+_SEND_TIMEOUT = 5.0
 
 
 def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: bool) -> bool:
@@ -93,15 +97,23 @@ class ConnectionManager:
         self.active.discard(ws)
 
     async def broadcast(self, message: dict) -> None:
-        """Send ``message`` to every live socket, dropping any that error out."""
-        dead: list[WebSocket] = []
-        for ws in list(self.active):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect(ws)
+        """Send ``message`` to every live socket, dropping any that errors or stalls.
+
+        The frame is serialized ONCE (``send_json`` would re-dump it per socket) and
+        the sends run concurrently with a timeout, so one slow or hung tab neither
+        delays the other dashboards nor stalls the worker loop calling this ~4×/s.
+        """
+        if not self.active:
+            return
+        payload = json.dumps(message)
+        conns = list(self.active)
+        results = await asyncio.gather(
+            *(asyncio.wait_for(ws.send_text(payload), _SEND_TIMEOUT) for ws in conns),
+            return_exceptions=True,
+        )
+        for ws, res in zip(conns, results, strict=True):
+            if isinstance(res, BaseException):
+                self.disconnect(ws)
 
 
 class LiveServer:
@@ -330,11 +342,7 @@ async def _suggest(server: LiveServer, text: str) -> None:
     emits an ``error`` frame instead. NOT persisted — the user picks a chip to add.
     """
     try:
-        sample = clean_chat(
-            server.buffer.snapshot(),
-            dedupe=server.window.dedupe,
-            merge_authors=server.window.merge_authors,
-        )[-server.window.n :]
+        sample = server.buffer.sample(server.window)
         try:
             specs = await suggest_probes(server.client(), text, sample)
         except Exception:
@@ -375,14 +383,14 @@ async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
 
 
 async def process_window(server: LiveServer, window: list, now_wall: float) -> None:
-    """Run all probes over one snapshot and broadcast each result plus a stat frame."""
+    """Run all probes over one cleaned sample and broadcast each result plus a stat frame.
+
+    ``window`` arrives already sampled/cleaned (:meth:`WindowBuffer.sample`), captured
+    synchronously at emit time so it is immune to messages arriving mid-analysis.
+    """
     probes = list(server.probes.values())
     if not probes:
         return
-    cleaned = clean_chat(
-        window, dedupe=server.window.dedupe, merge_authors=server.window.merge_authors
-    )
-    window = cleaned[-server.window.n :]
     # Snapshot the client's cumulative usage so we can attribute this batch's spend.
     c = server.client()
     before_tok = getattr(c, "total_tokens", 0)
@@ -508,13 +516,15 @@ async def worker(server: LiveServer) -> None:
                 and (forced or due)
                 and not over_budget
             ):
-                server.buffer.emit(server.window, now)  # reset windowing timers only
-                raw = server.buffer.snapshot()
+                # Capture the cleaned sample synchronously (O(n), not O(capacity)),
+                # then reset the windowing timers.
+                window = server.buffer.sample(server.window)
+                server.buffer.mark_emitted(now)
                 last_analyzed = server.ingested
                 server.processing = True
                 # NON-BLOCKING: the LLM call runs in the background so the loop keeps
                 # draining the queue and flushing the feed while it works.
-                asyncio.create_task(_run_window(server, raw, time.time()))
+                asyncio.create_task(_run_window(server, window, time.time()))
             if now - last_flush >= 0.25:
                 # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:

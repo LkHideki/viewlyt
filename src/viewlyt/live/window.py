@@ -15,8 +15,13 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from itertools import islice
 
-from .messages import ChatMessage
+from .messages import ChatMessage, clean_chat
+
+# Raw-tail margin per target message when sampling: enough for a heavy spam
+# collapse (~75% of the tail folding away) without ever cleaning the whole buffer.
+_CLEAN_MARGIN = 4
 
 
 @dataclass(slots=True)
@@ -73,8 +78,18 @@ class WindowBuffer:
         self._buf.append(msg)
         self._since_last += 1
 
+    def tail(self, k: int) -> list[ChatMessage]:
+        """Return the last ``min(k, len)`` messages in order — O(k), not O(capacity)."""
+        if k <= 0:
+            return []
+        if k >= len(self._buf):
+            return list(self._buf)
+        out = list(islice(reversed(self._buf), k))
+        out.reverse()
+        return out
+
     def _window(self, cfg: WindowConfig) -> list[ChatMessage]:
-        return list(self._buf)[-max(1, cfg.n) :]
+        return self.tail(max(1, cfg.n))
 
     def due(self, cfg: WindowConfig, now: float) -> bool:
         """Should a snapshot be emitted right now?"""
@@ -88,11 +103,27 @@ class WindowBuffer:
             return count_due or time_due
         return count_due  # "count" (default)
 
-    def emit(self, cfg: WindowConfig, now: float) -> list[ChatMessage]:
-        """Mark a snapshot taken and return its window of messages."""
+    def mark_emitted(self, now: float) -> None:
+        """Reset the windowing counters/timers after a snapshot was taken."""
         self._since_last = 0
         self._last_emit = now
+
+    def emit(self, cfg: WindowConfig, now: float) -> list[ChatMessage]:
+        """Mark a snapshot taken and return its window of messages."""
+        self.mark_emitted(now)
         return self._window(cfg)
+
+    def sample(self, cfg: WindowConfig) -> list[ChatMessage]:
+        """The cleaned analysis window: the last ``n`` messages after spam hygiene.
+
+        Cleans only a bounded raw tail (``_CLEAN_MARGIN × n``) instead of the whole
+        buffer, so the cost scales with the window size, not with ``capacity``.
+        Under extreme spam (more than ~75% of the tail collapsing) the sample can
+        come out shorter than ``n`` — the target is a target, not a guarantee.
+        """
+        n = max(1, cfg.n)
+        raw = self.tail(_CLEAN_MARGIN * n)
+        return clean_chat(raw, dedupe=cfg.dedupe, merge_authors=cfg.merge_authors)[-n:]
 
     def snapshot(self) -> list[ChatMessage]:
         """Return all buffered messages without mutating the buffer."""
