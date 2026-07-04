@@ -33,7 +33,7 @@ user-data-dir/
 out/
 out_test/
 # Stray product files written outside out/. These suffixes are scraper-only, so
-# committed docs (README.md, AGENTS.md, xray.md, …) are NOT caught by them.
+# committed docs (README.md, …) are NOT caught by them.
 *.transcript.md
 *.related.md
 *.unified.md
@@ -68,6 +68,9 @@ Thumbs.db
 src/viewlyt/live/dashboard/node_modules/
 src/viewlyt/live/dashboard/dist/
 
-# doc de arquitetura interno (não publicar)
+# ---- Local-only docs (kept in the working tree, out of the published repo) ----
+# Comments must be on their own line (.gitignore has no inline comments).
 xray.md
 how-to.md
+CLAUDE.md
+AGENTS.md
