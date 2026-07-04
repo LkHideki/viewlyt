@@ -234,6 +234,21 @@ def strip_timestamps(lines: list[str]) -> list[str]:
     return [_TIMESTAMP_RE.sub("", ln).strip() for ln in lines]
 
 
+def pair_lines(lines: list[str], per_line: int = 2, sep: str = " ") -> list[str]:
+    """Join every ``per_line`` consecutive lines into one (token saver: halves
+    the ``\\n`` count at the default 2).
+
+    Pure/testable; powers the CLI's default transcript output. Empty lines are
+    dropped before pairing (they carry no content and would double ``sep``);
+    ``per_line <= 1`` returns the (cleaned) lines unchanged. The last group may
+    be shorter when the count isn't a multiple of ``per_line``.
+    """
+    cleaned = [ln for ln in lines if ln]
+    if per_line <= 1:
+        return cleaned
+    return [sep.join(cleaned[i : i + per_line]) for i in range(0, len(cleaned), per_line)]
+
+
 def format_related(items: list[dict]) -> list[str]:
     """Format related-video records as a 1-based numbered Markdown list.
 

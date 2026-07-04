@@ -31,6 +31,7 @@ from viewlyt.htmltext import (  # noqa: E402
     group_consecutive_comments,
     html_to_text,
     join_unified,
+    pair_lines,
     parse_relative_date,
     slugify,
     strip_timestamps,
@@ -752,6 +753,21 @@ def test_strip_timestamps() -> None:
     print("ok: strip_timestamps")
 
 
+def test_pair_lines() -> None:
+    # Default: every 2 consecutive lines join into one (halves the \n count);
+    # empties are dropped first; odd tail keeps a shorter last line.
+    assert pair_lines(["a", "b", "c", "d"]) == ["a b", "c d"]
+    assert pair_lines(["a", "b", "c"]) == ["a b", "c"]
+    assert pair_lines(["a", "", "b", "c"]) == ["a b", "c"]  # empty dropped pre-pairing
+    assert pair_lines(["only"]) == ["only"]
+    assert pair_lines([]) == []
+    assert pair_lines(["a", "b", "c"], per_line=1) == ["a", "b", "c"]  # no-op
+    assert pair_lines(["a", "b", "c"], per_line=3) == ["a b c"]
+    # Composes with strip_timestamps for the CLI's default transcript output.
+    assert pair_lines(strip_timestamps(["[0:05] hi", "[0:07] there"])) == ["hi there"]
+    print("ok: pair_lines")
+
+
 def test_html_to_text_img_fallbacks() -> None:
     # <img> alt -> aria-label -> shared-tooltip-text fallback chain, and no-attr drop.
     assert html_to_text('<img aria-label=":wave:">') == ":wave:"
@@ -892,6 +908,7 @@ if __name__ == "__main__":
     test_join_unified()
     test_format_transcript()
     test_strip_timestamps()
+    test_pair_lines()
     test_html_to_text_img_fallbacks()
     test_html_to_text_blocks_and_nested_anchor()
     test_parse_relative_date_edges()
