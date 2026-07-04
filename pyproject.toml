@@ -48,11 +48,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30", "cryptography>=42"]
+# Floors raised to patched minimums so a fresh (non-lockfile) install can't resolve a
+# known-vulnerable transitive: fastapi>=0.116 excludes the vulnerable starlette
+# (CVE-2026-48710 BadHost auth bypass, CVE-2025-54121 multipart DoS); cryptography>=46.0.6
+# clears CVE-2024-12797 / CVE-2026-34073. See secperf S5/S6/S10.
+live = ["fastapi>=0.116", "uvicorn[standard]>=0.34", "openai>=1.30", "cryptography>=46.0.6"]
 # Ephemeral chat over collected out/*.md (the default `vl ask` engine): LLM on OpenRouter.
 ask = ["openai>=1.30"]
 # Persistent LightRAG knowledge-graph index (`vl ask --persist`) + local fastembed embeddings.
-rag = ["lightrag-hku>=1.4", "openai>=1.30", "fastembed>=0.3"]
+# lightrag-hku>=1.4.14 clears CVE-2026-30762 / CVE-2026-39413 (its bundled API server).
+rag = ["lightrag-hku>=1.4.14", "openai>=1.30", "fastembed>=0.3"]
 
 [project.urls]
 Homepage = "https://github.com/LkHideki/viewlyt"
