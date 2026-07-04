@@ -20,6 +20,7 @@ removes the duplicate-line artifact that incremental harvesting produced.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import time
 from urllib.parse import parse_qs, urlparse
@@ -174,16 +175,10 @@ OVERFLOW_MENU_BUTTON = (
     'button[aria-label="More actions"], button[aria-label="Mais ações"]'
 )
 
-# Locale-dependent "before you continue" consent buttons (best-effort fallback;
-# the cookie priming below usually skips the interstitial entirely).
-CONSENT_XPATHS = [
-    "//button[@aria-label='Accept all']",
-    "//button[@aria-label='Aceitar tudo']",
-    "//button[contains(@class,'VfPpkd-LgbsSe') and ("
-    "@aria-label='Accept all' or @aria-label='Aceitar tudo' or "
-    "@aria-label='Reject all' or @aria-label='Rejeitar tudo')]",
-    "//*[self::button or self::a][contains(.,'Accept all') or contains(.,'Aceitar tudo')]",
-]
+# Locale-dependent "before you continue" consent button labels (best-effort
+# fallback; the cookie priming below usually skips the interstitial entirely).
+# Matched case-insensitively against aria-label + textContent of button/a nodes.
+CONSENT_LABELS = ("accept all", "aceitar tudo", "reject all", "rejeitar tudo")
 
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _PATH_ID_RE = re.compile(r"/(?:shorts|embed|v|live)/([A-Za-z0-9_-]{11})")
@@ -265,16 +260,41 @@ def prime_consent_cookies(driver) -> None:
         log.warning("could not prime consent cookies: %s", exc)
 
 
+# Single-round-trip scan for a VISIBLE consent button (label match on aria-label
+# + textContent). One cheap RPC instead of a WebDriverWait that burns its whole
+# timeout on the (usual, cookie-primed) no-dialog case.
+_CONSENT_SCAN_JS = r"""
+var LABELS=arguments[0];
+var els=document.querySelectorAll('button, a');
+for(var i=0;i<els.length;i++){var el=els[i];
+  var s=((el.getAttribute('aria-label')||'')+' '+(el.textContent||'')).toLowerCase();
+  for(var j=0;j<LABELS.length;j++){
+    if(s.indexOf(LABELS[j])!==-1 && el.offsetParent!==null){return el;}}}
+return null;
+"""
+
+
 def dismiss_consent_dialog(driver, timeout: float = 4.0) -> bool:
-    """Best-effort click of a cookie-consent button if one is shown."""
-    combined = " | ".join(CONSENT_XPATHS)
+    """Best-effort click of a cookie-consent button if one is shown.
+
+    Fast path: with consent cookies primed the dialog almost never exists, so
+    this scans once (plus one 0.3s-later rescan for a late-rendering dialog) and
+    returns immediately instead of waiting out ``timeout`` on every video —
+    that dead wait cost ~2s/video. A real consent WALL (not just a dialog) is
+    still caught later by :func:`detect_block`. ``timeout`` caps the rescan.
+    """
     try:
-        btn = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, combined)))
-        btn.click()
+        btn = driver.execute_script(_CONSENT_SCAN_JS, list(CONSENT_LABELS))
+        if btn is None and timeout > 0:
+            time.sleep(min(0.3, timeout))
+            btn = driver.execute_script(_CONSENT_SCAN_JS, list(CONSENT_LABELS))
+        if btn is None:
+            return False
+        driver.execute_script("arguments[0].click();", btn)
         log.info("dismissed consent dialog")
-        time.sleep(1.0)
+        time.sleep(0.8)
         return True
-    except (TimeoutException, WebDriverException):
+    except WebDriverException:
         return False
 
 
@@ -340,6 +360,37 @@ def _comments_disabled(driver) -> bool:
 # --------------------------------------------------------------------------- #
 # Element helpers
 # --------------------------------------------------------------------------- #
+# Waits in the hot paths poll at this frequency instead of Selenium's 0.5s
+# default — the condition usually flips within tens of ms of the DOM update, so
+# the default poll wastes ~0.35s per satisfied wait, many times per video.
+_POLL = 0.15
+
+
+def _count(driver, css: str) -> int:
+    """Number of ``css`` matches in the document, via ONE light ``execute_script``
+    round-trip returning an int. ``find_elements`` would materialise (and ship
+    back) N element handles just to be counted — and the growth waits call this
+    on every poll."""
+    return int(
+        driver.execute_script("return document.querySelectorAll(arguments[0]).length", css) or 0
+    )
+
+
+def _count_in(driver, el, css: str) -> int:
+    """Like :func:`_count`, scoped to descendants of ``el``."""
+    return int(
+        driver.execute_script("return arguments[0].querySelectorAll(arguments[1]).length", el, css)
+        or 0
+    )
+
+
+def _sleep_jitter(base: float, spread: float = 0.4) -> None:
+    """Sleep ``base`` ± ``spread``·``base`` (uniform). Fixed-interval scrolling is
+    both slower than needed on fast pages and a metronome-like automation tell;
+    the jitter keeps the MEAN at ``base`` while breaking the rhythm."""
+    time.sleep(max(0.05, base * random.uniform(1 - spread, 1 + spread)))
+
+
 def _text(el, css: str) -> str:
     """Text of a descendant via ``textContent`` (collapsed whitespace).
 
@@ -449,15 +500,15 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
     if not _safe_click(driver, toggle):
         return
     try:
-        WebDriverWait(driver, 6).until(
-            lambda d: len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY)) > 0
+        WebDriverWait(driver, 6, poll_frequency=_POLL).until(
+            lambda d: _count_in(d, thread, REPLY_ITEM_ANY) > 0
         )
     except (TimeoutException, StaleElementReferenceException, WebDriverException):
         return
 
     for _ in range(max_more_clicks):
         try:
-            before = len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY))
+            before = _count_in(driver, thread, REPLY_ITEM_ANY)
         except (StaleElementReferenceException, WebDriverException):
             break
         if before >= max_replies:
@@ -479,10 +530,8 @@ def _expand_replies(driver, thread, max_replies: int, max_more_clicks: int = 20)
         if not _safe_click(driver, target):
             break
         try:
-            WebDriverWait(driver, 5).until(
-                lambda d, before=before: (
-                    len(thread.find_elements(By.CSS_SELECTOR, REPLY_ITEM_ANY)) > before
-                )
+            WebDriverWait(driver, 5, poll_frequency=_POLL).until(
+                lambda d, before=before: _count_in(d, thread, REPLY_ITEM_ANY) > before
             )
         except (TimeoutException, StaleElementReferenceException, WebDriverException):
             break
@@ -641,7 +690,7 @@ def collect_comments(
             log.warning("comments are turned off for this video")
             return []
         try:
-            WebDriverWait(driver, 5).until(
+            WebDriverWait(driver, 5, poll_frequency=_POLL).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_THREAD))
             )
             break
@@ -662,17 +711,15 @@ def collect_comments(
         total=limit, desc="loading comments", unit="cmt", leave=False, disable=not progress
     ) as bar:
         for _ in range(max_viewports):
-            before = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
+            before = _count(driver, COMMENT_THREAD)
             bar.n = min(before, limit)
             bar.refresh()
             if before >= limit:
                 break
             _scroll_for_more(driver)
             try:
-                WebDriverWait(driver, 10).until(
-                    lambda d, before=before: (
-                        len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
-                    )
+                WebDriverWait(driver, 10, poll_frequency=_POLL).until(
+                    lambda d, before=before: _count(d, COMMENT_THREAD) > before
                 )
                 stale = 0
             except TimeoutException:
@@ -682,18 +729,16 @@ def collect_comments(
                 time.sleep(0.6)
                 _scroll_for_more(driver)
                 try:
-                    WebDriverWait(driver, 8).until(
-                        lambda d, before=before: (
-                            len(d.find_elements(By.CSS_SELECTOR, COMMENT_THREAD)) > before
-                        )
+                    WebDriverWait(driver, 8, poll_frequency=_POLL).until(
+                        lambda d, before=before: _count(d, COMMENT_THREAD) > before
                     )
                     stale = 0
                 except TimeoutException:
                     stale += 1
                     if stale >= 3:  # 3 consecutive no-growth scrolls => end of list
                         break
-            time.sleep(0.4)
-        loaded_now = len(driver.find_elements(By.CSS_SELECTOR, COMMENT_THREAD))
+            _sleep_jitter(0.35)  # render settle; jittered (see _sleep_jitter)
+        loaded_now = _count(driver, COMMENT_THREAD)
         bar.n = min(loaded_now, limit)
         bar.refresh()
 
@@ -806,7 +851,7 @@ def collect_related(driver, limit: int = 10, progress: bool = True) -> list[dict
         driver.execute_script("window.scrollTo(0, 600);")
         prev, stale = -1, 0
         for _ in range(12):
-            n = len(driver.find_elements(By.CSS_SELECTOR, sel))
+            n = _count(driver, sel)
             if n >= limit:
                 break
             if n == prev:
@@ -817,7 +862,7 @@ def collect_related(driver, limit: int = 10, progress: bool = True) -> list[dict
                 stale = 0
             prev = n
             driver.execute_script("window.scrollBy(0, 1200);")
-            time.sleep(0.5)
+            _sleep_jitter(0.35)
         items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
         if progress:
             log.info("collected %d related videos", len(items))
@@ -856,7 +901,7 @@ def _expand_description(driver) -> None:
         for e in driver.find_elements(By.CSS_SELECTOR, DESC_EXPAND):
             if _displayed(e):
                 _js_click(driver, e)
-                time.sleep(0.4)
+                time.sleep(0.25)
                 break
     except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
         pass
@@ -935,22 +980,60 @@ def _wait_for_segments(driver, timeout: float) -> int:
     """Wait for at least one transcript segment to appear; return the count (0 on
     timeout / error). Never raises."""
     try:
-        WebDriverWait(driver, timeout).until(
+        WebDriverWait(driver, timeout, poll_frequency=_POLL).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
         )
-        return len(driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+        return _count(driver, TRANSCRIPT_SEGMENT)
     except (TimeoutException, StaleElementReferenceException, WebDriverException):
         return 0
 
 
+# In-page scroll-until-stable loop for the (possibly virtualized) segment list:
+# count → (2 stable reads in a row, or round budget spent) → done(count); else
+# scroll the panel container (that's what advances virtualization; fall back to
+# the last segment) and tick again in 150ms. ONE execute_async_script round-trip
+# replaces 2 RPCs + a 0.3s Python sleep PER ROUND (the common non-virtualized
+# panel stabilises in ~2 ticks; a long virtualized list, in dozens).
+_LOAD_SEGMENTS_JS = r"""
+var SCROLLER=arguments[0], SEG=arguments[1], MAXR=arguments[2], done=arguments[3];
+var prev=-1, stale=0, rounds=0;
+function tick(){
+  var n=document.querySelectorAll(SEG).length;
+  if(n===prev){stale++;}else{stale=0;prev=n;}
+  if(stale>=2||rounds>=MAXR){done(prev>0?prev:0);return;}
+  rounds++;
+  var sc=document.querySelector(SCROLLER);
+  if(sc&&sc.scrollHeight>sc.clientHeight){sc.scrollTop=sc.scrollHeight;}
+  else{var s=document.querySelectorAll(SEG);if(s.length){s[s.length-1].scrollIntoView({block:'end'});}}
+  setTimeout(tick,150);
+}
+tick();
+"""
+
+
 def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
-    """Defensive against virtualization: scroll the last segment into view until
-    the segment count stops growing. Returns the final count. (For the common
-    non-virtualized panel this stabilises immediately.)"""
+    """Load every (possibly virtualized) transcript segment; return the count.
+
+    Fast path: the whole scroll-until-stable loop runs in-page via ONE
+    ``execute_async_script`` (see ``_LOAD_SEGMENTS_JS``). Falls back to the
+    per-round Selenium loop if async scripts are unavailable/error."""
+    try:
+        return int(
+            driver.execute_async_script(
+                _LOAD_SEGMENTS_JS, TRANSCRIPT_SCROLLER, TRANSCRIPT_SEGMENT, max_rounds
+            )
+            or 0
+        )
+    except WebDriverException:
+        return _load_all_transcript_segments_slow(driver, max_rounds)
+
+
+def _load_all_transcript_segments_slow(driver, max_rounds: int = 60) -> int:
+    """Per-round Selenium fallback for :func:`_load_all_transcript_segments`."""
     prev, stale = -1, 0
     for _ in range(max_rounds):
         try:
-            n = len(driver.find_elements(By.CSS_SELECTOR, TRANSCRIPT_SEGMENT))
+            n = _count(driver, TRANSCRIPT_SEGMENT)
         except WebDriverException:
             break
         if n == prev:
@@ -974,7 +1057,7 @@ def _load_all_transcript_segments(driver, max_rounds: int = 60) -> int:
             )
         except WebDriverException:
             break
-        time.sleep(0.3)
+        time.sleep(0.2)
     return prev if prev > 0 else 0
 
 
@@ -1016,7 +1099,7 @@ def _open_transcript_and_wait(
         seg_timeout, retry = timeout, True
         # Panel host usually appears before the segments hydrate; don't block long.
         try:
-            WebDriverWait(driver, min(seg_timeout, 4.0)).until(
+            WebDriverWait(driver, min(seg_timeout, 4.0), poll_frequency=_POLL).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, TRANSCRIPT_PANEL_ANY))
             )
         except TimeoutException:
