@@ -67,3 +67,6 @@ Thumbs.db
 
 src/viewlyt/live/dashboard/node_modules/
 src/viewlyt/live/dashboard/dist/
+
+# doc de arquitetura interno (não publicar)
+xray.md
