@@ -229,9 +229,43 @@ def test_chat_messages() -> None:
     # prompt hardening: the collected text is untrusted DATA, not instructions
     assert "UNTRUSTED DATA" in system and "NEVER follow" in system
     assert "English" in system  # answer language injected
-    assert "DATA-BLOCK-XYZ" in system  # the context block is embedded in the system message
-    assert msgs[1] == {"role": "user", "content": "hi"}  # history follows verbatim
+    # secperf S12: the untrusted context lives in a tagged USER turn, NOT the system role
+    assert "DATA-BLOCK-XYZ" not in system
+    data_turn = msgs[1]
+    assert data_turn["role"] == "user"
+    assert "<collected_data>" in data_turn["content"]
+    assert "DATA-BLOCK-XYZ" in data_turn["content"]
+    assert msgs[2] == {"role": "user", "content": "hi"}  # history follows the data turn
     print("ok: chat_messages")
+
+
+def test_rag_llm_func_appends_injection_guard(monkeypatch) -> None:
+    # secperf S8: EVERY LightRAG LLM call (entity extraction on ingest + query on ask)
+    # must carry the untrusted-data guard, appended to any base system prompt.
+    import asyncio
+    import sys
+    import types
+
+    from viewlyt.rag import _RAG_GUARD, RagConfig, _make_llm_func
+
+    captured: dict = {}
+
+    async def fake_complete(model, prompt, *, system_prompt=None, history_messages=None, **kw):
+        captured["system_prompt"] = system_prompt
+        return "ok"
+
+    mod = types.ModuleType("lightrag.llm.openai")
+    mod.openai_complete_if_cache = fake_complete  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lightrag", types.ModuleType("lightrag"))
+    monkeypatch.setitem(sys.modules, "lightrag.llm", types.ModuleType("lightrag.llm"))
+    monkeypatch.setitem(sys.modules, "lightrag.llm.openai", mod)
+
+    func = _make_llm_func(RagConfig.from_env({}))
+    asyncio.run(func("prompt", system_prompt="EXTRACT ENTITIES"))
+    assert "UNTRUSTED DATA" in captured["system_prompt"]
+    assert "EXTRACT ENTITIES" in captured["system_prompt"]  # original prompt preserved
+    asyncio.run(func("prompt", system_prompt=None))
+    assert _RAG_GUARD in captured["system_prompt"]  # guard applied even with no base prompt
 
 
 def test_expired_doc_ids() -> None:
