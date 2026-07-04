@@ -389,8 +389,8 @@ uv run vl ask out/*.md 'which video had the better reception, and why?'
 
 # No question -> interactive REPL over the same loaded base (Ctrl-D to quit):
 uv run vl ask out/*.md
-> qual vídeo teve mais aceitação?
-> e o que mais reclamam nos comentários?
+> which video had the better reception?
+> what are the most common complaints in the comments?
 ```
 
 - **Nothing persists.** The default chat keeps no index and writes no files — close

@@ -68,21 +68,21 @@ _UNIFY_DEFAULT_RELATED = 20
 UNIFIED_ALL_FILENAME = "unified-all.md"  # the single --unify-all output
 
 _EXAMPLES = """\
-exemplos:
-  vl 'https://youtu.be/dQw4w9WgXcQ'               # só a transcrição (default) -> *.transcript.md
-  vl -c '<url>'                                    # só comentários -> out/<slug>-<id>.md
-  vl -c -t '<url>'                                 # comentários + transcrição
-  vl -t --ts '<url>'                               # transcrição COM os timestamps [m:ss]
-  vl -r 17 '<url>'                                 # 17 vídeos relacionados -> *.related.md
-  vl -u '<url>'                                    # todos os produtos num só arquivo (--unify)
-  vl -u --copy '<url>'                             # unifica e copia para a área de transferência
-  vl --unify-all '<url1>' '<url2>'                 # todos os vídeos num arquivo só
-  vl --from-file urls.txt -j 4                     # vários vídeos (.txt/.csv), 4 navegadores
-  vl --headed '<url>'                              # navegador visível (contra o bot wall)
+examples:
+  vl 'https://youtu.be/dQw4w9WgXcQ'               # transcript only (default) -> *.transcript.md
+  vl -c '<url>'                                    # comments only -> out/<slug>-<id>.md
+  vl -c -t '<url>'                                 # comments + transcript
+  vl -t --ts '<url>'                               # transcript WITH the timestamps [m:ss]
+  vl -r 17 '<url>'                                 # 17 related videos -> *.related.md
+  vl -u '<url>'                                    # all products in one file (--unify)
+  vl -u --copy '<url>'                             # unify and copy to the clipboard
+  vl --unify-all '<url1>' '<url2>'                 # all videos in a single file
+  vl --from-file urls.txt -j 4                     # several videos (.txt/.csv), 4 browsers
+  vl --headed '<url>'                              # visible browser (against the bot wall)
 
-outros modos (use `vl <modo> --help` para as opções de cada um):
-  vl ask out/*.md '<pergunta>'                     # conversa sobre os .md já coletados
-  vl live '<url-da-live>'                          # análise do chat ao vivo em tempo real
+other modes (use `vl <mode> --help` for each one's options):
+  vl ask out/*.md '<question>'                     # chat about the .md already collected
+  vl live '<live-url>'                             # real-time live chat analysis
 """
 
 
@@ -358,7 +358,7 @@ def run_batch(
     cp_lock = threading.Lock()
     s_lock = threading.Lock()
     bar = tqdm(
-        total=len(targets), desc="vídeos", unit="vídeo", disable=(len(targets) == 1 or quiet)
+        total=len(targets), desc="videos", unit="video", disable=(len(targets) == 1 or quiet)
     )
     bar_lock = threading.Lock()
 
@@ -639,7 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--jobs",
         type=int,
         default=None,
-        help="number of concurrent browser instances (default: min(4, nº de vídeos))",
+        help="number of concurrent browser instances (default: min(4, number of videos))",
     )
     p.add_argument(
         "--limit-comments",

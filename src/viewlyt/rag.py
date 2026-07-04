@@ -659,7 +659,7 @@ def chat_repl(paths: Iterable[str | Path], *, cfg: RagConfig | None = None) -> N
         )
     client = _chat_client(cfg)
     history: list[dict] = []
-    print("Chat pronto — pergunte à vontade. Ctrl-D ou 'sair' para encerrar.")
+    print("Chat ready — ask away. Ctrl-D or 'exit' to quit.")
     while True:
         try:
             line = input("\n> ").strip()
