@@ -154,6 +154,31 @@ def test_export_csv_flattens_categories_and_text() -> None:
     assert "all good, mood: hyped" in body
 
 
+def test_partial_probe_failure_is_reported_by_name() -> None:
+    # One probe failing while others succeed must produce a named error frame —
+    # previously the card just silently stopped updating.
+    class Flaky(FakeLLMClient):
+        async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
+            if probe.id == "boom":
+                raise RuntimeError("simulated provider error")
+            return await super().run(probe, messages)
+
+    srv = LiveServer(LLMConfig(), WindowConfig())
+    srv._client = Flaky()  # type: ignore[assignment]
+    srv.probes["ok"] = OpenSummaryProbe(id="ok", label="OK", instruction="i")
+    srv.probes["boom"] = OpenSummaryProbe(id="boom", label="Boom", instruction="i")
+    ws = FakeWS()
+    srv.dash.active = {ws}  # type: ignore[assignment]
+
+    msgs = [ChatMessage(author="u", text="m", ts=1.0)]
+    asyncio.run(process_window(srv, msgs, 1.0))
+
+    frames = [json.loads(s) for s in ws.sent]
+    assert any(f["type"] == "result" and f["probe_id"] == "ok" for f in frames)
+    errors = [f["message"] for f in frames if f["type"] == "error"]
+    assert any("Boom" in m for m in errors)
+
+
 def test_remove_probe_and_reset_state_drop_history(tmp_path, monkeypatch) -> None:
     # apply_control persists state-changing ops — point it at a temp dir so the
     # test never touches the real ~/.viewlyt.

@@ -1451,17 +1451,26 @@ function ensureCard(probeId: string): HTMLDivElement {
   card.appendChild(scrubber);
 
   // Wire the scrubber listener ONCE; read the live max + kind each time.
+  // rAF-throttled: dragging fires `input` continuously and each pass rebuilds
+  // the chart SVG from scratch, so render at most once per frame (the handler
+  // reads range.value at frame time — intermediate positions are skipped).
+  let scrubQueued = false;
   range.addEventListener("input", () => {
-    const hist = resultHistory.get(probeId) ?? [];
-    const max = Math.max(0, hist.length - 1);
-    const idx = Math.min(max, Math.max(0, Number(range.value)));
-    const vs = viewState.get(probeId);
-    if (vs) {
-      vs.index = idx;
-      vs.live = idx === max;
-    }
-    renderDisplay(card, probeId, domKind(card), idx);
-    refreshScrubber(card, probeId, idx);
+    if (scrubQueued) return;
+    scrubQueued = true;
+    requestAnimationFrame(() => {
+      scrubQueued = false;
+      const hist = resultHistory.get(probeId) ?? [];
+      const max = Math.max(0, hist.length - 1);
+      const idx = Math.min(max, Math.max(0, Number(range.value)));
+      const vs = viewState.get(probeId);
+      if (vs) {
+        vs.index = idx;
+        vs.live = idx === max;
+      }
+      renderDisplay(card, probeId, domKind(card), idx);
+      refreshScrubber(card, probeId, idx);
+    });
   });
 
   // --- display (placeholder until the first result arrives) ---
@@ -1770,40 +1779,100 @@ function handleHistory(msg: HistoryMsg): void {
 }
 
 // ---------------------------------------------------------------------------
-// Error banner
+// Toasts — stacking, auto-dismissing, screen-reader-announced notifications.
+// Replaces the single overwrite-in-place error card: distinct errors now stack
+// (up to 4), each dismisses itself, and successes get lightweight feedback too.
 // ---------------------------------------------------------------------------
 
-function showError(message: string): void {
-  const container = el<HTMLDivElement>("results");
-  // Only the top-level "Waiting for results…" hint (a direct child) — never a
-  // card's nested "Waiting for first result…" placeholder.
-  const hint = container.querySelector(":scope > .empty-hint");
-  if (hint) hint.remove();
-  let card = container.querySelector<HTMLDivElement>('[data-error="1"]');
-  if (!card) {
-    card = document.createElement("div");
-    // Bordered danger-tinted box (R4): no inline border-left, no left bar.
-    card.className = "result-card result-error";
-    card.dataset["error"] = "1";
-    container.prepend(card);
+type ToastKind = "error" | "success" | "info";
+
+const TOAST_MAX = 4;
+
+function showToast(message: string, kind: ToastKind = "info", ttlMs = 6000): void {
+  const container = el<HTMLDivElement>("toasts");
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${kind}`;
+  // "alert" announces assertively on insert; successes/infos stay polite.
+  toast.setAttribute("role", kind === "error" ? "alert" : "status");
+  const text = document.createElement("span");
+  text.className = "toast-text";
+  text.textContent = (kind === "error" ? "⚠ " : "") + message;
+  toast.appendChild(text);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast-close";
+  close.textContent = "✕";
+  close.setAttribute("aria-label", "Dismiss notification");
+  close.addEventListener("click", () => toast.remove());
+  toast.appendChild(close);
+  container.appendChild(toast);
+  while (container.childElementCount > TOAST_MAX && container.firstChild) {
+    container.removeChild(container.firstChild);
   }
-  card.textContent = "⚠ " + message;
+  window.setTimeout(() => toast.remove(), ttlMs);
+}
+
+function showError(message: string): void {
+  showToast(message, "error", 12000);
 }
 
 // ---------------------------------------------------------------------------
 // Live chat feed
 // ---------------------------------------------------------------------------
 
+// Autoscroll only while the user is already at the bottom; scrolling up to read
+// pauses it (new lines pile up behind a "↓ N new" jump button) instead of
+// yanking the view back down 4×/s.
+const FEED_STICK_PX = 40;
+let feedUnread = 0;
+
+function feedAtBottom(feed: HTMLElement): boolean {
+  return feed.scrollHeight - feed.scrollTop - feed.clientHeight < FEED_STICK_PX;
+}
+
+function updateFeedJump(): void {
+  const jump = document.getElementById("feed-jump");
+  if (!jump) return;
+  jump.classList.toggle("hidden", feedUnread === 0);
+  jump.textContent = `↓ ${feedUnread} new`;
+}
+
+function jumpFeedToBottom(): void {
+  const feed = document.getElementById("feed");
+  if (!feed) return;
+  feed.scrollTop = feed.scrollHeight;
+  feedUnread = 0;
+  updateFeedJump();
+}
+
+function wireFeed(): void {
+  const feed = document.getElementById("feed");
+  const jump = document.getElementById("feed-jump");
+  if (jump) jump.addEventListener("click", jumpFeedToBottom);
+  if (feed) {
+    // Scrolling back to the bottom by hand also clears the unread counter.
+    feed.addEventListener("scroll", () => {
+      if (feedUnread > 0 && feedAtBottom(feed)) {
+        feedUnread = 0;
+        updateFeedJump();
+      }
+    });
+  }
+}
+
 function appendFeed(items: { author: string; text: string }[]): void {
   const feed = document.getElementById("feed");
   if (!feed) return;
+  // Drop the "No messages yet…" placeholder on the first real batch.
+  const placeholder = feed.querySelector(":scope > .empty-hint");
+  if (placeholder) placeholder.remove();
+  const stick = feedAtBottom(feed);
   const frag = document.createDocumentFragment();
   for (const { author, text } of items) {
     const line = document.createElement("div");
     const a = document.createElement("span");
+    a.className = "feed-author";
     a.textContent = author + ": ";
-    a.style.fontWeight = "600";
-    a.style.color = "#4c8bf5";
     line.appendChild(a);
     line.appendChild(document.createTextNode(text));
     frag.appendChild(line);
@@ -1812,7 +1881,12 @@ function appendFeed(items: { author: string; text: string }[]): void {
   while (feed.childElementCount > 400 && feed.firstChild) {
     feed.removeChild(feed.firstChild);
   }
-  feed.scrollTop = feed.scrollHeight;
+  if (stick) {
+    feed.scrollTop = feed.scrollHeight;
+  } else {
+    feedUnread += items.length;
+    updateFeedJump();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1925,6 +1999,11 @@ function handleState(msg: StateMsg): void {
   // after spending shows the truth instead of "idle / $0".
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
   setProc(!!msg.processing, msg.latency_ms);
+
+  // Budget stop is sticky state, not a transient error: show a persistent header
+  // chip while analyses are paused by the spending cap (late joiners see it too).
+  const budgetFlag = document.getElementById("budget-flag");
+  if (budgetFlag) budgetFlag.classList.toggle("hidden", !msg.budget_blocked);
   if (!lastCost && ((msg.tokens_total ?? 0) > 0 || (msg.cost_total ?? 0) > 0)) {
     handleCost({
       type: "cost",
@@ -2164,6 +2243,18 @@ function labelToId(label: string): string {
 // Button wiring
 // ---------------------------------------------------------------------------
 
+/** Swap a button's label for ~1.4s ("Copied ✓") as inline action feedback. */
+function flashButton(btn: HTMLButtonElement, text: string): void {
+  if (btn.dataset["flashing"] === "1") return;
+  const original = btn.textContent ?? "";
+  btn.dataset["flashing"] = "1";
+  btn.textContent = text;
+  window.setTimeout(() => {
+    btn.textContent = original;
+    delete btn.dataset["flashing"];
+  }, 1400);
+}
+
 function wireButtons(): void {
   el("apply-window").addEventListener("click", () => {
     send({
@@ -2175,6 +2266,7 @@ function wireButtons(): void {
       merge_authors: el<HTMLInputElement>("merge_authors").checked,
       capacity: Number(inputVal("capacity")),
     });
+    showToast("Window settings applied.", "success");
   });
 
   el("pause").addEventListener("click", () => send({ op: "pause" }));
@@ -2205,6 +2297,7 @@ function wireButtons(): void {
     send(op);
     // Clear the api_key input after sending
     setInputVal("api_key", "");
+    showToast("Model settings applied.", "success");
   });
 
   el("add-probe").addEventListener("click", () => {
@@ -2248,6 +2341,7 @@ function wireButtons(): void {
     setInputVal("probe-question", "");
     setInputVal("probe-categories", "");
     setInputVal("probe-instruction", "");
+    showToast("Probe added — first analysis runs right away.", "success");
   });
 
   el("import-json").addEventListener("click", () => {
@@ -2435,15 +2529,21 @@ function wireButtons(): void {
 
   el("copy-snippet").addEventListener("click", () => {
     const text = el<HTMLTextAreaElement>("snippet").value;
-    navigator.clipboard.writeText(text).catch(() => {
-      // Fallback: select the textarea so the user can copy manually
-      el<HTMLTextAreaElement>("snippet").select();
-    });
+    navigator.clipboard
+      .writeText(text)
+      .then(() => flashButton(el<HTMLButtonElement>("copy-snippet"), "Copied ✓"))
+      .catch(() => {
+        // Fallback: select the textarea so the user can copy manually
+        el<HTMLTextAreaElement>("snippet").select();
+      });
   });
 
   el("copy-bookmarklet").addEventListener("click", () => {
     const bm = el<HTMLTextAreaElement>("bookmarklet");
-    navigator.clipboard.writeText(bm.value).catch(() => bm.select());
+    navigator.clipboard
+      .writeText(bm.value)
+      .then(() => flashButton(el<HTMLButtonElement>("copy-bookmarklet"), "Copied ✓"))
+      .catch(() => bm.select());
   });
 }
 
@@ -2525,6 +2625,7 @@ function wireGroups(): void {
 
 updateProbeFieldVisibility();
 wireButtons();
+wireFeed();
 wireGroups();
 connectDashboard();
 connectControl();

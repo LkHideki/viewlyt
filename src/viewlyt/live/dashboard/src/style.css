@@ -156,6 +156,20 @@ header {
   border: 1px solid rgba(234, 67, 53, 0.30);
 }
 
+/* Sticky "budget cap reached" chip: analyses are paused by the spending cap. */
+.budget-flag {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.65rem;
+  border-radius: 99px;
+  text-transform: uppercase;
+  background: rgba(251, 188, 4, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(251, 188, 4, 0.35);
+  cursor: help;
+}
+
 /* -------------------------------------------------------------------------
    Stats bar
    ------------------------------------------------------------------------- */
@@ -811,13 +825,71 @@ input.scrub-range:focus-visible {
   margin-top: 0.1rem;
 }
 
-/* R4 — error card: danger-tinted bordered box, no left bar */
-.result-error {
-  border: 1px solid rgba(234, 67, 53, 0.35);
-  background: rgba(234, 67, 53, 0.10);
-  color: var(--danger);
+/* -------------------------------------------------------------------------
+   Toasts — fixed bottom-right stack; errors are danger-tinted, successes green.
+   ------------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
   border-radius: var(--radius);
-  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.toast-error {
+  border-color: rgba(234, 67, 53, 0.35);
+  background: rgba(234, 67, 53, 0.12);
+  color: var(--danger);
+}
+
+.toast-success {
+  border-color: rgba(52, 168, 83, 0.35);
+  background: rgba(52, 168, 83, 0.12);
+  color: var(--success);
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 0.75rem;
+  padding: 0 0.15rem;
+  opacity: 0.7;
+}
+
+.toast-close:hover {
+  opacity: 1;
+  filter: none;
 }
 
 /* R3 — per-category stats table under every chart type except "bars" */
@@ -993,6 +1065,26 @@ input.scrub-range:focus-visible {
   word-break: break-word;
 }
 
+.feed-author {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Floating "↓ N new" pill: shown while the user scrolled up and messages keep
+   arriving; anchors to the chat column (positioned in both layouts). */
+.feed-jump {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 9999px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
 /* Narrow screens: stack the two columns vertically. */
 @media (max-width: 860px) {
   .results-cols {
@@ -1004,8 +1096,9 @@ input.scrub-range:focus-visible {
     border-top: 1px solid var(--border);
     padding-left: 0;
     padding-top: var(--gap);
-    /* stacked: drop the sticky/viewport cap; the #feed cap below bounds it */
-    position: static;
+    /* stacked: drop the sticky/viewport cap; the #feed cap below bounds it.
+       relative (not static) keeps the column the anchor for .feed-jump. */
+    position: relative;
     max-height: none;
   }
 

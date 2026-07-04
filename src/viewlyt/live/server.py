@@ -440,6 +440,20 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
                 ),
             }
         )
+    else:
+        # Partial failure used to be invisible: 3 cards update, 2 silently don't.
+        # Name each probe that returned nothing this batch.
+        returned = {r.probe_id for r in results}
+        for p in probes:
+            if p.id not in returned:
+                await server.dash.broadcast(
+                    {
+                        "type": "error",
+                        "message": (
+                            f"Probe '{p.label or p.id}' failed this batch (see the server log)."
+                        ),
+                    }
+                )
     # Cost frame for this analysed window: per-batch delta + running totals.
     batch_tok = getattr(c, "total_tokens", 0) - before_tok
     batch_cost = getattr(c, "total_cost", 0.0) - before_cost
