@@ -120,6 +120,17 @@ class ConnectionManager:
         for ws, res in zip(conns, results, strict=True):
             if isinstance(res, BaseException):
                 self.disconnect(ws)
+                # Best-effort close so the tab sees a clean disconnect and its
+                # auto-reconnect kicks in (instead of a zombie socket that just
+                # stops receiving frames).
+                asyncio.create_task(self._close_quietly(ws))
+
+    @staticmethod
+    async def _close_quietly(ws: WebSocket) -> None:
+        try:
+            await asyncio.wait_for(ws.close(), 2.0)
+        except Exception:
+            pass
 
 
 class LiveServer:
@@ -628,21 +639,35 @@ async def worker(server: LiveServer) -> None:
 SNIPPET_JS = """(function () {
   if (window.__viewlyt_running) { console.warn("[viewlyt] already capturing on this page; ignoring a second injection."); return; }
   window.__viewlyt_running = true;
-  var WS_URL = "ws://%HOST%:%PORT%/ingest";
-  var ws, sent = 0, captured = 0, connected = false, pinger, flusher, scrollTimer, lastCapMs = 0, outbox = [];
+  var PORT = "%PORT%";
+  // Safari blocks insecure ws:// from an https page (mixed content) EXCEPT to the
+  // literal host "localhost" (127.0.0.1 is not exempt on older WebKit), so when the
+  // server is on loopback we rotate between both spellings until one connects.
+  var HOSTS = (function () { var h = "%HOST%"; if (h === "127.0.0.1") return [h, "localhost"]; if (h === "localhost") return [h, "127.0.0.1"]; return [h]; })();
+  var hostIdx = 0, everConnected = false;
+  function wsUrl() { return "ws://" + HOSTS[hostIdx % HOSTS.length] + ":" + PORT + "/ingest"; }
+  var ws, captured = 0, connected = false, pinger, flusher, scrollTimer, lastCapMs = 0, outbox = [];
   var badge = document.createElement("div");
   badge.style.cssText = "position:fixed;z-index:2147483647;right:8px;bottom:8px;font:12px/1.4 system-ui,sans-serif;color:#fff;padding:6px 10px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.45);max-width:70vw";
   function paint(text, color) { badge.textContent = "viewlyt: " + text; badge.style.background = color || "#1e3a8a"; }
   (document.body || document.documentElement).appendChild(badge);
   function status() { paint("connected | captured " + captured, "#14532d"); }
   function connect() {
-    try { ws = new WebSocket(WS_URL); } catch (e) { paint("cannot open socket", "#7f1d1d"); return; }
-    ws.onopen = function () { connected = true; console.log("[viewlyt] connected", WS_URL); status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
-    ws.onclose = function () { connected = false; if (pinger) clearInterval(pinger); paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
-    ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + WS_URL + " failed. Usual causes: (1) accept Chrome's one-time 'local network' permission; (2) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
+    var url = wsUrl();
+    try { ws = new WebSocket(url); } catch (e) {
+      // Safari throws HERE (synchronously) when mixed content blocks the socket.
+      if (!everConnected) hostIdx++;
+      paint("browser blocked ws:// - see console", "#7f1d1d");
+      console.warn("[viewlyt] new WebSocket(" + url + ") threw: " + e + " -- Safari blocks insecure ws:// from https pages except to 'localhost' (retrying with the next host), and content blockers (uBlock/AdGuard) can block local connections: allowlist youtube.com there.");
+      setTimeout(connect, 2000);
+      return;
+    }
+    ws.onopen = function () { connected = true; everConnected = true; console.log("[viewlyt] connected", url); status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
+    ws.onclose = function () { connected = false; if (pinger) clearInterval(pinger); if (!everConnected) hostIdx++; paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
+    ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + url + " failed. Usual causes: (1) Safari blocks insecure ws:// from https pages except to 'localhost' - both host spellings are retried automatically, but content blockers can also block local connections (allowlist youtube.com / disable for this site); (2) Chrome: accept the one-time 'local network' permission; (3) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
   }
   function send(obj) { outbox.push(obj); if (outbox.length > 3000) outbox.shift(); }
-  function flush() { if (!outbox.length || !ws || ws.readyState !== 1) return; var n = outbox.length; ws.send(JSON.stringify(outbox.splice(0, n))); sent += n; if (connected) status(); }
+  function flush() { if (!outbox.length || !ws || ws.readyState !== 1) return; var n = outbox.length; ws.send(JSON.stringify(outbox.splice(0, n))); if (connected) status(); }
   function findItems(doc) { try { return doc.querySelector("yt-live-chat-item-list-renderer #items") || doc.querySelector("yt-live-chat-renderer #items") || doc.querySelector("#chat #items") || null; } catch (e) { return null; } }
   function chatDoc() { try { var f = document.querySelector("iframe#chatframe, iframe[src*='live_chat']"); if (f && f.contentDocument) return f.contentDocument; } catch (e) {} return null; }
   function locate() { var it = findItems(document); if (it) return it; var cd = chatDoc(); return cd ? findItems(cd) : null; }

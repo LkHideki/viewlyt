@@ -1540,7 +1540,13 @@ function syncCardsFromState(): void {
   const cards = container.querySelectorAll<HTMLDivElement>(".result-card[data-probe-id]");
   cards.forEach((card) => {
     const pid = card.dataset["probeId"];
-    if (pid !== undefined && !probeState.has(pid)) card.remove();
+    if (pid !== undefined && !probeState.has(pid)) {
+      card.remove();
+      // Drop the orphaned snapshots too: a probe recreated later under the same
+      // slug id must start fresh, not inherit the removed probe's scrubber.
+      resultHistory.delete(pid);
+      viewState.delete(pid);
+    }
   });
 }
 

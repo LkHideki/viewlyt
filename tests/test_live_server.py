@@ -154,6 +154,50 @@ def test_export_csv_flattens_categories_and_text() -> None:
     assert "all good, mood: hyped" in body
 
 
+# ---------------------------------------------------------------------------
+# Capture snippet / userscript / extension (regression: Safari host fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_render_snippet_binds_host_port_and_rotates_loopback_hosts() -> None:
+    js = live_server.render_snippet("127.0.0.1", 8123)
+    assert "%HOST%" not in js and "%PORT%" not in js
+    assert '"8123"' in js
+    # Safari fix: loopback must offer BOTH spellings (mixed-content exemption is
+    # hostname-based on WebKit), and the code must rotate between them.
+    assert 'return [h, "localhost"]' in js
+    assert 'return [h, "127.0.0.1"]' in js
+    assert "hostIdx" in js
+
+
+def test_render_snippet_custom_host_has_no_loopback_fallback() -> None:
+    js = live_server.render_snippet("192.168.0.10", 8000)
+    assert '"192.168.0.10"' in js
+    # A LAN host must not silently fall back to the developer's own machine.
+    assert "localhost:8000" not in js
+
+
+def test_userscript_wraps_snippet_with_metadata() -> None:
+    us = live_server.render_userscript("127.0.0.1", 8000)
+    assert us.startswith("// ==UserScript==")
+    assert "@match        https://www.youtube.com/live_chat*" in us
+    assert "/ingest" in us
+
+
+def test_extension_zip_is_valid_and_carries_the_snippet() -> None:
+    import io as _io
+    import zipfile as _zipfile
+
+    blob = live_server.build_extension_zip("127.0.0.1", 8000)
+    with _zipfile.ZipFile(_io.BytesIO(blob)) as zf:
+        names = set(zf.namelist())
+        assert names == {"manifest.json", "content.js"}
+        manifest = json.loads(zf.read("manifest.json"))
+        assert manifest["manifest_version"] == 3
+        content = zf.read("content.js").decode()
+        assert content == live_server.render_snippet("127.0.0.1", 8000)
+
+
 def test_partial_probe_failure_is_reported_by_name() -> None:
     # One probe failing while others succeed must produce a named error frame —
     # previously the card just silently stopped updating.
