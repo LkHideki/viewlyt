@@ -6,7 +6,7 @@ so ``import viewlyt`` stays lightweight and they unit-test without a browser or 
 network. The FastAPI server (:mod:`server`) and the LLM client (:mod:`llm`) pull
 their heavy deps in lazily, only when used.
 
-Run it with the ``viewlyt-live`` console script — see ``how-to.md`` at the repo root.
+Run it with ``vl live`` (or ``vl help live`` for every flag).
 """
 
 from __future__ import annotations

@@ -44,7 +44,7 @@ em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 `persistence`/`capture`; dashboard Vite+TS em `dashboard/` → `static/`).
 `--capture server` dispensa o snippet no browser do usuário: o servidor dirige um
 Chrome headless próprio no popout (única rota que funciona com Safari — WebKit
-bloqueia `ws://` inseguro de páginas https para QUALQUER host). Veja @how-to.md.
+bloqueia `ws://` inseguro de páginas https para QUALQUER host).
 
 **Modo análise (opt-in):** `uv run vl ask out/*.md '<pergunta>'` dialoga com os `.md`
 **já coletados** (sem re-coletar). **Padrão = chat efêmero** (`uv sync --extra ask`, só `openai`):
@@ -91,7 +91,7 @@ chat=`openai`, `--persist`=LightRAG/fastembed).
   units/clean (puros), `test_live_server.py` (broadcast/histórico/export/snippet, fakes),
   `test_live_ws.py` (integração real dos 3 WebSockets via TestClient, sem rede),
   `test_live_smoke.py` (CLI por subprocess) e `test_live_e2e.py` (**WebKit/Safari** via
-  Playwright, opt-in: `VIEWLYT_E2E=1` + grupo `e2e` + `playwright install webkit`). Veja @how-to.md.
+  Playwright, opt-in: `VIEWLYT_E2E=1` + grupo `e2e` + `playwright install webkit`).
 - `out/` — entregáveis (no `.gitignore`).
 
 ## Convenções

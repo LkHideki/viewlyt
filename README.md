@@ -356,8 +356,8 @@ already logged in to YouTube — it's the most reliable bypass.
 `vl live` taps a YouTube **live chat** in real time, batches the messages to an
 LLM, and streams the results — live percentages, rolling summaries, and charts —
 to a local dashboard you drive in a second window (create probes by typing a
-question, set a spending budget, pick the output language, and more). See
-**[how-to.md](how-to.md)** for the full guide.
+question, set a spending budget, pick the output language, and more). Run
+`vl help live` for every flag.
 
 ```bash
 uv sync --extra live
