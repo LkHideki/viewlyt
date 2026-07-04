@@ -28,6 +28,8 @@ uv run viewlyt-ask --persist out/*.md '<pergunta>'  # base LightRAG persistente 
 
 uv run pytest                                       # toda a suíte (sem navegador; e2e pulado)
 VIEWLYT_E2E=1 uv run pytest -m e2e                  # e2e real (Chrome + rede), opt-in
+uv sync --all-extras --group e2e && uv run playwright install webkit  # deps do e2e do dashboard
+VIEWLYT_E2E=1 uv run pytest -m e2e tests/test_live_e2e.py  # e2e do dashboard live em WebKit (motor do Safari)
 uv run ruff check --fix                             # lint
 uv run ruff format                                  # formatação
 uv run pre-commit install                           # roda ruff + pytest a cada commit
@@ -82,7 +84,11 @@ chat=`openai`, `--persist`=LightRAG/fastembed).
 - `tests/test_integration.py` — integração sem navegador (monkeypatch do boundary Selenium em `cli`/`api`).
 - `tests/test_smoke.py` — smoke da CLI por subprocess (`--version`/`--help`/exit codes/entry point).
 - `tests/test_e2e.py` — e2e real (Chrome + rede), **opt-in** via `VIEWLYT_E2E=1` (pulado por padrão).
-- `src/viewlyt/live/` — subpacote **opt-in** do modo live (real-time, LLM); testes em `tests/test_live_*.py`. Veja @how-to.md.
+- `src/viewlyt/live/` — subpacote **opt-in** do modo live (real-time, LLM); testes em `tests/test_live_*.py`:
+  units/clean (puros), `test_live_server.py` (broadcast/histórico/export/snippet, fakes),
+  `test_live_ws.py` (integração real dos 3 WebSockets via TestClient, sem rede),
+  `test_live_smoke.py` (CLI por subprocess) e `test_live_e2e.py` (**WebKit/Safari** via
+  Playwright, opt-in: `VIEWLYT_E2E=1` + grupo `e2e` + `playwright install webkit`). Veja @how-to.md.
 - `out/` — entregáveis (no `.gitignore`).
 
 ## Convenções

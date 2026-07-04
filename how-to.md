@@ -80,6 +80,7 @@ You can also swap the model (and set a spending budget, or the analysis language
 ## Troubleshooting
 
 - **Badge says `CANNOT REACH SERVER` (or `captured` stays at 0):** accept Chrome's one-time *local network* prompt; make sure you used the **popout** (not the embedded chat); keep the server on `127.0.0.1`. If you run an **ad blocker**, allow this page to reach `127.0.0.1` — uBlock Origin's *"Block outsider intrusion into LAN"* filter blocks exactly this, so disable it or allowlist the site.
+- **Safari:** Safari blocks insecure `ws://` from an `https` page (mixed content) except to the literal host `localhost` — the snippet retries **both** `127.0.0.1` and `localhost` automatically, so just leave it reconnecting for a few seconds. If it still can't connect, a **content blocker** (AdGuard, 1Blocker, uBlock) is the usual cause: disable it for `youtube.com`. The dashboard itself (plain `http://`) works in Safari untouched.
 - **A red `youtubei/v1/player/ad_break … net::ERR_BLOCKED_BY_CLIENT` line in the console:** that is your **ad blocker** blocking YouTube's ad telemetry. It is unrelated to viewlyt and does **not** affect chat capture — ignore it.
 - **`allow pasting`:** Chrome's console refuses pasted code until you type `allow pasting` once. Use the **extension** or **bookmark** to skip this entirely.
 - **A probe shows no results:** it needs the LLM reachable (check the Model panel and the server log) and, for classification, at least a couple of categories. Click **Analyze now** to retry without waiting for the refresh.

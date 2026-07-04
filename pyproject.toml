@@ -68,6 +68,12 @@ dev = [
     "pytest>=8",
     "pre-commit>=3.7",
 ]
+# Browser e2e for the live dashboard (WebKit = Safari's engine). Opt-in:
+#   uv sync --extra live --group e2e && uv run playwright install webkit
+#   VIEWLYT_E2E=1 uv run pytest -m e2e
+e2e = [
+    "playwright>=1.45",
+]
 
 [tool.ruff]
 line-length = 100
