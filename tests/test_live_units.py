@@ -374,6 +374,42 @@ def test_probe_from_dict_unknown_kind_raises() -> None:
     print("ok: probe_from_dict_unknown_kind_raises")
 
 
+def test_probe_per_probe_overrides_roundtrip() -> None:
+    d = {
+        "kind": "open",
+        "id": "x",
+        "label": "X",
+        "instruction": "i",
+        "interval_s": 90,
+        "sample_n": 50,
+    }
+    p = probe_from_dict(d)
+    assert p.interval_s == 90.0
+    assert p.sample_n == 50
+    out = p.to_dict()
+    assert out["interval_s"] == 90.0
+    assert out["sample_n"] == 50
+    print("ok: probe_per_probe_overrides_roundtrip")
+
+
+def test_probe_to_dict_omits_unset_overrides() -> None:
+    # Pre-override probe dicts must stay byte-identical (persistence + dashboard).
+    p = probe_from_dict({"kind": "open", "id": "x", "instruction": "i"})
+    d = p.to_dict()
+    assert "interval_s" not in d
+    assert "sample_n" not in d
+    print("ok: probe_to_dict_omits_unset_overrides")
+
+
+def test_probe_overrides_bad_values_fall_back_to_off() -> None:
+    p = probe_from_dict(
+        {"kind": "open", "id": "x", "instruction": "i", "interval_s": "junk", "sample_n": -5}
+    )
+    assert p.interval_s == 0.0
+    assert p.sample_n == 0
+    print("ok: probe_overrides_bad_values_fall_back_to_off")
+
+
 # ---------------------------------------------------------------------------
 # Entry point for standalone execution
 # ---------------------------------------------------------------------------
@@ -401,4 +437,7 @@ if __name__ == "__main__":
     test_classification_roundtrip()
     test_open_summary_roundtrip()
     test_probe_from_dict_unknown_kind_raises()
+    test_probe_per_probe_overrides_roundtrip()
+    test_probe_to_dict_omits_unset_overrides()
+    test_probe_overrides_bad_values_fall_back_to_off()
     print("ALL TESTS PASSED")

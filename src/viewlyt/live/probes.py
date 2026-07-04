@@ -128,6 +128,10 @@ class Probe:
     def __init__(self, id: str, label: str) -> None:
         self.id = id
         self.label = label
+        # Per-probe overrides; 0 = follow the global WindowConfig. ``interval_s``
+        # is this probe's own re-analysis cadence, ``sample_n`` its own window size.
+        self.interval_s = 0.0
+        self.sample_n = 0
 
     # --- hooks -----------------------------------------------------------
     def build_prompt(self, messages: list[ChatMessage]) -> tuple[str, str]:
@@ -144,7 +148,13 @@ class Probe:
 
     # --- (de)serialization ----------------------------------------------
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "id": self.id, "label": self.label}
+        d: dict = {"kind": self.kind, "id": self.id, "label": self.label}
+        # Only serialized when set, so pre-override probe dicts stay byte-identical.
+        if self.interval_s:
+            d["interval_s"] = self.interval_s
+        if self.sample_n:
+            d["sample_n"] = self.sample_n
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> Probe:
@@ -350,10 +360,23 @@ PROBE_REGISTRY: dict[str, type[Probe]] = {
 
 
 def probe_from_dict(d: dict) -> Probe:
-    """Reconstruct a probe from its serialized form (dashboard → server)."""
+    """Reconstruct a probe from its serialized form (dashboard → server).
+
+    The per-probe overrides (``interval_s``/``sample_n``) are applied here, once,
+    so every registered kind gets them without touching its own ``from_dict``.
+    """
     kind = str(d.get("kind") or "")
     try:
         klass = PROBE_REGISTRY[kind]
     except KeyError:
         raise ValueError(f"unknown probe kind: {kind!r}") from None
-    return klass.from_dict(d)
+    p = klass.from_dict(d)
+    try:
+        p.interval_s = max(0.0, float(d.get("interval_s") or 0.0))
+    except (TypeError, ValueError):
+        p.interval_s = 0.0
+    try:
+        p.sample_n = max(0, int(d.get("sample_n") or 0))
+    except (TypeError, ValueError):
+        p.sample_n = 0
+    return p

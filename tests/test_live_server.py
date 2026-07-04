@@ -237,3 +237,103 @@ def test_remove_probe_and_reset_state_drop_history(tmp_path, monkeypatch) -> Non
     assert "mood" not in srv.history
     asyncio.run(apply_control(srv, {"op": "reset_state"}))
     assert srv.history == {}
+
+
+# ---------------------------------------------------------------------------
+# Per-probe sample_n + probe decomposition
+# ---------------------------------------------------------------------------
+
+
+class RecordingClient(FakeLLMClient):
+    """Records how many messages each probe actually saw."""
+
+    def __init__(self) -> None:
+        self.seen: dict[str, int] = {}
+
+    async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
+        self.seen[probe.id] = len(messages)
+        return await super().run(probe, messages)
+
+
+def test_process_window_slices_per_probe_sample_n() -> None:
+    # Global n=3; the probe with sample_n=2 sees its own smaller tail slice.
+    srv = LiveServer(LLMConfig(), WindowConfig(n=3))
+    client = RecordingClient()
+    srv._client = client  # type: ignore[assignment]
+    srv.probes["full"] = OpenSummaryProbe(id="full", label="Full", instruction="i")
+    small = OpenSummaryProbe(id="small", label="Small", instruction="i")
+    small.sample_n = 2
+    srv.probes["small"] = small
+
+    msgs = [ChatMessage(author=f"u{i}", text=f"m{i}", ts=float(i)) for i in range(4)]
+    asyncio.run(process_window(srv, msgs, 1.0))
+    assert client.seen == {"full": 3, "small": 2}
+
+
+def test_process_window_probes_subset_only_runs_those() -> None:
+    srv = LiveServer(LLMConfig(), WindowConfig(n=3))
+    client = RecordingClient()
+    srv._client = client  # type: ignore[assignment]
+    srv.probes["a"] = OpenSummaryProbe(id="a", label="A", instruction="i")
+    srv.probes["b"] = OpenSummaryProbe(id="b", label="B", instruction="i")
+
+    msgs = [ChatMessage(author="u", text="m", ts=1.0)]
+    asyncio.run(process_window(srv, msgs, 1.0, probes=[srv.probes["a"]]))
+    assert set(client.seen) == {"a"}
+    assert "b" not in srv.history  # the skipped probe reports no failure either
+
+
+class DecomposingClient(FakeLLMClient):
+    """complete_json returns a fixed composite decomposition."""
+
+    async def complete_json(self, system: str, user: str, schema: dict) -> dict:
+        return {
+            "rationale": "composite: quantify + explain",
+            "is_composite": True,
+            "probes": [
+                {
+                    "kind": "classification",
+                    "label": "Tech problems",
+                    "question": "Is this message reporting a technical problem?",
+                    "categories": ["yes", "no"],
+                },
+                {"kind": "open", "label": "Tech summary", "instruction": "summarize problems"},
+            ],
+        }
+
+
+class FailingClient(FakeLLMClient):
+    async def complete_json(self, system: str, user: str, schema: dict) -> dict:
+        raise RuntimeError("llm down")
+
+
+def test_decompose_broadcasts_suggestions_with_unique_ids() -> None:
+    srv = LiveServer(LLMConfig(), WindowConfig())
+    srv._client = DecomposingClient()  # type: ignore[assignment]
+    ws = FakeWS()
+    srv.dash.active = {ws}  # type: ignore[assignment]
+
+    asyncio.run(live_server._decompose(srv, "technical problems"))
+
+    frames = [json.loads(s) for s in ws.sent]
+    sugg = [f for f in frames if f["type"] == "suggestions"]
+    assert len(sugg) == 1
+    probes = sugg[0]["probes"]
+    assert {p["kind"] for p in probes} == {"classification", "open"}
+    ids = [p["id"] for p in probes]
+    assert len(ids) == len(set(ids)) and all(ids)
+    # Specs are proposals: nothing was added or persisted.
+    assert srv.probes == {}
+
+
+def test_decompose_failure_broadcasts_error_frame() -> None:
+    srv = LiveServer(LLMConfig(), WindowConfig())
+    srv._client = FailingClient()  # type: ignore[assignment]
+    ws = FakeWS()
+    srv.dash.active = {ws}  # type: ignore[assignment]
+
+    asyncio.run(live_server._decompose(srv, "anything"))
+
+    frames = [json.loads(s) for s in ws.sent]
+    assert any(f["type"] == "error" for f in frames)
+    assert not any(f["type"] == "suggestions" for f in frames)

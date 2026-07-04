@@ -23,6 +23,7 @@ import webbrowser
 import zipfile
 from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -36,6 +37,7 @@ from .llm import (
     LLMClient,
     LLMConfig,
     LLMRunner,
+    decompose_probe,
     rewrite_probe_spec,
     run_probes,
     suggest_probes,
@@ -149,6 +151,9 @@ class LiveServer:
         self.total_cost = 0.0
         self.force_now = False  # set by the 'force_run' op → worker analyzes immediately
         self.budget_blocked = False  # True once the budget-cap error has been broadcast
+        # Monotonic timestamp of each probe's last analysis — drives per-probe
+        # ``interval_s`` scheduling (absent = never ran → due on the next tick).
+        self.probe_runs: dict[str, float] = {}
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
@@ -242,6 +247,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         elif op == "remove_probe":
             server.probes.pop(str(data.get("id")), None)
             server.history.pop(str(data.get("id")), None)
+            server.probe_runs.pop(str(data.get("id")), None)
         elif op == "set_window":
             old_capacity = server.window.capacity
             merge = dict(server.window.to_dict())
@@ -272,11 +278,16 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             # Off-loop: an LLM proposes two probes from the typed text + live sample,
             # then the task itself broadcasts the 'suggestions' frame (not persisted).
             asyncio.create_task(_suggest(server, str(data.get("text") or "")))
+        elif op == "decompose_probe":
+            # Off-loop: an LLM splits a composite ask into elementary probe specs,
+            # broadcast as a 'suggestions' frame — the user picks which chips to add.
+            asyncio.create_task(_decompose(server, str(data.get("text") or "")))
         elif op == "clear":
             server.buffer = WindowBuffer()
         elif op == "reset_state":
             server.probes.clear()
             server.history.clear()
+            server.probe_runs.clear()
             server.window = WindowConfig()
             server.llm_cfg = LLMConfig()
             server.buffer = WindowBuffer(maxlen=server.window.capacity)
@@ -410,6 +421,41 @@ async def _suggest(server: LiveServer, text: str) -> None:
         logger.exception("suggest task failed entirely for %r", text)
 
 
+async def _decompose(server: LiveServer, text: str) -> None:
+    """LLM-split a composite ask into elementary probe specs and broadcast them.
+
+    Runs as its own task (never raises out of it). Mirrors :func:`_suggest`: the
+    specs go out as a ``suggestions`` frame (clickable chips — the user confirms
+    each), NOT straight into ``server.probes``, and nothing is persisted. The
+    decomposition itself is one cheap call and happens once, at creation time.
+    """
+    try:
+        sample = server.buffer.sample(server.window)
+        try:
+            specs = await decompose_probe(server.client(), text, sample)
+        except Exception:
+            logger.exception("decompose_probe failed for %r", text)
+            specs = []
+        assigned: set[str] = set()
+        for spec in specs:
+            pid = _slugify_probe_id(server, str(spec.get("label") or ""))
+            if pid in assigned:
+                n = 2
+                while f"{pid}-{n}" in assigned or f"{pid}-{n}" in server.probes:
+                    n += 1
+                pid = f"{pid}-{n}"
+            assigned.add(pid)
+            spec["id"] = pid
+        if specs:
+            await server.dash.broadcast({"type": "suggestions", "probes": specs})
+        else:
+            await server.dash.broadcast(
+                {"type": "error", "message": "Could not split that request right now."}
+            )
+    except Exception:
+        logger.exception("decompose task failed entirely for %r", text)
+
+
 async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
     """Push the live counters to every dashboard — called in real time as messages arrive."""
     await server.dash.broadcast(
@@ -422,20 +468,29 @@ async def broadcast_stat(server: LiveServer, window_n: int = 0) -> None:
     )
 
 
-async def process_window(server: LiveServer, window: list, now_wall: float) -> None:
-    """Run all probes over one cleaned sample and broadcast each result plus a stat frame.
+async def process_window(
+    server: LiveServer, window: list, now_wall: float, probes: list[Probe] | None = None
+) -> None:
+    """Run probes over one cleaned sample and broadcast each result plus a stat frame.
 
     ``window`` arrives already sampled/cleaned (:meth:`WindowBuffer.sample`), captured
-    synchronously at emit time so it is immune to messages arriving mid-analysis.
+    synchronously at emit time so it is immune to messages arriving mid-analysis. It
+    is sized for the LARGEST sample any due probe wants; each probe with its own
+    ``sample_n`` sees only its tail slice. ``probes`` restricts the batch to the
+    probes actually due this tick (default: all).
     """
-    probes = list(server.probes.values())
+    probes = list(server.probes.values()) if probes is None else probes
     if not probes:
         return
+    default_n = max(1, server.window.n)
+    windows = {
+        p.id: window[-p.sample_n :] for p in probes if p.sample_n and p.sample_n != default_n
+    }
     # Snapshot the client's cumulative usage so we can attribute this batch's spend.
     c = server.client()
     before_tok = getattr(c, "total_tokens", 0)
     before_cost = getattr(c, "total_cost", 0.0)
-    results = await run_probes(c, probes, window)
+    results = await run_probes(c, probes, window[-default_n:], windows)
     for r in results:
         r.ts = now_wall
         frame = r.to_dict()
@@ -525,7 +580,9 @@ def export_csv(server: LiveServer) -> str:
     return buf.getvalue()
 
 
-async def _run_window(server: LiveServer, window: list, now_wall: float) -> None:
+async def _run_window(
+    server: LiveServer, window: list, now_wall: float, probes: list[Probe] | None = None
+) -> None:
     """Run one snapshot through the probes, always clearing the ``processing`` guard.
 
     Brackets the analysis with ``proc`` frames so the dashboard can show a live
@@ -534,7 +591,7 @@ async def _run_window(server: LiveServer, window: list, now_wall: float) -> None
     await server.dash.broadcast({"type": "proc", "active": True})
     t0 = time.monotonic()
     try:
-        await process_window(server, window, now_wall)
+        await process_window(server, window, now_wall, probes)
     finally:
         server.processing = False
         server.last_latency_ms = round((time.monotonic() - t0) * 1000)
@@ -580,13 +637,25 @@ async def worker(server: LiveServer) -> None:
             forced = server.force_now
             if forced:
                 server.force_now = False
-            # Otherwise emit a window only when it is due AND new messages arrived since the
-            # last analysis — so an idle/quiet chat never triggers a paid LLM request.
-            due = (
-                not server.paused
-                and server.ingested != last_analyzed
-                and server.buffer.due(server.window, now)
-            )
+            # Otherwise emit a window only when probes are due AND new messages arrived
+            # since the last analysis — so an idle/quiet chat never triggers a paid LLM
+            # request. A probe with its own ``interval_s`` follows its own clock; one
+            # without follows the global window policy (count/time/hybrid). A probe
+            # that never ran is due on the first tick.
+            global_due = server.buffer.due(server.window, now)
+            if forced:
+                due_probes = list(server.probes.values())
+            else:
+                due_probes = [
+                    p
+                    for p in server.probes.values()
+                    if (
+                        (now - server.probe_runs[p.id]) >= p.interval_s
+                        if p.interval_s > 0 and p.id in server.probe_runs
+                        else (global_due or p.id not in server.probe_runs)
+                    )
+                ]
+            due = not server.paused and server.ingested != last_analyzed and bool(due_probes)
             # Spending cap: once cumulative cost reaches the budget, no analysis (auto
             # OR forced) launches. We tell the dashboard ONCE (budget_blocked latch) and
             # clear the latch as soon as we're back under budget (e.g. after a raise).
@@ -615,14 +684,22 @@ async def worker(server: LiveServer) -> None:
                 and not over_budget
             ):
                 # Capture the cleaned sample synchronously (O(n), not O(capacity)),
-                # then reset the windowing timers.
-                window = server.buffer.sample(server.window)
-                server.buffer.mark_emitted(now)
+                # sized for the largest per-probe sample_n in this batch.
+                batch = due_probes if due_probes else list(server.probes.values())
+                n_max = max([server.window.n, *(p.sample_n for p in batch if p.sample_n)])
+                sample_cfg = replace(server.window, n=n_max)
+                window = server.buffer.sample(sample_cfg)
+                # Reset the GLOBAL windowing timers only when the global cadence fired;
+                # a custom-interval probe running alone must not delay everyone else.
+                if forced or global_due:
+                    server.buffer.mark_emitted(now)
+                for p in batch:
+                    server.probe_runs[p.id] = now
                 last_analyzed = server.ingested
                 server.processing = True
                 # NON-BLOCKING: the LLM call runs in the background so the loop keeps
                 # draining the queue and flushing the feed while it works.
-                asyncio.create_task(_run_window(server, window, time.time()))
+                asyncio.create_task(_run_window(server, window, time.time(), batch))
             if now - last_flush >= 0.25:
                 # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:
