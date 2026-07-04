@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -26,6 +27,21 @@ KEY_FILE = STATE_DIR / "key"
 _FERNETS: dict[Path, Fernet] = {}
 
 
+def _write_private(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path``, creating it mode 0600 **atomically**.
+
+    ``os.open`` with the mode argument narrows the new file's permissions before
+    any bytes exist, closing the create-then-``chmod`` TOCTOU window (CWE-367/276)
+    where a racing local user could read the plaintext key/state while the file was
+    briefly world-readable. The trailing ``chmod`` also tightens a legacy file that
+    an older version created 0644.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    path.chmod(0o600)
+
+
 def _fernet() -> Fernet:
     """Return a Fernet bound to ``KEY_FILE``, generating the key on first use.
 
@@ -38,8 +54,7 @@ def _fernet() -> Fernet:
         return cached
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     if not KEY_FILE.exists():
-        KEY_FILE.write_bytes(Fernet.generate_key())
-        KEY_FILE.chmod(0o600)
+        _write_private(KEY_FILE, Fernet.generate_key())
     f = Fernet(KEY_FILE.read_bytes())
     _FERNETS[KEY_FILE] = f
     return f
@@ -59,8 +74,7 @@ def save_state(window: dict, model: dict, probes: list[dict]) -> None:
             },
             "probes": probes,
         }
-        STATE_FILE.write_text(json.dumps(payload), encoding="utf-8")
-        STATE_FILE.chmod(0o600)
+        _write_private(STATE_FILE, json.dumps(payload).encode("utf-8"))
     except Exception:
         logger.warning("could not persist live state", exc_info=True)
 
