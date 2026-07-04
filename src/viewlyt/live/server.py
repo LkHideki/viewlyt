@@ -12,6 +12,7 @@ the pure modules. No Selenium anywhere.
 from __future__ import annotations
 
 import asyncio
+import csv
 import io
 import json
 import logging
@@ -19,7 +20,9 @@ import re
 import time
 import webbrowser
 import zipfile
+from collections import deque
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -46,6 +49,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 # A dashboard tab that can't take a frame within this window is dropped (it
 # reconnects on its own); without it one hung socket would stall the worker loop.
 _SEND_TIMEOUT = 5.0
+
+# Snapshots kept per probe, server-side, for reconnect backfill and export.
+_HISTORY_CAP = 120
 
 
 def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: bool) -> bool:
@@ -134,6 +140,10 @@ class LiveServer:
         self.buffer = WindowBuffer(maxlen=window.capacity)
         self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=5000)
         self.dash = ConnectionManager()
+        # Per-probe result snapshots (oldest → newest, bounded): the source for the
+        # reconnect backfill and the /export endpoints. A page reload no longer
+        # loses the session's analysis history.
+        self.history: dict[str, deque[dict]] = {}
         self._client: LLMRunner | None = None
 
     def client(self) -> LLMRunner:
@@ -143,15 +153,31 @@ class LiveServer:
         return self._client
 
     def state_message(self) -> dict:
-        """Full snapshot frame sent to a dashboard on connect / after every control op."""
+        """Full snapshot frame sent to a dashboard on connect / after every control op.
+
+        Carries the runtime flags too (``processing``/``budget_blocked``/totals), so a
+        dashboard that connects mid-analysis or after a budget stop shows the truth
+        instead of waiting for the next transient frame.
+        """
         return {
             "type": "state",
             "window": self.window.to_dict(),
             "model": self.llm_cfg.to_public_dict(),
             "paused": self.paused,
+            "processing": self.processing,
+            "budget_blocked": self.budget_blocked,
             "ingested": self.ingested,
             "latency_ms": self.last_latency_ms,
+            "tokens_total": self.total_tokens,
+            "cost_total": round(self.total_cost, 6),
             "probes": [p.to_dict() for p in self.probes.values()],
+        }
+
+    def history_message(self) -> dict:
+        """Backfill frame with every probe's stored snapshots (sent once on connect)."""
+        return {
+            "type": "history",
+            "probes": {pid: list(h) for pid, h in self.history.items() if h},
         }
 
 
@@ -203,6 +229,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             )
         elif op == "remove_probe":
             server.probes.pop(str(data.get("id")), None)
+            server.history.pop(str(data.get("id")), None)
         elif op == "set_window":
             old_capacity = server.window.capacity
             merge = dict(server.window.to_dict())
@@ -237,6 +264,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.buffer = WindowBuffer()
         elif op == "reset_state":
             server.probes.clear()
+            server.history.clear()
             server.window = WindowConfig()
             server.llm_cfg = LLMConfig()
             server.buffer = WindowBuffer(maxlen=server.window.capacity)
@@ -398,7 +426,9 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
     results = await run_probes(c, probes, window)
     for r in results:
         r.ts = now_wall
-        await server.dash.broadcast(r.to_dict())
+        frame = r.to_dict()
+        server.history.setdefault(r.probe_id, deque(maxlen=_HISTORY_CAP)).append(frame)
+        await server.dash.broadcast(frame)
     if not results:
         # Every probe errored — almost always the LLM endpoint is unreachable.
         await server.dash.broadcast(
@@ -425,6 +455,48 @@ async def process_window(server: LiveServer, window: list, now_wall: float) -> N
         }
     )
     await broadcast_stat(server, len(window))
+
+
+def export_payload(server: LiveServer) -> dict:
+    """Everything worth keeping from a session, as one JSON-able dict."""
+    return {
+        "exported_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+        "window": server.window.to_dict(),
+        "model": server.llm_cfg.to_public_dict(),
+        "totals": {
+            "ingested": server.ingested,
+            "tokens": server.total_tokens,
+            "cost_usd": round(server.total_cost, 6),
+        },
+        "probes": [
+            {"probe": p.to_dict(), "history": list(server.history.get(pid, ()))}
+            for pid, p in server.probes.items()
+        ],
+    }
+
+
+def export_csv(server: LiveServer) -> str:
+    """Flatten the snapshot history to CSV: one row per (snapshot, category) or open text.
+
+    Third-party chat content ends up in the ``text`` column — treat the file as
+    untrusted data when importing into a spreadsheet (same caveat as the VOD .md).
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ts_utc", "probe_id", "kind", "label", "n", "category", "pct", "text"])
+    for pid, p in server.probes.items():
+        for snap in server.history.get(pid, ()):
+            ts = datetime.fromtimestamp(float(snap.get("ts") or 0.0), tz=UTC).isoformat(
+                timespec="seconds"
+            )
+            base = [ts, pid, snap.get("kind", p.kind), snap.get("label", ""), snap.get("n", 0)]
+            pct = snap.get("pct")
+            if pct is not None:
+                for cat, share in pct.items():
+                    w.writerow([*base, cat, share, ""])
+            else:
+                w.writerow([*base, "", "", snap.get("text", "")])
+    return buf.getvalue()
 
 
 async def _run_window(server: LiveServer, window: list, now_wall: float) -> None:
@@ -675,6 +747,22 @@ def create_app(server: LiveServer) -> FastAPI:
             headers={"Content-Disposition": 'attachment; filename="viewlyt-extension.zip"'},
         )
 
+    @app.get("/export.json")
+    async def export_json() -> Response:
+        return Response(
+            json.dumps(export_payload(server), ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="viewlyt-live-export.json"'},
+        )
+
+    @app.get("/export.csv")
+    async def export_csv_route() -> Response:
+        return Response(
+            export_csv(server),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="viewlyt-live-export.csv"'},
+        )
+
     @app.get("/")
     async def index() -> HTMLResponse:
         page = STATIC_DIR / "index.html"
@@ -727,6 +815,10 @@ def create_app(server: LiveServer) -> FastAPI:
         await server.dash.connect(ws)
         try:
             await ws.send_json(server.state_message())
+            if server.history:
+                # Backfill: a fresh/reloaded dashboard replays the stored snapshots
+                # instead of starting blank.
+                await ws.send_json(server.history_message())
             while True:
                 await ws.receive_text()  # keepalive pings, ignored
         except (WebSocketDisconnect, Exception):

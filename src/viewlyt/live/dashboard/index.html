@@ -69,7 +69,11 @@
           <div class="results-col results-col-main">
             <div class="results-head">
               <h2>Live Results</h2>
-              <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
+              <div class="results-head-actions">
+                <a href="/export.json" class="btn-secondary btn-small btn-link" download title="Download every probe's snapshot history as JSON">Export JSON</a>
+                <a href="/export.csv" class="btn-secondary btn-small btn-link" download title="Download the snapshot history flattened as CSV">Export CSV</a>
+                <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
+              </div>
             </div>
             <div id="results" class="results-list">
               <p class="empty-hint">Waiting for results…</p>

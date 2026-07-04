@@ -907,7 +907,7 @@ input.scrub-range:focus-visible {
   text-transform: uppercase;
 }
 
-/* Live Results heading row: title + 'Analyze now' force button. */
+/* Live Results heading row: title + export links + 'Analyze now' force button. */
 .results-head {
   display: flex;
   align-items: center;
@@ -918,6 +918,27 @@ input.scrub-range:focus-visible {
 
 .results-head h2 {
   margin-bottom: 0;
+}
+
+.results-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* An <a> styled as a button (the export downloads). */
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity 0.15s, filter 0.15s;
+}
+
+.btn-link:hover {
+  filter: brightness(1.12);
 }
 
 /* Two columns: Live Results (wide) + Live Chat (narrow, own scroll). */

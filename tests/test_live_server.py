@@ -1,8 +1,7 @@
-"""Dashboard broadcast fan-out: serialize once, send concurrently, drop bad sockets.
+"""Server-side behaviors of the live dashboard: broadcast fan-out, history, export.
 
-Uses fake WebSocket objects (only ``send_text`` is exercised) so no real server or
-network is involved. Skipped when the optional FastAPI dep (``viewlyt[live]``) is
-absent.
+Uses fake WebSocket / LLM objects so no real server, network, or LLM is involved.
+Skipped when the optional FastAPI dep (``viewlyt[live]``) is absent.
 """
 
 from __future__ import annotations
@@ -16,7 +15,18 @@ import pytest
 pytest.importorskip("fastapi")
 
 from viewlyt.live import server as live_server  # noqa: E402
-from viewlyt.live.server import ConnectionManager  # noqa: E402
+from viewlyt.live.llm import LLMConfig  # noqa: E402
+from viewlyt.live.messages import ChatMessage  # noqa: E402
+from viewlyt.live.probes import ClassificationProbe, OpenSummaryProbe, Probe  # noqa: E402
+from viewlyt.live.server import (  # noqa: E402
+    ConnectionManager,
+    LiveServer,
+    apply_control,
+    export_csv,
+    export_payload,
+    process_window,
+)
+from viewlyt.live.window import WindowConfig  # noqa: E402
 
 
 class FakeWS:
@@ -69,3 +79,92 @@ def test_broadcast_times_out_a_stuck_socket_without_stalling(monkeypatch) -> Non
     assert stuck not in mgr.active
     assert ok in mgr.active
     assert len(ok.sent) == 1
+
+
+# ---------------------------------------------------------------------------
+# Result history + backfill + export
+# ---------------------------------------------------------------------------
+
+
+class FakeLLMClient:
+    """Labels every message with the probe's first category / a fixed summary."""
+
+    model = "fake"
+    total_tokens = 0
+    total_cost = 0.0
+
+    async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
+        if probe.kind == "classification":
+            cats = probe.categories  # type: ignore[attr-defined]
+            return {"labels": [cats[0] for _ in messages]}
+        return {"summary": "all good, mood: hyped"}
+
+
+def _server_with_history() -> LiveServer:
+    srv = LiveServer(LLMConfig(), WindowConfig())
+    srv._client = FakeLLMClient()  # type: ignore[assignment]
+    srv.probes["mood"] = ClassificationProbe(
+        id="mood", label="Mood, live", question="q", categories=["happy", "sad"]
+    )
+    srv.probes["sum"] = OpenSummaryProbe(id="sum", label="Summary", instruction="sum it")
+    msgs = [ChatMessage(author=f"u{i}", text=f"m{i}", ts=float(i)) for i in range(4)]
+    asyncio.run(process_window(srv, msgs, 1_700_000_000.0))
+    return srv
+
+
+def test_process_window_appends_snapshots_to_history() -> None:
+    srv = _server_with_history()
+    assert [d["ts"] for d in srv.history["mood"]] == [1_700_000_000.0]
+    assert srv.history["mood"][0]["pct"]["happy"] == 100.0
+    assert srv.history["sum"][0]["text"] == "all good, mood: hyped"
+
+
+def test_state_message_carries_runtime_flags_and_history_message_backfills() -> None:
+    srv = _server_with_history()
+    srv.processing = True
+    srv.budget_blocked = True
+    state = srv.state_message()
+    assert state["processing"] is True
+    assert state["budget_blocked"] is True
+    assert "tokens_total" in state and "cost_total" in state
+    hist = srv.history_message()
+    assert hist["type"] == "history"
+    assert set(hist["probes"]) == {"mood", "sum"}
+    assert hist["probes"]["mood"][0]["type"] == "result"
+
+
+def test_export_payload_shape() -> None:
+    srv = _server_with_history()
+    payload = export_payload(srv)
+    assert payload["totals"]["tokens"] == srv.total_tokens
+    by_id = {entry["probe"]["id"]: entry for entry in payload["probes"]}
+    assert set(by_id) == {"mood", "sum"}
+    assert len(by_id["mood"]["history"]) == 1
+    json.dumps(payload)  # must be JSON-serializable as-is
+
+
+def test_export_csv_flattens_categories_and_text() -> None:
+    srv = _server_with_history()
+    lines = export_csv(srv).splitlines()
+    assert lines[0] == "ts_utc,probe_id,kind,label,n,category,pct,text"
+    body = "\n".join(lines[1:])
+    assert '"Mood, live"' in body  # comma-carrying label is properly quoted
+    assert ",happy,100.0," in body
+    assert ",sad,0.0," in body
+    assert "all good, mood: hyped" in body
+
+
+def test_remove_probe_and_reset_state_drop_history(tmp_path, monkeypatch) -> None:
+    # apply_control persists state-changing ops — point it at a temp dir so the
+    # test never touches the real ~/.viewlyt.
+    from viewlyt.live import persistence
+
+    monkeypatch.setattr(persistence, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "live-state.json")
+    monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
+
+    srv = _server_with_history()
+    asyncio.run(apply_control(srv, {"op": "remove_probe", "id": "mood"}))
+    assert "mood" not in srv.history
+    asyncio.run(apply_control(srv, {"op": "reset_state"}))
+    assert srv.history == {}

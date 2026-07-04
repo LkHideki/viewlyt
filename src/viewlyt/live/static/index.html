@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-CClyA_Jy.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BJX4yzyJ.css">
+    <script type="module" crossorigin src="./assets/index-Bq8qzDbD.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-NjuYPjDx.css">
   </head>
   <body>
     <header>
@@ -70,7 +70,11 @@
           <div class="results-col results-col-main">
             <div class="results-head">
               <h2>Live Results</h2>
-              <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
+              <div class="results-head-actions">
+                <a href="/export.json" class="btn-secondary btn-small btn-link" download title="Download every probe's snapshot history as JSON">Export JSON</a>
+                <a href="/export.csv" class="btn-secondary btn-small btn-link" download title="Download the snapshot history flattened as CSV">Export CSV</a>
+                <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
+              </div>
             </div>
             <div id="results" class="results-list">
               <p class="empty-hint">Waiting for results…</p>

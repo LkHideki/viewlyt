@@ -62,8 +62,12 @@ interface StateMsg {
   };
   model: { base_url: string; model: string; budget?: number; language?: string };
   paused: boolean;
+  processing?: boolean;
+  budget_blocked?: boolean;
   ingested: number;
   latency_ms?: number | null;
+  tokens_total?: number;
+  cost_total?: number;
   probes: ProbeDescriptor[];
 }
 
@@ -133,6 +137,14 @@ interface SuggestMsg {
   probes: ProbeDescriptor[];
 }
 
+// Server -> dashboard backfill frame, sent once right after `state` on connect:
+// each probe's stored snapshots (result-shaped dicts, oldest -> newest), so a
+// reloaded/late dashboard replays the session history instead of starting blank.
+interface HistoryMsg {
+  type: "history";
+  probes: Record<string, ResultMsg[]>;
+}
+
 type InboundMsg =
   | StateMsg
   | ResultMsg
@@ -141,7 +153,8 @@ type InboundMsg =
   | ChatFeedMsg
   | ProcMsg
   | CostMsg
-  | SuggestMsg;
+  | SuggestMsg
+  | HistoryMsg;
 
 // ---------------------------------------------------------------------------
 // DOM helpers
@@ -1738,6 +1751,25 @@ function upsertResultCard(msg: ResultMsg): void {
 }
 
 // ---------------------------------------------------------------------------
+// History backfill: seed each probe's snapshot history (all but the newest),
+// then route the newest through upsertResultCard, which appends it, builds the
+// card and renders display + scrubber exactly like a live frame.
+// ---------------------------------------------------------------------------
+
+function handleHistory(msg: HistoryMsg): void {
+  for (const snaps of Object.values(msg.probes)) {
+    if (!snaps.length) continue;
+    const last = snaps[snaps.length - 1];
+    const seed: Snapshot[] = snaps
+      .slice(0, -1)
+      .map((s) => ({ ts: s.ts, n: s.n, pct: s.pct, text: s.text }));
+    resultHistory.set(last.probe_id, seed);
+    viewState.delete(last.probe_id); // fresh view, pinned to LIVE
+    upsertResultCard(last);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Error banner
 // ---------------------------------------------------------------------------
 
@@ -1889,9 +1921,19 @@ function handleState(msg: StateMsg): void {
     providerSel.value = matchedKey;
   }
 
-  // Stats
+  // Stats — honor the runtime flags so a dashboard connecting mid-analysis or
+  // after spending shows the truth instead of "idle / $0".
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
-  setProc(false, msg.latency_ms);
+  setProc(!!msg.processing, msg.latency_ms);
+  if (!lastCost && ((msg.tokens_total ?? 0) > 0 || (msg.cost_total ?? 0) > 0)) {
+    handleCost({
+      type: "cost",
+      tokens_total: msg.tokens_total ?? 0,
+      tokens_delta: 0,
+      cost_total: msg.cost_total ?? 0,
+      cost_delta: 0,
+    });
+  }
 
   // Probes — rebuild the descriptor map, then mirror it onto the cards.
   probeState.clear();
@@ -1959,6 +2001,9 @@ function connectDashboard(): void {
         break;
       case "suggestions":
         renderSuggestions(msg.probes);
+        break;
+      case "history":
+        handleHistory(msg);
         break;
     }
   };
