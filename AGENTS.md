@@ -41,7 +41,10 @@ As funções puras também rodam sem pytest via `uv run python tests/test_units.
 **Modo live (opt-in, `uv sync --extra live`):** `uv run viewlyt-live '<url-da-live>'`
 sobe um servidor FastAPI + dashboard que analisa o chat ao vivo com LLM. O código vive
 em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
-`persistence`; dashboard Vite+TS em `dashboard/` → `static/`). Veja @how-to.md.
+`persistence`/`capture`; dashboard Vite+TS em `dashboard/` → `static/`).
+`--capture server` dispensa o snippet no browser do usuário: o servidor dirige um
+Chrome headless próprio no popout (única rota que funciona com Safari — WebKit
+bloqueia `ws://` inseguro de páginas https para QUALQUER host). Veja @how-to.md.
 
 **Modo análise (opt-in):** `uv run viewlyt-ask out/*.md '<pergunta>'` dialoga com os `.md`
 **já coletados** (sem re-coletar). **Padrão = chat efêmero** (`uv sync --extra ask`, só `openai`):

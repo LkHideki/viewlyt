@@ -21,7 +21,16 @@ def test_live_version_flag_smoke():
 def test_live_help_flag_smoke():
     r = cli_run_live(["--help"])
     assert r.returncode == 0, r.stderr
-    for token in ("--host", "--port", "--provider", "--base-url", "--model", "--gap", "--no-open"):
+    for token in (
+        "--host",
+        "--port",
+        "--provider",
+        "--base-url",
+        "--model",
+        "--gap",
+        "--no-open",
+        "--capture",
+    ):
         assert token in r.stdout, token
 
 

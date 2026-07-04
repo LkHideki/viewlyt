@@ -41,6 +41,10 @@ language, and more). See **[how-to.md](how-to.md)** for the full guide.
 ```bash
 uv sync --extra live
 uv run viewlyt-live 'https://www.youtube.com/watch?v=LIVE_ID'
+
+# Safari users (or zero-setup capture): the server drives its own headless
+# Chrome on the chat popout — nothing to paste into any browser:
+uv run viewlyt-live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
 
 ## Chat with your collected data

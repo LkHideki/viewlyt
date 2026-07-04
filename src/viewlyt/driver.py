@@ -81,12 +81,15 @@ def build_driver(
     user_data_dir: str | None = None,
     window_size: tuple[int, int] = (1920, 1080),
     page_load_timeout: int = 10,
+    extra_args: tuple[str, ...] = (),
 ) -> webdriver.Chrome:
     """Create a configured ``webdriver.Chrome`` instance.
 
     A real ``--window-size`` is REQUIRED in headless mode: with a zero-size
     viewport YouTube's IntersectionObserver never fires and comments never
-    lazy-load.
+    lazy-load. ``extra_args`` appends raw Chrome switches for special-purpose
+    drivers (e.g. the live capture browser disables the Local Network Access
+    checks that headless can never answer a permission prompt for).
     """
     opts = Options()
     binary = _resolve_chrome_binary()
@@ -112,6 +115,8 @@ def build_driver(
     opts.add_argument("--disable-extensions")
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
+    for arg in extra_args:
+        opts.add_argument(arg)
 
     if user_data_dir:
         # A persistent, once-logged-in profile is the most reliable way past the

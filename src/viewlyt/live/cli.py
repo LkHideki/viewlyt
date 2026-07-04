@@ -89,6 +89,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max messages kept in the rolling sample buffer (default: %(default)s)",
     )
     parser.add_argument(
+        "--capture",
+        choices=["browser", "server"],
+        default="browser",
+        help=(
+            "How chat messages reach the server: 'browser' = you run the snippet/"
+            "extension in the YouTube popout (default); 'server' = this process "
+            "drives its own headless Chrome on the popout — nothing to paste, and "
+            "the ONLY option that works with Safari (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--no-open",
         action="store_true",
         help="Do not auto-open the dashboard in a browser",
@@ -121,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # Server-side capture needs a target — fail fast instead of booting a
+    # dashboard that will never see messages. (Chrome itself is checked at
+    # runtime by the capture thread, with a logged, self-retrying error.)
+    if args.capture == "server" and not args.url:
+        parser.error("--capture server needs the live URL/id as the positional argument")
+
     # Resolve base_url: use explicit --base-url if different from default, else use provider
     default_base_url = "http://localhost:1234/v1"
     resolved_base_url = (
@@ -145,18 +162,21 @@ def main(argv: list[str] | None = None) -> int:
     dash_url = f"http://{args.host}:{args.port}/"
     print(f"viewlyt-live -> dashboard: {dash_url}")
 
-    # Display chat popout URL if a video was provided
-    if args.url:
-        try:
-            from ..scraper import extract_video_id
+    if args.capture == "server":
+        print("capture:      server-side (chat pulled by this process — no snippet needed)")
+    else:
+        # Display chat popout URL if a video was provided
+        if args.url:
+            try:
+                from ..scraper import extract_video_id
 
-            vid = extract_video_id(args.url)
-            print(f"chat popout:  https://www.youtube.com/live_chat?is_popout=1&v={vid}")
-        except Exception:
-            pass
+                vid = extract_video_id(args.url)
+                print(f"chat popout:  https://www.youtube.com/live_chat?is_popout=1&v={vid}")
+            except Exception:
+                pass
 
-    # Display snippet URL
-    print(f"snippet:      {dash_url}snippet.js  (or copy it from the dashboard)")
+        # Display snippet URL
+        print(f"snippet:      {dash_url}snippet.js  (or copy it from the dashboard)")
 
     # Launch server (lazy import)
     try:
@@ -168,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
             llm_cfg=llm_cfg,
             window=window,
             open_browser=not args.no_open,
+            capture_url=args.url if args.capture == "server" else None,
         )
     except KeyboardInterrupt:
         pass

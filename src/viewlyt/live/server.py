@@ -6,7 +6,8 @@ raw chat rows), ``/control`` (the dashboard mutates probes/window/model/state), 
 async :func:`worker` drains the ingest queue, feeds the :class:`WindowBuffer`, and—
 whenever a snapshot is due—runs every probe through the LLM and broadcasts the
 results. Heavy deps (FastAPI, uvicorn, openai) are imported here / lazily, never in
-the pure modules. No Selenium anywhere.
+the pure modules; Selenium only ever loads inside the optional server-side capture
+thread (``--capture server``, see live/capture.py).
 """
 
 from __future__ import annotations
@@ -640,9 +641,10 @@ SNIPPET_JS = """(function () {
   if (window.__viewlyt_running) { console.warn("[viewlyt] already capturing on this page; ignoring a second injection."); return; }
   window.__viewlyt_running = true;
   var PORT = "%PORT%";
-  // Safari blocks insecure ws:// from an https page (mixed content) EXCEPT to the
-  // literal host "localhost" (127.0.0.1 is not exempt on older WebKit), so when the
-  // server is on loopback we rotate between both spellings until one connects.
+  // Engines differ on which loopback spelling their mixed-content exemption covers,
+  // so we rotate between both until one connects. Safari/WebKit is beyond saving
+  // here (it blocks insecure ws:// from https for EVERY host) - the diagnostics
+  // below point Safari users to `viewlyt-live --capture server` instead.
   var HOSTS = (function () { var h = "%HOST%"; if (h === "127.0.0.1") return [h, "localhost"]; if (h === "localhost") return [h, "127.0.0.1"]; return [h]; })();
   var hostIdx = 0, everConnected = false;
   function wsUrl() { return "ws://" + HOSTS[hostIdx % HOSTS.length] + ":" + PORT + "/ingest"; }
@@ -655,16 +657,16 @@ SNIPPET_JS = """(function () {
   function connect() {
     var url = wsUrl();
     try { ws = new WebSocket(url); } catch (e) {
-      // Safari throws HERE (synchronously) when mixed content blocks the socket.
+      // Some engines throw HERE (synchronously) when mixed content blocks the socket.
       if (!everConnected) hostIdx++;
       paint("browser blocked ws:// - see console", "#7f1d1d");
-      console.warn("[viewlyt] new WebSocket(" + url + ") threw: " + e + " -- Safari blocks insecure ws:// from https pages except to 'localhost' (retrying with the next host), and content blockers (uBlock/AdGuard) can block local connections: allowlist youtube.com there.");
+      console.warn("[viewlyt] new WebSocket(" + url + ") threw: " + e + " -- Safari/WebKit blocks insecure ws:// from https pages for EVERY host (loopback included), so this snippet cannot work in Safari: restart with `viewlyt-live --capture server <url>` instead. On other browsers, check content blockers (uBlock/AdGuard).");
       setTimeout(connect, 2000);
       return;
     }
     ws.onopen = function () { connected = true; everConnected = true; console.log("[viewlyt] connected", url); status(); if (pinger) clearInterval(pinger); pinger = setInterval(function () { if (ws && ws.readyState === 1) ws.send('{"type":"ping"}'); }, 15000); };
     ws.onclose = function () { connected = false; if (pinger) clearInterval(pinger); if (!everConnected) hostIdx++; paint("disconnected, retrying...", "#78350f"); setTimeout(connect, 2000); };
-    ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + url + " failed. Usual causes: (1) Safari blocks insecure ws:// from https pages except to 'localhost' - both host spellings are retried automatically, but content blockers can also block local connections (allowlist youtube.com / disable for this site); (2) Chrome: accept the one-time 'local network' permission; (3) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
+    ws.onerror = function () { connected = false; paint("CANNOT REACH SERVER - see console", "#7f1d1d"); console.warn("[viewlyt] WebSocket to " + url + " failed. Usual causes: (1) SAFARI: WebKit blocks insecure ws:// from https pages for EVERY host (mixed content), so the snippet/extension can never connect there - use the server-side capture instead: restart with `viewlyt-live --capture server <url>`; (2) Chrome: accept the one-time 'local network' permission; (3) an ad blocker blocking 127.0.0.1 (uBlock Origin: turn off 'Block outsider intrusion into LAN', or allowlist this page). The separate 'ad_break ERR_BLOCKED_BY_CLIENT' line is just your ad blocker and does NOT affect viewlyt."); };
   }
   function send(obj) { outbox.push(obj); if (outbox.length > 3000) outbox.shift(); }
   function flush() { if (!outbox.length || !ws || ws.readyState !== 1) return; var n = outbox.length; ws.send(JSON.stringify(outbox.splice(0, n))); if (connected) status(); }
@@ -736,16 +738,27 @@ npm --prefix src/viewlyt/live/dashboard run build</pre>
 </body></html>"""
 
 
-def create_app(server: LiveServer) -> FastAPI:
-    """Build the FastAPI app: lifespan-managed worker, routes, then the static mount."""
+def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
+    """Build the FastAPI app: lifespan-managed worker, routes, then the static mount.
+
+    ``capture`` is an optional :class:`~viewlyt.live.capture.BrowserCapture`: the
+    lifespan starts/stops it alongside the worker, making the user's browser
+    optional — the only route that works with Safari (WebKit blocks insecure
+    ws:// from https pages for every host, loopback included).
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task = asyncio.create_task(worker(server))
+        if capture is not None:
+            capture.start()
         try:
             yield
         finally:
             task.cancel()
+            if capture is not None:
+                # Off the loop: stop() joins the capture thread (Chrome quit inside).
+                await asyncio.to_thread(capture.stop)
 
     app = FastAPI(lifespan=lifespan)
 
@@ -896,8 +909,14 @@ def run(
     llm_cfg: LLMConfig | None = None,
     window: WindowConfig | None = None,
     open_browser: bool = False,
+    capture_url: str | None = None,
 ) -> None:
-    """Build the app and serve it with uvicorn (blocking)."""
+    """Build the app and serve it with uvicorn (blocking).
+
+    ``capture_url`` switches on the server-side capture: a managed headless
+    Chrome opens that video's chat popout and runs the snippet, so no user
+    browser is involved (see :mod:`viewlyt.live.capture`).
+    """
     import uvicorn
 
     server = LiveServer(llm_cfg or LLMConfig(), window or WindowConfig())
@@ -933,7 +952,12 @@ def run(
             },
             [p.to_dict() for p in server.probes.values()],
         )
-    app = create_app(server)
+    capture = None
+    if capture_url:
+        from .capture import BrowserCapture, popout_url
+
+        capture = BrowserCapture(popout_url(capture_url), render_snippet(host, port))
+    app = create_app(server, capture=capture)
     if host not in {"127.0.0.1", "localhost", "::1"}:
         logger.warning(
             "binding to %s exposes the dashboard AND the stored LLM API key to the network "
