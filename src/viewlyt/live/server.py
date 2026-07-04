@@ -1015,6 +1015,9 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
     return app
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def run(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -1023,14 +1026,28 @@ def run(
     window: WindowConfig | None = None,
     open_browser: bool = False,
     capture_url: str | None = None,
+    allow_insecure_bind: bool = False,
 ) -> None:
     """Build the app and serve it with uvicorn (blocking).
 
     ``capture_url`` switches on the server-side capture: a managed headless
     Chrome opens that video's chat popout and runs the snippet, so no user
     browser is involved (see :mod:`viewlyt.live.capture`).
+
+    The live server has **no authentication** (the WS Origin check only stops
+    browser CSWSH; it can't stop a non-browser client). So binding to anything
+    but loopback would expose the dashboard and the stored LLM API key to the
+    network — it is **refused** unless ``allow_insecure_bind`` is set (CWE-306).
     """
     import uvicorn
+
+    if host not in _LOOPBACK_HOSTS and not allow_insecure_bind:
+        raise SystemExit(
+            f"refusing to bind viewlyt-live to non-loopback host {host!r}: the live "
+            "server has NO authentication, so this would expose the dashboard and the "
+            "stored LLM API key to the whole network. If you really intend to (only on "
+            "a trusted network), re-run with --allow-insecure-bind."
+        )
 
     server = LiveServer(llm_cfg or LLMConfig(), window or WindowConfig())
     st = persistence.load_state()
@@ -1071,10 +1088,11 @@ def run(
 
         capture = BrowserCapture(popout_url(capture_url), render_snippet(host, port))
     app = create_app(server, capture=capture)
-    if host not in {"127.0.0.1", "localhost", "::1"}:
+    if host not in _LOOPBACK_HOSTS:
+        # Reached only with allow_insecure_bind=True (else run() already refused).
         logger.warning(
-            "binding to %s exposes the dashboard AND the stored LLM API key to the network "
-            "with NO authentication — only do this on a trusted network.",
+            "binding to %s with --allow-insecure-bind: the dashboard AND the stored LLM "
+            "API key are exposed to the network with NO authentication — trusted networks only.",
             host,
         )
     if open_browser:

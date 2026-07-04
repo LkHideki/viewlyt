@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Dashboard port (default: %(default)s)",
     )
     parser.add_argument(
+        "--allow-insecure-bind",
+        action="store_true",
+        help="Permit a non-loopback --host. The server has NO auth, so this exposes the "
+        "dashboard and the stored API key to the network — trusted networks only.",
+    )
+    parser.add_argument(
         "--provider",
         choices=["lmstudio", "ollama", "openai", "openrouter", "groq"],
         default="openrouter",
@@ -189,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             window=window,
             open_browser=not args.no_open,
             capture_url=args.url if args.capture == "server" else None,
+            allow_insecure_bind=args.allow_insecure_bind,
         )
     except KeyboardInterrupt:
         pass

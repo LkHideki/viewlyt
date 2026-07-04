@@ -411,3 +411,29 @@ def test_cors_headers_only_for_youtube_origin() -> None:
     r2 = client.get("/export.json", headers={"origin": yt})
     assert r2.headers.get("access-control-allow-origin") == yt
     assert r2.headers.get("access-control-allow-private-network") == "true"
+
+
+# ---------------------------------------------------------------------------
+# Security regression (secperf S2): run() must refuse a non-loopback bind unless
+# the operator explicitly opts in — the server has no authentication.
+# ---------------------------------------------------------------------------
+def test_run_refuses_non_loopback_bind_without_flag(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        live_server.run(host="0.0.0.0", open_browser=False)
+
+
+def test_run_allows_non_loopback_bind_with_explicit_flag(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    served: dict = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: served.update(kw))
+    live_server.run(host="0.0.0.0", open_browser=False, allow_insecure_bind=True)
+    assert served.get("host") == "0.0.0.0"  # reached uvicorn instead of refusing
+
+
+def test_run_serves_loopback_by_default(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    served: dict = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: served.update(kw))
+    live_server.run(host="127.0.0.1", open_browser=False)
+    assert served.get("host") == "127.0.0.1"
