@@ -1,7 +1,7 @@
 [project]
 name = "viewlyt"
 version = "0.1.0"
-description = "Scrape a YouTube video's comments (likes, dates, replies) and transcript into text files, using Selenium."
+description = "CLI tool and typed Python library to collect a YouTube video's transcript, comments and related videos as LLM-ready Markdown (Selenium), with opt-in live-chat and RAG chat modes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -11,11 +11,19 @@ authors = [
 ]
 keywords = [
     "youtube",
-    "comments",
+    "youtube-comments",
+    "youtube-transcript",
     "transcript",
+    "comments",
     "scraper",
     "selenium",
     "cli",
+    "library",
+    "markdown",
+    "llm",
+    "rag",
+    "live-chat",
+    "uv",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -27,9 +35,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Multimedia :: Video",
     "Topic :: Text Processing :: Markup :: HTML",
     "Topic :: Utilities",
+    "Typing :: Typed",
 ]
 dependencies = [
     "selenium>=4.21",
@@ -38,9 +49,9 @@ dependencies = [
 
 [project.optional-dependencies]
 live = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "openai>=1.30", "cryptography>=42"]
-# Ephemeral chat over collected out/*.md (the default viewlyt-ask engine): LLM on OpenRouter.
+# Ephemeral chat over collected out/*.md (the default `vl ask` engine): LLM on OpenRouter.
 ask = ["openai>=1.30"]
-# Persistent LightRAG knowledge-graph index (viewlyt-ask --persist) + local fastembed embeddings.
+# Persistent LightRAG knowledge-graph index (`vl ask --persist`) + local fastembed embeddings.
 rag = ["lightrag-hku>=1.4", "openai>=1.30", "fastembed>=0.3"]
 
 [project.urls]

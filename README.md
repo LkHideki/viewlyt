@@ -1,14 +1,67 @@
 # viewlyt
 
-Collects the comments of one or several YouTube videos into
-`out/<title-slug>-<video_id>.md` (plain text, no HTML tags) using **Selenium**
-+ **Google Chrome** headless, managed with [`uv`](https://github.com/astral-sh/uv).
+> A command-line tool — and a typed Python library — for pulling **text out of
+> YouTube**: a video's **transcript**, its **comments** (with likes, dates and
+> replies), and its **related-videos** sidebar. It drives headless Google Chrome
+> through Selenium, and writes clean, **LLM-ready Markdown** into `out/`.
 
-It opens the video page and works in two phases (with `tqdm` progress bars):
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Typed](https://img.shields.io/badge/typed-yes-brightgreen)
+![Managed with uv](https://img.shields.io/badge/managed%20with-uv-purple)
+
+## What is this?
+
+`viewlyt` is a small, **CLI-first Python package**. Day to day you use it as the
+`vl` command; everything it does is also importable as a **typed library**
+(`from viewlyt import scrape_video`, ships `py.typed`). It is **not a framework** —
+there's nothing to wire up or extend, just a tool you run and an API you call.
+
+**One command, three modes** — the extra modes are opt-in dependencies:
+
+| Command | What you get | Install |
+|---|---|---|
+| `vl '<url>'` | **Scrape** a video → Markdown in `out/` (transcript by default; `-c` comments, `-r` related, `-u` all-in-one) | `uv sync` |
+| `vl ask out/*.md '<question>'` | **Ask** — chat / RAG over what you already collected, no re-scraping | `uv sync --extra ask` |
+| `vl live '<live-url>'` | **Live** — real-time live-chat analysis on a local dashboard | `uv sync --extra live` |
+
+Discover everything from the CLI: `vl --help`, or `vl help ask` / `vl help live`
+for a specific mode.
+
+## Quickstart
+
+```bash
+# 1. Install — creates the `vl` command inside this project
+uv sync
+
+# 2. Scrape a video's transcript (the DEFAULT) -> out/<title>-<id>.transcript.md
+uv run vl 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+
+# 3. Comments instead? add -c. Both? -c -t. Everything in one file? -u
+uv run vl -c 'https://youtu.be/dQw4w9WgXcQ'
+```
+
+Want a global `vl` on your `PATH` (callable from anywhere, no `uv run`)? From the
+repo root run `uv tool install .`, then just `vl '<url>'`.
+
+## Contents
+
+- [How the scraper works](#how-the-scraper-works)
+- [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Options](#options)
+- [Several videos (batch mode)](#several-videos-batch-mode)
+- [Transcript](#transcript) · [Related videos](#related-videos) · [Unified output](#unified-output)
+- [Getting past YouTube/Google blocks](#getting-past-youtubegoogle-blocks) · [Output format](#output-format)
+- Optional modes: [`vl live`](#live-mode-real-time) · [`vl ask`](#chat-with-your-collected-data-vl-ask)
+- [Use as a library](#use-as-a-library) · [Layout](#layout) · [Development](#development)
+
+## How the scraper works
+
+`vl '<url>'` opens the video page and works in two phases (with `tqdm` progress
+bars) when collecting comments:
 
 1. **Loading** — repeatedly scrolls to the end (up to **25** scroll steps) to
-   lazily load up to **150 top-level comments** (the project's main asset), or
-   all of them if there are fewer.
+   lazily load up to **150 top-level comments**, or all of them if there are
+   fewer.
 2. **Expansion & collection** — walks each thread once: scrolls to it, clicks
    **"Read more"** to untruncate the text, expands the **replies** with a
    reliable click (up to **5 per comment** by default, configurable), and
@@ -19,99 +72,12 @@ batches (the `alt` of emojis/emotes and the link text are preserved), and the
 result is written grouped into blocks — a comment followed by its replies,
 blocks separated by a blank line.
 
-**By default** (no selector) it collects the **full transcript** only, into
+**By default** (no selector) `vl` collects the **full transcript** only, into
 `out/<title-slug>-<video_id>.transcript.md`. Pass `-c`/`--comments` to collect
 the comments instead (`out/<title-slug>-<video_id>.md`), `-c -t` for **both**,
 and `-t`/`--transcript` is the explicit transcript-only form. The transcript is
 written **token-lean by default**: no `[m:ss]` timestamps and **2 segments per
 line** (half the newlines); pass `--ts`/`--timestamps` to keep the stamps.
-
-> **Behavior change:** a bare `vl <url>` now collects the TRANSCRIPT only
-> (it used to collect comments). Use `-c` for comments, `-c -t` for both. Also
-> `-t`/`--transcript` collects ONLY the transcript (previously `--transcript`
-> also kept the comments). And the transcript now ships WITHOUT timestamps by
-> default — `--ts` opts back in; the old `--no-ts` is a deprecated no-op.
-
-## Live mode (real-time)
-
-`viewlyt[live]` adds **`vl live`**: it taps a YouTube **live chat** in real
-time, batches the messages to an LLM, and streams the results — live percentages,
-rolling summaries, and charts — to a local dashboard you drive in a second window
-(create probes by typing a question, set a spending budget, pick the output
-language, and more). See **[how-to.md](how-to.md)** for the full guide.
-
-```bash
-uv sync --extra live
-uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
-
-# Safari users (or zero-setup capture): the server drives its own headless
-# Chrome on the chat popout — nothing to paste into any browser:
-uv run vl live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
-```
-
-## Chat with your collected data
-
-`viewlyt[ask]` adds **`vl ask`**: talk to the `out/*.md` (transcripts +
-comments) you've **already collected** — no re-scraping. By default it's an
-**ephemeral chat**: it loads the files straight into the model's context and
-answers, and **nothing is saved** — built for "collect, ask around for a couple of
-days, then forget it". Each document is tagged with its video (title, id, url) and
-engagement metrics, so you can *compare* videos ("which one got more love?", "how do
-they relate?").
-
-```bash
-uv sync --extra ask
-export OPENROUTER_API_KEY=sk-or-...         # the LLM provider
-export LLM_NAME=google/gemini-2.5-flash     # any OpenRouter model id
-
-# One-shot (the shell expands out/*.md into files; the leftover text is the question):
-uv run vl ask out/*.md 'which video had the better reception, and why?'
-
-# No question -> interactive REPL over the same loaded base (Ctrl-D to quit):
-uv run vl ask out/*.md
-> qual vídeo teve mais aceitação?
-> e o que mais reclamam nos comentários?
-```
-
-- **Nothing persists.** The default chat keeps no index and writes no files — close
-  it and it's gone. It only needs `openai` (the light `ask` extra). `--lang` sets the
-  answer language (default Portuguese (Brazil)); `--model` overrides `$LLM_NAME`.
-- **Fits the context.** One to a few videos (transcript + ~150 comments each) fit a
-  flash model's context comfortably; you get a warning if the base is very large
-  (then pass fewer files, or use `--persist`).
-
-### Persistent base with a sliding window (`--persist`)
-
-For a base you reuse for a while — but **not forever** — add `--persist`. It builds a
-**[LightRAG](https://github.com/HKUDS/LightRAG)** knowledge-graph index under
-`out/.rag/` and, **on every open, drops documents older than `--ttl-days`** (default
-`15`; `$RAG_TTL_DAYS`; `0` keeps all). So the base is a rolling window, not a pile
-that grows without bound.
-
-```bash
-uv sync --extra rag       # heavier: lightrag + local fastembed embeddings
-uv run vl ask --persist out/*.md 'how do these relate?'
-uv run vl ask --persist 'summarize the recurring complaints'   # reuses the index
-```
-
-- **LLM on OpenRouter, embeddings local.** Embeddings (which OpenRouter doesn't
-  reliably serve) run **locally** via [`fastembed`](https://github.com/qdrant/fastembed)
-  — no key, on CPU; the first run downloads a small multilingual model
-  (`intfloat/multilingual-e5-large`, ~1 GB; set
-  `EMBEDDING_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` for a
-  lighter one). Switch providers with `EMBEDDING_PROVIDER=openai|ollama|openrouter`.
-- **Cost.** Here the pricey part is *ingestion* (the LLM extracts entities per chunk
-  to build the graph). By default the re-extraction pass is **off**; route extraction
-  to a cheaper model with `--extract-model NAME` (or `$LLM_EXTRACT_NAME`; the answer
-  keeps `$LLM_NAME`), and tune `RAG_MAX_GLEANING` / `RAG_CHUNK_TOKENS`. `--mode` picks
-  the retrieval mode (`naive|local|global|hybrid|mix`, default `mix`).
-- **Limitation.** A graph RAG targets semantic/relational questions, not exact
-  number-crunching; each document's header carries pre-computed counts (comments,
-  replies, summed/top likes), but treat aggregate figures as approximate.
-
-**Library use:** `from viewlyt.rag import chat; chat(paths, "question")` (ephemeral),
-or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
-`prepare_documents` / `build_document` need no extra.
 
 ## Requirements
 
@@ -127,8 +93,16 @@ or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
 ## Installation
 
 ```bash
-uv sync
+uv sync                 # deps + the dev group; creates the `vl` command
+uv run vl --version     # sanity check
+
+# Optional: put `vl` on your PATH so you can call it from anywhere
+uv tool install .       # then: vl 'https://youtu.be/dQw4w9WgXcQ'
 ```
+
+The optional modes pull heavier dependencies only when you ask for them:
+`uv sync --extra ask` (chat), `--extra rag` (persistent RAG), `--extra live`
+(real-time dashboard).
 
 ## Usage
 
@@ -375,21 +349,89 @@ already logged in to YouTube — it's the most reliable bypass.
   duplicates** (same author + same text) are discarded. Disable it with
   `--no-merge-comments` (alias `--prevent-comment-group`).
 
-## Layout
+## Live mode (real-time)
 
+> Opt-in: `uv sync --extra live`. Command: **`vl live`**.
+
+`vl live` taps a YouTube **live chat** in real time, batches the messages to an
+LLM, and streams the results — live percentages, rolling summaries, and charts —
+to a local dashboard you drive in a second window (create probes by typing a
+question, set a spending budget, pick the output language, and more). See
+**[how-to.md](how-to.md)** for the full guide.
+
+```bash
+uv sync --extra live
+uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
+
+# Safari users (or zero-setup capture): the server drives its own headless
+# Chrome on the chat popout — nothing to paste into any browser:
+uv run vl live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
-pyproject.toml            uv project + console-script entry point
-src/viewlyt/
-  __init__.py             public API (scrape_video, helpers) + __version__
-  api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
-  cli.py                  argparse, URL/file collection, instance pool, formatting, output
-  driver.py               Chrome WebDriver builder with stealth (10s timeout)
-  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
-  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
-  rag.py                  vl ask: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
-tests/test_units.py       browser-free tests for the pure functions
-tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
+
+## Chat with your collected data (`vl ask`)
+
+> Opt-in: `uv sync --extra ask` (chat) or `--extra rag` (persistent). Command: **`vl ask`**.
+
+`vl ask` talks to the `out/*.md` (transcripts + comments) you've **already
+collected** — no re-scraping. By default it's an **ephemeral chat**: it loads the
+files straight into the model's context and answers, and **nothing is saved** —
+built for "collect, ask around for a couple of days, then forget it". Each
+document is tagged with its video (title, id, url) and engagement metrics, so you
+can *compare* videos ("which one got more love?", "how do they relate?").
+
+```bash
+uv sync --extra ask
+export OPENROUTER_API_KEY=sk-or-...         # the LLM provider
+export LLM_NAME=google/gemini-2.5-flash     # any OpenRouter model id
+
+# One-shot (the shell expands out/*.md into files; the leftover text is the question):
+uv run vl ask out/*.md 'which video had the better reception, and why?'
+
+# No question -> interactive REPL over the same loaded base (Ctrl-D to quit):
+uv run vl ask out/*.md
+> qual vídeo teve mais aceitação?
+> e o que mais reclamam nos comentários?
 ```
+
+- **Nothing persists.** The default chat keeps no index and writes no files — close
+  it and it's gone. It only needs `openai` (the light `ask` extra). `--lang` sets the
+  answer language (default Portuguese (Brazil)); `--model` overrides `$LLM_NAME`.
+- **Fits the context.** One to a few videos (transcript + ~150 comments each) fit a
+  flash model's context comfortably; you get a warning if the base is very large
+  (then pass fewer files, or use `--persist`).
+
+### Persistent base with a sliding window (`--persist`)
+
+For a base you reuse for a while — but **not forever** — add `--persist`. It builds a
+**[LightRAG](https://github.com/HKUDS/LightRAG)** knowledge-graph index under
+`out/.rag/` and, **on every open, drops documents older than `--ttl-days`** (default
+`15`; `$RAG_TTL_DAYS`; `0` keeps all). So the base is a rolling window, not a pile
+that grows without bound.
+
+```bash
+uv sync --extra rag       # heavier: lightrag + local fastembed embeddings
+uv run vl ask --persist out/*.md 'how do these relate?'
+uv run vl ask --persist 'summarize the recurring complaints'   # reuses the index
+```
+
+- **LLM on OpenRouter, embeddings local.** Embeddings (which OpenRouter doesn't
+  reliably serve) run **locally** via [`fastembed`](https://github.com/qdrant/fastembed)
+  — no key, on CPU; the first run downloads a small multilingual model
+  (`intfloat/multilingual-e5-large`, ~1 GB; set
+  `EMBEDDING_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` for a
+  lighter one). Switch providers with `EMBEDDING_PROVIDER=openai|ollama|openrouter`.
+- **Cost.** Here the pricey part is *ingestion* (the LLM extracts entities per chunk
+  to build the graph). By default the re-extraction pass is **off**; route extraction
+  to a cheaper model with `--extract-model NAME` (or `$LLM_EXTRACT_NAME`; the answer
+  keeps `$LLM_NAME`), and tune `RAG_MAX_GLEANING` / `RAG_CHUNK_TOKENS`. `--mode` picks
+  the retrieval mode (`naive|local|global|hybrid|mix`, default `mix`).
+- **Limitation.** A graph RAG targets semantic/relational questions, not exact
+  number-crunching; each document's header carries pre-computed counts (comments,
+  replies, summed/top likes), but treat aggregate figures as approximate.
+
+**Library use:** `from viewlyt.rag import chat; chat(paths, "question")` (ephemeral),
+or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
+`prepare_documents` / `build_document` need no extra.
 
 ## Use as a library
 
@@ -457,6 +499,25 @@ The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
 are all exposed. `import viewlyt` stays Selenium-free until you touch a
 Selenium-backed name; to use only the pure helpers, import them straight from the
 leaf module: `from viewlyt.htmltext import html_to_text`.
+
+## Layout
+
+```
+pyproject.toml            uv project + the `vl` console script
+src/viewlyt/
+  __init__.py             public API (scrape_video, helpers) + __version__
+  vl.py                   the `vl` command dispatcher (routes ask/live; lazy imports)
+  api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
+  cli.py                  argparse, URL/file collection, instance pool, formatting, output
+  driver.py               Chrome WebDriver builder with stealth (10s timeout)
+  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
+  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
+  rag.py                  `vl ask`: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
+  live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard; extra 'live')
+tests/test_units.py       browser-free tests for the pure functions
+tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
+tests/test_smoke.py       CLI surface + `vl` dispatcher routing/help/packaging (subprocess, no browser)
+```
 
 ## Development
 
