@@ -1,6 +1,6 @@
 # Live mode — how-to
 
-`viewlyt-live` taps a YouTube live chat in real time, feeds batches of messages to an LLM, and streams the results to a local dashboard.
+`vl live` taps a YouTube live chat in real time, feeds batches of messages to an LLM, and streams the results to a local dashboard.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ npm --prefix src/viewlyt/live/dashboard run build
 ## Run
 
 ```bash
-uv run viewlyt-live "https://www.youtube.com/watch?v=LIVE_ID"
+uv run vl live "https://www.youtube.com/watch?v=LIVE_ID"
 ```
 
 **Using Safari — or just don't want to touch the popout?** Add `--capture server`:
@@ -30,7 +30,7 @@ capture snippet there, so your browser does nothing but show the dashboard
 (window B below disappears entirely):
 
 ```bash
-uv run viewlyt-live --capture server "https://www.youtube.com/watch?v=LIVE_ID"
+uv run vl live --capture server "https://www.youtube.com/watch?v=LIVE_ID"
 ```
 
 This is the **only** mode that works when your browser is Safari: WebKit blocks
@@ -41,7 +41,7 @@ Google Chrome installed — already a requirement of the VOD scraper.
 The process prints the URLs and opens the dashboard automatically (default port `8000`):
 
 ```
-viewlyt-live -> dashboard: http://127.0.0.1:8000/
+vl live -> dashboard: http://127.0.0.1:8000/
 chat popout:  https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID
 ```
 
@@ -84,7 +84,7 @@ A small **viewlyt** badge appears in the popout (bottom-right) showing `connecte
 Pass `--base-url`, `--api-key`, and `--model` to point at any OpenAI-compatible endpoint:
 
 ```bash
-uv run viewlyt-live "https://www.youtube.com/watch?v=LIVE_ID" \
+uv run vl live "https://www.youtube.com/watch?v=LIVE_ID" \
   --base-url https://api.openai.com/v1 \
   --api-key sk-... \
   --model gpt-4o-mini
@@ -95,7 +95,7 @@ You can also swap the model (and set a spending budget, or the analysis language
 ## Troubleshooting
 
 - **Badge says `CANNOT REACH SERVER` (or `captured` stays at 0):** accept Chrome's one-time *local network* prompt; make sure you used the **popout** (not the embedded chat); keep the server on `127.0.0.1`. If you run an **ad blocker**, allow this page to reach `127.0.0.1` — uBlock Origin's *"Block outsider intrusion into LAN"* filter blocks exactly this, so disable it or allowlist the site.
-- **Safari:** the capture snippet **cannot work in Safari** — WebKit blocks insecure `ws://` from `https` pages for *every* host, loopback included (verified empirically: the handshake never leaves the browser). Use the server-side capture instead: `uv run viewlyt-live --capture server '<url>'` — the server's own headless Chrome does the capturing and your Safari only shows the dashboard (which works untouched, being plain `http://`).
+- **Safari:** the capture snippet **cannot work in Safari** — WebKit blocks insecure `ws://` from `https` pages for *every* host, loopback included (verified empirically: the handshake never leaves the browser). Use the server-side capture instead: `uv run vl live --capture server '<url>'` — the server's own headless Chrome does the capturing and your Safari only shows the dashboard (which works untouched, being plain `http://`).
 - **A red `youtubei/v1/player/ad_break … net::ERR_BLOCKED_BY_CLIENT` line in the console:** that is your **ad blocker** blocking YouTube's ad telemetry. It is unrelated to viewlyt and does **not** affect chat capture — ignore it.
 - **`allow pasting`:** Chrome's console refuses pasted code until you type `allow pasting` once. Use the **extension** or **bookmark** to skip this entirely.
 - **A probe shows no results:** it needs the LLM reachable (check the Model panel and the server log) and, for classification, at least a couple of categories. Click **Analyze now** to retry without waiting for the refresh.

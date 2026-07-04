@@ -8,23 +8,23 @@ gerenciado com `uv`. Veja @README.md para o uso completo.
 
 ```bash
 uv sync                                             # cria o ambiente e instala as deps (Python >= 3.11; dev em 3.14)
-uv run viewlyt '<url-do-youtube>'                # DEFAULT = só a transcrição -> *.transcript.md
-uv run viewlyt '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
-uv run viewlyt --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
-uv run viewlyt -c '<url>'                         # só comentários -> out/<slug>-<id>.md
-uv run viewlyt -c -t '<url>'                     # comentários + transcrição
-uv run viewlyt -c --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
-uv run viewlyt -t '<url>'                        # só a transcrição (== default == --transcript-only)
-uv run viewlyt -t --ts '<url>'                   # transcrição COM os timestamps [m:ss] (default: sem)
-uv run viewlyt -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.md (views, não likes)
-uv run viewlyt -u '<url>'                         # todos os produtos -> *.unified.md (1 arquivo; alias de --unify)
-uv run viewlyt -u --copy '<url>'                 # unifica e copia o conteúdo para a área de transferência
-uv run viewlyt --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.md (1 arquivo só)
-uv run viewlyt --no-merge-comments -c '<url>'    # não funde comentários consecutivos do mesmo autor
-uv run viewlyt --headed '<url>'                  # navegador visível (melhor contra o bot wall)
+uv run vl '<url-do-youtube>'                # DEFAULT = só a transcrição -> *.transcript.md
+uv run vl '<url1>' '<url2>'                 # vários vídeos (pool de instâncias reutilizadas)
+uv run vl --from-file urls.txt -j 4         # de um .txt/.csv, 4 navegadores em paralelo
+uv run vl -c '<url>'                         # só comentários -> out/<slug>-<id>.md
+uv run vl -c -t '<url>'                     # comentários + transcrição
+uv run vl -c --limit-comments 150 --limit-replies 5 '<url>'  # (--limit/--max-replies são aliases)
+uv run vl -t '<url>'                        # só a transcrição (== default == --transcript-only)
+uv run vl -t --ts '<url>'                   # transcrição COM os timestamps [m:ss] (default: sem)
+uv run vl -r 17 '<url>'                     # 17 vídeos relacionados -> *.related.md (views, não likes)
+uv run vl -u '<url>'                         # todos os produtos -> *.unified.md (1 arquivo; alias de --unify)
+uv run vl -u --copy '<url>'                 # unifica e copia o conteúdo para a área de transferência
+uv run vl --unify-all '<url1>' '<url2>'     # todos os vídeos -> out/unified-all.md (1 arquivo só)
+uv run vl --no-merge-comments -c '<url>'    # não funde comentários consecutivos do mesmo autor
+uv run vl --headed '<url>'                  # navegador visível (melhor contra o bot wall)
 
-uv run viewlyt-ask out/*.md 'qual vídeo teve mais aceitação?'  # chat efêmero sobre o já coletado (opt-in: uv sync --extra ask)
-uv run viewlyt-ask --persist out/*.md '<pergunta>'  # base LightRAG persistente c/ janela de 15 dias (uv sync --extra rag)
+uv run vl ask out/*.md 'qual vídeo teve mais aceitação?'  # chat efêmero sobre o já coletado (opt-in: uv sync --extra ask)
+uv run vl ask --persist out/*.md '<pergunta>'  # base LightRAG persistente c/ janela de 15 dias (uv sync --extra rag)
 
 uv run pytest                                       # toda a suíte (sem navegador; e2e pulado)
 VIEWLYT_E2E=1 uv run pytest -m e2e                  # e2e real (Chrome + rede), opt-in
@@ -38,7 +38,7 @@ uv run pre-commit install                           # roda ruff + pytest a cada 
 `uv sync` instala também o dependency-group `dev` (ruff, pytest, pre-commit).
 As funções puras também rodam sem pytest via `uv run python tests/test_units.py`.
 
-**Modo live (opt-in, `uv sync --extra live`):** `uv run viewlyt-live '<url-da-live>'`
+**Modo live (opt-in, `uv sync --extra live`):** `uv run vl live '<url-da-live>'`
 sobe um servidor FastAPI + dashboard que analisa o chat ao vivo com LLM. O código vive
 em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 `persistence`/`capture`; dashboard Vite+TS em `dashboard/` → `static/`).
@@ -46,7 +46,7 @@ em `src/viewlyt/live/` (puro: `messages`/`window`/`probes`; I/O: `llm`/`server`/
 Chrome headless próprio no popout (única rota que funciona com Safari — WebKit
 bloqueia `ws://` inseguro de páginas https para QUALQUER host). Veja @how-to.md.
 
-**Modo análise (opt-in):** `uv run viewlyt-ask out/*.md '<pergunta>'` dialoga com os `.md`
+**Modo análise (opt-in):** `uv run vl ask out/*.md '<pergunta>'` dialoga com os `.md`
 **já coletados** (sem re-coletar). **Padrão = chat efêmero** (`uv sync --extra ask`, só `openai`):
 carrega os documentos no contexto e responde — **nada persiste**; com pergunta = one-shot, sem
 pergunta = REPL. **`--persist`** (`uv sync --extra rag`) usa um índice **LightRAG** em `out/.rag/`
@@ -75,7 +75,7 @@ chat=`openai`, `--persist`=LightRAG/fastembed).
   `ScrapeResult` (`comment_lines`/`transcript_lines`/`related_lines`/`write`). Tudo sobre o helper
   compartilhado `_scrape_url` (driver já construído/primed); depende só de `driver`/`scraper`/
   `htmltext`, **nunca** de `cli`. O `__init__` re-exporta a API (lazy p/ Selenium, eager p/ puras).
-- `src/viewlyt/rag.py` — subsistema **opt-in** de análise por IA (comando `viewlyt-ask`). Parte
+- `src/viewlyt/rag.py` — subsistema **opt-in** de análise por IA (comando `vl ask`). Parte
   **pura** (preparação dos `out/*.md` em documentos auto-descritivos: `parse_out_filename`,
   `comment_metrics`, `build_document`, `prepare_documents`; expiração `_expired_doc_ids`) + duas
   engines com **import lazy**: **chat efêmero** padrão (`chat`/`chat_repl`, só `openai`, extra `ask`)

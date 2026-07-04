@@ -26,7 +26,7 @@ and `-t`/`--transcript` is the explicit transcript-only form. The transcript is
 written **token-lean by default**: no `[m:ss]` timestamps and **2 segments per
 line** (half the newlines); pass `--ts`/`--timestamps` to keep the stamps.
 
-> **Behavior change:** a bare `viewlyt <url>` now collects the TRANSCRIPT only
+> **Behavior change:** a bare `vl <url>` now collects the TRANSCRIPT only
 > (it used to collect comments). Use `-c` for comments, `-c -t` for both. Also
 > `-t`/`--transcript` collects ONLY the transcript (previously `--transcript`
 > also kept the comments). And the transcript now ships WITHOUT timestamps by
@@ -34,7 +34,7 @@ line** (half the newlines); pass `--ts`/`--timestamps` to keep the stamps.
 
 ## Live mode (real-time)
 
-`viewlyt[live]` adds **`viewlyt-live`**: it taps a YouTube **live chat** in real
+`viewlyt[live]` adds **`vl live`**: it taps a YouTube **live chat** in real
 time, batches the messages to an LLM, and streams the results — live percentages,
 rolling summaries, and charts — to a local dashboard you drive in a second window
 (create probes by typing a question, set a spending budget, pick the output
@@ -42,16 +42,16 @@ language, and more). See **[how-to.md](how-to.md)** for the full guide.
 
 ```bash
 uv sync --extra live
-uv run viewlyt-live 'https://www.youtube.com/watch?v=LIVE_ID'
+uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
 
 # Safari users (or zero-setup capture): the server drives its own headless
 # Chrome on the chat popout — nothing to paste into any browser:
-uv run viewlyt-live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
+uv run vl live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
 
 ## Chat with your collected data
 
-`viewlyt[ask]` adds **`viewlyt-ask`**: talk to the `out/*.md` (transcripts +
+`viewlyt[ask]` adds **`vl ask`**: talk to the `out/*.md` (transcripts +
 comments) you've **already collected** — no re-scraping. By default it's an
 **ephemeral chat**: it loads the files straight into the model's context and
 answers, and **nothing is saved** — built for "collect, ask around for a couple of
@@ -65,10 +65,10 @@ export OPENROUTER_API_KEY=sk-or-...         # the LLM provider
 export LLM_NAME=google/gemini-2.5-flash     # any OpenRouter model id
 
 # One-shot (the shell expands out/*.md into files; the leftover text is the question):
-uv run viewlyt-ask out/*.md 'which video had the better reception, and why?'
+uv run vl ask out/*.md 'which video had the better reception, and why?'
 
 # No question -> interactive REPL over the same loaded base (Ctrl-D to quit):
-uv run viewlyt-ask out/*.md
+uv run vl ask out/*.md
 > qual vídeo teve mais aceitação?
 > e o que mais reclamam nos comentários?
 ```
@@ -90,8 +90,8 @@ that grows without bound.
 
 ```bash
 uv sync --extra rag       # heavier: lightrag + local fastembed embeddings
-uv run viewlyt-ask --persist out/*.md 'how do these relate?'
-uv run viewlyt-ask --persist 'summarize the recurring complaints'   # reuses the index
+uv run vl ask --persist out/*.md 'how do these relate?'
+uv run vl ask --persist 'summarize the recurring complaints'   # reuses the index
 ```
 
 - **LLM on OpenRouter, embeddings local.** Embeddings (which OpenRouter doesn't
@@ -134,56 +134,56 @@ uv sync
 
 ```bash
 # Default: headless, TRANSCRIPT only. Writes out/<title-slug>-dQw4w9WgXcQ.transcript.md
-uv run viewlyt 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+uv run vl 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Also accepts youtu.be, /shorts/, /embed/ and the bare id:
-uv run viewlyt 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl 'https://youtu.be/dQw4w9WgXcQ'
 
 # Comments only -> out/<title-slug>-<video_id>.md:
-uv run viewlyt -c 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -c 'https://youtu.be/dQw4w9WgXcQ'
 
 # Visible browser (more reliable against the bot wall):
-uv run viewlyt --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+uv run vl --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Comments: at most 50, skipping replies (much faster):
-uv run viewlyt -c --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -c --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
 
 # Comments: up to 25 replies per comment:
-uv run viewlyt -c --limit-replies 25 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -c --limit-replies 25 'https://youtu.be/dQw4w9WgXcQ'
 
 # Writes to another directory:
-uv run viewlyt -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -o ./dump 'https://youtu.be/dQw4w9WgXcQ'
 
 # Comments + full video transcript (the -c and -t selectors together):
-uv run viewlyt -c -t 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -c -t 'https://youtu.be/dQw4w9WgXcQ'
 
 # Transcript only (== the default; == --transcript-only):
-uv run viewlyt -t 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -t 'https://youtu.be/dQw4w9WgXcQ'
 
 # Transcript WITH the [m:ss] timestamps (the default strips them):
-uv run viewlyt -t --ts 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -t --ts 'https://youtu.be/dQw4w9WgXcQ'
 
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
-uv run viewlyt -r 17 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -r 17 'https://youtu.be/dQw4w9WgXcQ'
 
 # Everything in ONE file out/<slug>-<id>.unified.md (comments + transcript + related):
-uv run viewlyt -u 'https://youtu.be/dQw4w9WgXcQ'        # -u == --unify
+uv run vl -u 'https://youtu.be/dQw4w9WgXcQ'        # -u == --unify
 
 # Also copy the full output to the system clipboard:
-uv run viewlyt -u --copy 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -u --copy 'https://youtu.be/dQw4w9WgXcQ'
 
 # Combine several videos into a single out/unified-all.md:
-uv run viewlyt --unify-all '<url1>' '<url2>' '<url3>'
+uv run vl --unify-all '<url1>' '<url2>' '<url3>'
 
 # Don't merge consecutive comments from the same author (merging is the default):
-uv run viewlyt -c --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
+uv run vl -c --no-merge-comments 'https://youtu.be/dQw4w9WgXcQ'
 
 # Several videos at once (pool of reused instances):
-uv run viewlyt '<url1>' '<url2>' '<url3>'
+uv run vl '<url1>' '<url2>' '<url3>'
 
 # From a .txt file (one URL per line) or .csv (any column):
-uv run viewlyt --from-file urls.txt
-uv run viewlyt videos.csv -j 4          # 4 browsers in parallel
+uv run vl --from-file urls.txt
+uv run vl videos.csv -j 4          # 4 browsers in parallel
 ```
 
 ### Options
@@ -386,7 +386,7 @@ src/viewlyt/
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
   htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
-  rag.py                  viewlyt-ask: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
+  rag.py                  vl ask: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
 tests/test_units.py       browser-free tests for the pure functions
 tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
 ```
@@ -493,7 +493,7 @@ pool is kept because (a) it satisfies the project's "use threads" requirement,
 
 ```bash
 uv python install 3.14t      # CPython free-threaded
-uv run --python 3.14t viewlyt '<url>'
+uv run --python 3.14t vl '<url>'
 ```
 
 ## Notes / limitations
