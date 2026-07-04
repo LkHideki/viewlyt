@@ -17,7 +17,7 @@ from .window import WindowConfig
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for viewlyt-live."""
     parser = argparse.ArgumentParser(
-        prog="viewlyt-live",
+        prog="vl live",
         description="Real-time YouTube live-chat analysis with LLMs.",
     )
 
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Display dashboard URL
     dash_url = f"http://{args.host}:{args.port}/"
-    print(f"viewlyt-live -> dashboard: {dash_url}")
+    print(f"vl live -> dashboard: {dash_url}")
 
     if args.capture == "server":
         print("capture:      server-side (chat pulled by this process — no snippet needed)")

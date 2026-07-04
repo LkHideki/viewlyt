@@ -674,7 +674,7 @@ def _split_inputs(inputs: list[str]) -> tuple[list[str], str]:
 def build_ask_parser() -> argparse.ArgumentParser:
     """The ``viewlyt-ask`` CLI parser (kept separate so it's unit-testable)."""
     p = argparse.ArgumentParser(
-        prog="viewlyt-ask",
+        prog="vl ask",
         description=(
             "Chat with already-collected out/*.md (transcripts + comments) via an LLM on "
             "OpenRouter. Default is an EPHEMERAL chat — nothing is saved: pass a question for "

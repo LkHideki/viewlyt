@@ -608,7 +608,7 @@ def _safe_quit(driver) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="viewlyt",
+        prog="vl",
         description="Scrape YouTube comments (likes, dates, replies) and optional transcript "
         "into out/<title-slug>-<video_id>.md. Accepts many URLs and/or .txt/.csv files.",
         epilog=_EXAMPLES,

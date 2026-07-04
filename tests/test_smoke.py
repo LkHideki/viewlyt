@@ -16,7 +16,7 @@ from conftest import cli_run
 def test_version_flag_smoke():
     r = cli_run(["--version"])
     assert r.returncode == 0, r.stderr
-    assert r.stdout.startswith("viewlyt ")
+    assert r.stdout.startswith("vl ")
     assert md.version("viewlyt") in r.stdout
 
 
@@ -50,9 +50,41 @@ def test_invalid_url_exits_2():
 
 
 def test_console_entry_point_resolves():
-    eps = [e for e in md.entry_points(group="console_scripts") if e.name == "viewlyt"]
-    assert eps, "viewlyt console script not registered"
-    assert eps[0].value == "viewlyt.cli:main"
-    from viewlyt.cli import main
+    eps = [e for e in md.entry_points(group="console_scripts") if e.name == "vl"]
+    assert eps, "vl console script not registered"
+    assert eps[0].value == "viewlyt.vl:main"
+    from viewlyt.vl import main
 
     assert eps[0].load() is main
+
+
+def test_vl_default_routes_to_scraper(monkeypatch):
+    """A bare `vl ARGS` (no subcommand) dispatches to the scraper CLI verbatim."""
+    import viewlyt.cli as scraper_cli
+    from viewlyt import vl
+
+    seen = {}
+
+    def fake(argv=None):
+        seen["argv"] = argv
+        return 0
+
+    monkeypatch.setattr(scraper_cli, "main", fake)
+    assert vl.main(["https://youtu.be/x", "-c"]) == 0
+    assert seen["argv"] == ["https://youtu.be/x", "-c"]
+
+
+def test_vl_ask_subcommand_routes(monkeypatch):
+    """`vl ask ARGS` dispatches to viewlyt.rag:main with the `ask` token stripped."""
+    import viewlyt.rag as rag
+    from viewlyt import vl
+
+    seen = {}
+
+    def fake(argv=None):
+        seen["argv"] = argv
+        return 3
+
+    monkeypatch.setattr(rag, "main", fake)
+    assert vl.main(["ask", "out/a.md", "q?"]) == 3
+    assert seen["argv"] == ["out/a.md", "q?"]

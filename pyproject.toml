@@ -49,9 +49,7 @@ Repository = "https://github.com/LkHideki/viewlyt"
 Issues = "https://github.com/LkHideki/viewlyt/issues"
 
 [project.scripts]
-viewlyt = "viewlyt.cli:main"
-viewlyt-live = "viewlyt.live.cli:main"
-viewlyt-ask = "viewlyt.rag:main"
+vl = "viewlyt.vl:main"
 
 [build-system]
 requires = ["hatchling"]

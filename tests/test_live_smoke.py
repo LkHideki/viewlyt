@@ -14,7 +14,7 @@ from conftest import cli_run_live
 def test_live_version_flag_smoke():
     r = cli_run_live(["--version"])
     assert r.returncode == 0, r.stderr
-    assert r.stdout.startswith("viewlyt-live ")
+    assert r.stdout.startswith("vl live ")
     assert md.version("viewlyt") in r.stdout
 
 
@@ -34,10 +34,17 @@ def test_live_help_flag_smoke():
         assert token in r.stdout, token
 
 
-def test_live_console_entry_point_resolves():
-    eps = [e for e in md.entry_points(group="console_scripts") if e.name == "viewlyt-live"]
-    assert eps, "viewlyt-live console script not registered"
-    assert eps[0].value == "viewlyt.live.cli:main"
-    from viewlyt.live.cli import main
+def test_vl_live_subcommand_routes(monkeypatch):
+    """`vl live ARGS` dispatches to viewlyt.live.cli:main with ARGS (no `live` token)."""
+    import viewlyt.live.cli as live_cli
+    from viewlyt import vl
 
-    assert eps[0].load() is main
+    seen = {}
+
+    def fake_main(argv=None):
+        seen["argv"] = argv
+        return 7
+
+    monkeypatch.setattr(live_cli, "main", fake_main)
+    assert vl.main(["live", "--host", "0.0.0.0"]) == 7
+    assert seen["argv"] == ["--host", "0.0.0.0"]
