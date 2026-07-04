@@ -363,10 +363,16 @@ function svg<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
-/** Map a 0–100 value to one of the 8 unicode block characters. */
+// The sparkline is a compact ACCENT, not the chart: cap its points so a long
+// session (up to 60 snapshots) can't widen its auto-sized grid column and
+// starve the 1fr track of the real (colored) bar.
+const SPARK_POINTS = 16;
+
+/** Map a 0–100 value to one of the 8 unicode block characters (last N points). */
 function sparkline(values: number[]): string {
   const blocks = "▁▂▃▄▅▆▇█";
   return values
+    .slice(-SPARK_POINTS)
     .map((v) => blocks[Math.min(7, Math.floor(v / 12.5))])
     .join("");
 }

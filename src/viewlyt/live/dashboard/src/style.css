@@ -484,9 +484,12 @@ button:active {
 
 .bars {
   /* Shared grid (rows use display:contents) so every row's 1fr track is the
-     SAME width → the bars are directly comparable across categories. */
+     SAME width → the bars are directly comparable across categories. The
+     colored track is the star: it gets the 1fr with a guaranteed minimum,
+     the label may shrink, and the sparkline column is bounded so it can
+     never starve the track. */
   display: grid;
-  grid-template-columns: 120px 1fr 52px auto auto;
+  grid-template-columns: minmax(72px, 118px) minmax(90px, 1fr) 48px auto minmax(0, auto);
   align-items: center;
   gap: 0.4rem 0.5rem;
 }
@@ -532,6 +535,7 @@ button:active {
   letter-spacing: -0.04em;
   white-space: nowrap;
   opacity: 0.75;
+  overflow: hidden;
 }
 
 /* -------------------------------------------------------------------------
