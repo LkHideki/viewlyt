@@ -845,6 +845,23 @@ npm --prefix src/viewlyt/live/dashboard run build</pre>
 </body></html>"""
 
 
+def _parse_ingest_batch(items: list) -> list:
+    """Parse a batch of raw ingest items into ChatMessages (CPU-bound, pure).
+
+    Kept separate so the /ingest handler can run it in a worker thread: a burst of
+    chat (a hype-train, or a reconnect catch-up of up to thousands of items in one
+    frame) would otherwise parse HTML synchronously on the event loop, stalling the
+    queue drain, the broadcast tick and every dashboard/control socket for the whole
+    batch (secperf P1 — event-loop blocking).
+    """
+    out = []
+    for item in items:
+        m = message_from_ingest(item)
+        if m is not None:
+            out.append(m)
+    return out
+
+
 def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
     """Build the FastAPI app: lifespan-managed worker, routes, then the static mount.
 
@@ -954,13 +971,12 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
                 except Exception:
                     continue  # skip one malformed frame instead of tearing down the bridge
                 items = data if isinstance(data, list) else [data]
-                for item in items:
-                    m = message_from_ingest(item)
-                    if m is not None:
-                        try:
-                            server.queue.put_nowait(m)
-                        except asyncio.QueueFull:
-                            pass
+                # Parse off the event loop so a large burst can't stall the dashboards.
+                for m in await asyncio.to_thread(_parse_ingest_batch, items):
+                    try:
+                        server.queue.put_nowait(m)
+                    except asyncio.QueueFull:
+                        pass
         except WebSocketDisconnect:
             return
         except Exception:
