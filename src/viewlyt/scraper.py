@@ -1083,6 +1083,20 @@ def _open_transcript_and_wait(
     budget so music videos stay fast.
     """
     driver.execute_script("window.scrollTo(0, 600);")
+    # Wait for the watch page's description area to RENDER before scanning for
+    # the button (eager page-load strategy: right after navigation it often
+    # hasn't). The old flow got this hydration window by accident from the 2s
+    # consent-dialog dead wait; now we wait on the actual signal — the expander
+    # or the transcript section — and move on the instant it exists. Every video
+    # has a description, so a transcript-less video isn't slowed by this either.
+    try:
+        WebDriverWait(driver, 6, poll_frequency=_POLL).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, f"{DESC_EXPAND}, {TRANSCRIPT_SECTION}")
+            )
+        )
+    except TimeoutException:
+        pass  # no description area at all — fall through to the scans below
     _expand_description(driver)
 
     btn = _find_transcript_button(driver)
