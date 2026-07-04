@@ -337,3 +337,77 @@ def test_decompose_failure_broadcasts_error_frame() -> None:
     frames = [json.loads(s) for s in ws.sent]
     assert any(f["type"] == "error" for f in frames)
     assert not any(f["type"] == "suggestions" for f in frames)
+
+
+# ---------------------------------------------------------------------------
+# Security regressions (secperf S3): set_model must not exfiltrate the stored
+# API key by carrying it over to an attacker-chosen base_url.
+# ---------------------------------------------------------------------------
+def _persist_to_tmp(tmp_path, monkeypatch) -> None:
+    from viewlyt.live import persistence
+
+    monkeypatch.setattr(persistence, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "live-state.json")
+    monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
+
+
+def test_set_model_drops_key_when_base_url_is_unknown(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    srv = LiveServer(
+        LLMConfig(base_url="https://openrouter.ai/api/v1", api_key="sk-secret", model="m"),
+        WindowConfig(),
+    )
+    # An attacker-reachable /control op repoints base_url to a host they own, no key.
+    asyncio.run(apply_control(srv, {"op": "set_model", "base_url": "https://evil.example/v1"}))
+    assert srv.llm_cfg.base_url == "https://evil.example/v1"
+    assert srv.llm_cfg.api_key == "", "stored key must NOT be forwarded to an unknown host"
+
+
+def test_set_model_keeps_key_for_same_or_known_provider(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    srv = LiveServer(
+        LLMConfig(base_url="https://openrouter.ai/api/v1", api_key="sk-secret", model="m"),
+        WindowConfig(),
+    )
+    # Same base_url (just a model swap) keeps the key.
+    asyncio.run(apply_control(srv, {"op": "set_model", "model": "other"}))
+    assert srv.llm_cfg.api_key == "sk-secret"
+    # Switching to a RECOGNIZED provider (in PROVIDERS) also keeps it — expected UX.
+    asyncio.run(apply_control(srv, {"op": "set_model", "base_url": "https://api.openai.com/v1"}))
+    assert srv.llm_cfg.api_key == "sk-secret"
+
+
+def test_set_model_uses_explicit_key_for_unknown_host(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    srv = LiveServer(LLMConfig(api_key="sk-old"), WindowConfig())
+    asyncio.run(
+        apply_control(
+            srv,
+            {"op": "set_model", "base_url": "https://custom.local/v1", "api_key": "sk-new"},
+        )
+    )
+    assert srv.llm_cfg.api_key == "sk-new"
+
+
+# ---------------------------------------------------------------------------
+# Security regression (secperf S1): the CORS/PNA middleware must NOT emit a
+# blanket Access-Control-Allow-Origin:* that lets any site read /export.*.
+# ---------------------------------------------------------------------------
+def test_cors_headers_only_for_youtube_origin() -> None:
+    from fastapi.testclient import TestClient
+
+    from viewlyt.live.server import create_app
+
+    client = TestClient(create_app(LiveServer(LLMConfig(), WindowConfig())))
+
+    # A foreign website must get NO cross-origin grant on the session export.
+    r = client.get("/export.json", headers={"origin": "https://evil.example"})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in {k.lower() for k in r.headers}
+
+    # The youtube popout (the only legit cross-origin caller) gets its exact origin
+    # echoed plus the Private-Network grant — never "*".
+    yt = "https://www.youtube.com"
+    r2 = client.get("/export.json", headers={"origin": yt})
+    assert r2.headers.get("access-control-allow-origin") == yt
+    assert r2.headers.get("access-control-allow-private-network") == "true"

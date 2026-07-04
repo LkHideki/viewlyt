@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import persistence
 from .llm import (
+    PROVIDERS,
     LLMClient,
     LLMConfig,
     LLMRunner,
@@ -55,6 +56,23 @@ _SEND_TIMEOUT = 5.0
 
 # Snapshots kept per probe, server-side, for reconnect backfill and export.
 _HISTORY_CAP = 120
+
+
+def _is_youtube_origin(origin: str | None) -> bool:
+    """True for an ``https://youtube.com`` (or subdomain) Origin.
+
+    That's the ONLY cross-origin caller that legitimately reaches this loopback
+    server: the chat-popout capture snippet, which needs a Private Network Access
+    preflight answered so Chrome allows its ``ws://127.0.0.1/ingest`` connection.
+    """
+    if not origin:
+        return False
+    try:
+        u = urlsplit(origin)
+    except Exception:
+        return False
+    oh = (u.hostname or "").lower()
+    return u.scheme == "https" and (oh == "youtube.com" or oh.endswith(".youtube.com"))
 
 
 def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: bool) -> bool:
@@ -259,9 +277,21 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 # Capacity changed: a fresh rolling buffer with the new maxlen.
                 server.buffer = WindowBuffer(maxlen=server.window.capacity)
         elif op == "set_model":
+            new_base = data.get("base_url") or server.llm_cfg.base_url
+            explicit_key = data.get("api_key")
+            if explicit_key:
+                new_key = explicit_key
+            elif new_base == server.llm_cfg.base_url or new_base in PROVIDERS.values():
+                # unchanged, or a recognized provider → safe to keep the stored key
+                new_key = server.llm_cfg.api_key
+            else:
+                # a NEW, unrecognized base_url with no key supplied: never forward the
+                # stored key to it — that would exfiltrate the credential to an
+                # attacker-chosen host (CWE-522). Require it to be re-supplied instead.
+                new_key = ""
             server.llm_cfg = LLMConfig(
-                base_url=data.get("base_url") or server.llm_cfg.base_url,
-                api_key=data.get("api_key") or server.llm_cfg.api_key,
+                base_url=new_base,
+                api_key=new_key,
                 model=data.get("model") or server.llm_cfg.model,
                 budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
                 language=str(data.get("language") or server.llm_cfg.language),
@@ -841,17 +871,23 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def _allow_private_network(request: Request, call_next):
-        # Let a page on https://youtube.com reach this loopback server: answer the
-        # Private Network Access preflight and tag responses so Chrome is less likely
-        # to block the ws://127.0.0.1 connection.
+        # Answer Chrome's Private Network Access preflight so a page on
+        # https://youtube.com may open ws://127.0.0.1/ingest — but ONLY for a
+        # youtube Origin, echoing that exact origin. A blanket
+        # `Access-Control-Allow-Origin: *` (the old behavior) let ANY website the
+        # operator visits read /export.* off their loopback (CWE-942).
+        origin = request.headers.get("origin")
+        yt = _is_youtube_origin(origin)
         if request.method == "OPTIONS":
             resp: Response = Response(status_code=200)
         else:
             resp = await call_next(request)
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Private-Network"] = "true"
-        resp.headers["Access-Control-Allow-Methods"] = "*"
-        resp.headers["Access-Control-Allow-Headers"] = "*"
+        if yt and origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin  # echo, never "*"
+            resp.headers["Access-Control-Allow-Private-Network"] = "true"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "*"
+            resp.headers["Vary"] = "Origin"
         return resp
 
     @app.get("/snippet.js")
