@@ -310,7 +310,8 @@ type ChartType =
   | "gauge"
   | "heatmap"
   | "podium"
-  | "violin";
+  | "violin"
+  | "descartes";
 const CHART_TYPES: ChartType[] = [
   "bars",
   "columns",
@@ -323,6 +324,7 @@ const CHART_TYPES: ChartType[] = [
   "heatmap",
   "podium",
   "violin",
+  "descartes",
 ];
 
 /** Read a probe's persisted chart type (server-side), defaulting to "bars". */
@@ -1066,10 +1068,214 @@ function renderViolin(views: CatView[], probeId: string): Element {
   return root;
 }
 
+// ---------------------------------------------------------------------------
+// Descartes: a scoreline probe ("qual o seu palpite? 2x1, 3x0, …") plotted on a
+// Cartesian grid — home-team goals on X, away-team goals on Y. Each cell is one
+// exact scoreline; its intensity is the share of the chat that predicted it, and
+// its tint says who wins (home / draw / away). This turns an otherwise huge,
+// hand-typed category list into a single readable coordinate square.
+// ---------------------------------------------------------------------------
+
+// Accepts "2x1", "2 x 1", "2×1", "2:1", "2-1", "2/1", "2 a 1" (Portuguese).
+const SCORE_RE = /^(\d+)\s*(?:x|×|:|\/|-|\s+a\s+)\s*(\d+)$/i;
+const DESC_MAX = 6; // cap the grid range so one stray big scoreline can't explode it
+
+function parseScore(cat: string): { h: number; a: number } | null {
+  const m = cat.trim().match(SCORE_RE);
+  if (!m) return null;
+  const h = parseInt(m[1]!, 10);
+  const a = parseInt(m[2]!, 10);
+  return Number.isFinite(h) && Number.isFinite(a) ? { h, a } : null;
+}
+
+/** A default scoreline grid "HxA" for H,A in 0..max, plus an "outro" bucket. */
+function scoreGridCategories(max = 3): string[] {
+  const cats: string[] = [];
+  for (let h = 0; h <= max; h++) for (let a = 0; a <= max; a++) cats.push(`${h}x${a}`);
+  cats.push("outro");
+  return cats;
+}
+
+/** Team names parsed from "A x B" in the probe question; fallback ["casa","fora"]. */
+function scoreTeams(probeId: string): [string, string] {
+  const q = (probeState.get(probeId)?.question ?? "").trim();
+  const m = q.match(/([\p{L}][\p{L}\d.'-]*)\s+(?:x|×|vs\.?|versus)\s+([\p{L}][\p{L}\d.'-]*)/iu);
+  return m ? [m[1]!, m[2]!] : ["casa", "fora"];
+}
+
+/** Seed a probe with a scoreline grid + the descartes chart, then re-render its
+ *  card. Lets a user adopt the whole grid in one click, never typing scorelines. */
+function generateScoreGrid(probeId: string, max = 3): void {
+  const prev = probeState.get(probeId);
+  const probe: ProbeDescriptor = {
+    ...(prev ?? { id: probeId, kind: "classification", label: "" }),
+    kind: "classification",
+    categories: scoreGridCategories(max),
+    chart: "descartes",
+  };
+  send({ op: "upsert_probe", probe });
+  probeState.set(probe.id, probe);
+  const card = document.querySelector<HTMLDivElement>(
+    `[data-probe-id="${CSS.escape(probeId)}"]`,
+  );
+  if (card) {
+    updateCardChrome(probeId);
+    const vs = viewState.get(probeId);
+    renderDisplay(card, probeId, "classification", vs ? vs.index : 0);
+  }
+  showToast(`Grade de placares 0–${max} gerada.`, "success");
+}
+
+const WIN_TINT: Record<"home" | "draw" | "away", string> = {
+  home: "76,139,245", // accent blue
+  draw: "251,188,4", // amber
+  away: "234,67,53", // red
+};
+
+function renderDescartes(views: CatView[], probeId: string): HTMLElement {
+  const root = document.createElement("div");
+  root.className = "descartes";
+
+  // Split categories into scoreline cells vs. the leftover ("outro"/unparseable).
+  const cells: { h: number; a: number; pct: number }[] = [];
+  let outro = 0;
+  for (const v of views) {
+    const s = parseScore(v.cat);
+    if (s && s.h <= DESC_MAX && s.a <= DESC_MAX) cells.push({ h: s.h, a: s.a, pct: v.pct });
+    else outro += v.pct;
+  }
+
+  // No scoreline categories yet → an empty state that offers to build the grid,
+  // so the user never has to enumerate every possible scoreline by hand.
+  if (cells.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "descartes-empty";
+    const hint = document.createElement("p");
+    hint.className = "empty-hint";
+    hint.textContent = "Descartes plota placares (ex.: 2x1) num plano casa × visitante.";
+    const gen = document.createElement("button");
+    gen.type = "button";
+    gen.className = "btn-secondary btn-small";
+    gen.textContent = "Gerar grade de placares (0–3)";
+    gen.addEventListener("click", () => generateScoreGrid(probeId));
+    empty.appendChild(hint);
+    empty.appendChild(gen);
+    root.appendChild(empty);
+    return root;
+  }
+
+  const [homeTeam, awayTeam] = scoreTeams(probeId);
+  const maxH = Math.min(DESC_MAX, Math.max(3, ...cells.map((c) => c.h)));
+  const maxA = Math.min(DESC_MAX, Math.max(3, ...cells.map((c) => c.a)));
+  const maxPct = Math.max(1, ...cells.map((c) => c.pct));
+  const byKey = new Map(cells.map((c) => [`${c.h}x${c.a}`, c.pct]));
+  let modalKey = "";
+  let modalPct = -1;
+  for (const c of cells) {
+    if (c.pct > modalPct) {
+      modalPct = c.pct;
+      modalKey = `${c.h}x${c.a}`;
+    }
+  }
+
+  // Rotated Y team title beside the plot grid.
+  const main = document.createElement("div");
+  main.className = "descartes-main";
+  const yTitle = document.createElement("div");
+  yTitle.className = "descartes-ytitle";
+  yTitle.textContent = awayTeam;
+  main.appendChild(yTitle);
+
+  const plot = document.createElement("div");
+  plot.className = "descartes-plot";
+  plot.style.setProperty("--cols", String(maxH + 1));
+  plot.style.setProperty("--rows", String(maxA + 1));
+
+  // Rows top→bottom = away goals maxA..0 (origin bottom-left, like a real plane).
+  for (let a = maxA; a >= 0; a--) {
+    const ylab = document.createElement("span");
+    ylab.className = "descartes-ylabel";
+    ylab.textContent = String(a);
+    plot.appendChild(ylab);
+    for (let h = 0; h <= maxH; h++) {
+      const key = `${h}x${a}`;
+      const pct = byKey.get(key);
+      const cell = document.createElement("div");
+      cell.className = "descartes-cell";
+      if (pct === undefined) {
+        cell.classList.add("is-empty");
+      } else {
+        const outcome: "home" | "draw" | "away" = h > a ? "home" : h < a ? "away" : "draw";
+        cell.classList.add("is-" + outcome);
+        const alpha = 0.12 + 0.88 * (pct / maxPct);
+        cell.style.background = `rgba(${WIN_TINT[outcome]},${alpha.toFixed(3)})`;
+        if (key === modalKey && modalPct > 0) cell.classList.add("is-modal");
+        if (pct >= 2) {
+          const t = document.createElement("span");
+          t.className = "descartes-pct";
+          t.textContent = pct.toFixed(0);
+          cell.appendChild(t);
+        }
+        cell.title = `${homeTeam} ${h} × ${a} ${awayTeam} — ${pct.toFixed(1)}%`;
+      }
+      plot.appendChild(cell);
+    }
+  }
+  // Bottom axis row: empty corner + home-goal numbers 0..maxH.
+  const corner = document.createElement("span");
+  corner.className = "descartes-corner";
+  plot.appendChild(corner);
+  for (let h = 0; h <= maxH; h++) {
+    const xlab = document.createElement("span");
+    xlab.className = "descartes-xlabel";
+    xlab.textContent = String(h);
+    plot.appendChild(xlab);
+  }
+  main.appendChild(plot);
+
+  const xTitle = document.createElement("div");
+  xTitle.className = "descartes-xtitle";
+  xTitle.textContent = homeTeam;
+  main.appendChild(xTitle);
+  root.appendChild(main);
+
+  // Legend (who wins) + the out-of-grid bucket, if any.
+  const foot = document.createElement("div");
+  foot.className = "descartes-foot";
+  const legend = document.createElement("div");
+  legend.className = "descartes-legend";
+  const legendItems: [string, string][] = [
+    [`${homeTeam} vence`, "is-home"],
+    ["empate", "is-draw"],
+    [`${awayTeam} vence`, "is-away"],
+  ];
+  for (const [txt, cls] of legendItems) {
+    const it = document.createElement("span");
+    it.className = "descartes-legend-item " + cls;
+    const sw = document.createElement("span");
+    sw.className = "descartes-legend-swatch";
+    const lb = document.createElement("span");
+    lb.textContent = txt;
+    it.appendChild(sw);
+    it.appendChild(lb);
+    legend.appendChild(it);
+  }
+  foot.appendChild(legend);
+  if (outro > 0.05) {
+    const o = document.createElement("span");
+    o.className = "descartes-outro";
+    o.textContent = `fora da grade: ${outro.toFixed(0)}%`;
+    foot.appendChild(o);
+  }
+  root.appendChild(foot);
+
+  return root;
+}
+
 /**
  * Build the classification .result-display content for the snapshot at `index`:
  * the chosen visualization wrapped in .chart-viz, plus (for every chart EXCEPT
- * "bars") the .cat-stats table underneath it.
+ * "bars"/"descartes") the .cat-stats table underneath it.
  */
 function buildClassificationBody(probeId: string, index: number): HTMLElement {
   const body = document.createElement("div");
@@ -1133,13 +1339,18 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
     case "violin":
       viz.appendChild(renderViolin(views, probeId));
       break;
+    case "descartes":
+      viz.appendChild(renderDescartes(views, probeId));
+      break;
     default:
       viz.appendChild(renderBars(probeId, views));
       break;
   }
   body.appendChild(viz);
 
-  if (type !== "bars") {
+  // "bars" carries its own per-row stats; "descartes" IS a grid of every
+  // category (a stats table would just duplicate all 16+ scorelines).
+  if (type !== "bars" && type !== "descartes") {
     body.appendChild(buildStats(probeId, views));
   }
   return body;
@@ -1313,6 +1524,12 @@ function ensureCard(probeId: string): HTMLDivElement {
     const probe: ProbeDescriptor = prev
       ? { ...prev, chart: chosen }
       : { id: probeId, kind: "classification", label: "", chart: chosen };
+    // Descartes needs scoreline categories. If the probe has none at all, seed a
+    // default grid so picking it just works (never clobbers existing categories —
+    // a probe that already has some shows the grid's "generate" empty-state).
+    if (chosen === "descartes" && (prev?.categories?.length ?? 0) === 0) {
+      probe.categories = scoreGridCategories();
+    }
     send({ op: "upsert_probe", probe });
     probeState.set(probe.id, probe);
     const vs = viewState.get(probeId);

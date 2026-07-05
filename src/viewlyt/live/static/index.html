@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-C67B2Syc.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DoEf4akk.css">
+    <script type="module" crossorigin src="./assets/index-CByTmlcl.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-CHL0a3lU.css">
   </head>
   <body>
     <header>
@@ -232,12 +232,13 @@ open:
 classification:
   { "kind": "classification", "question": "What is the overall sentiment?",
     "categories": ["positive", "negative", "neutral"],
-    "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta|gauge|heatmap|podium|violin" }
+    "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta|gauge|heatmap|podium|violin|descartes" }
 
 Notes:
   • "label" is optional — auto-generated from the text when omitted.
   • "kind" defaults to "open" when omitted.
-  • "chart" applies only to classification probes (eleven types: bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin).
+  • "chart" applies only to classification probes (twelve types: bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin, descartes).
+  • "descartes" plots a match-scoreline probe on a home×away Cartesian grid; its categories should be scorelines like "2x1", "1x0", "0x0" (picking it on an empty probe seeds a 0–3 grid for you).
   • any probe may carry "interval_s" (own refresh cadence, s) and "sample_n" (own sample size); 0/omitted = follow the global Window config.</pre>
               <div class="field-group" style="margin-top:0.5rem">
                 <label for="probe-json-file">Upload JSON file</label>

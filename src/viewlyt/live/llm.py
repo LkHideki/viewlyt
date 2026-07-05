@@ -257,6 +257,14 @@ CHART_TYPES: tuple[str, ...] = (
     "lines",
     "area",
     "delta",
+    "descartes",
+)
+
+# Steer the model to pair the scoreline-grid chart with scoreline categories.
+_DESCARTES_NOTE = (
+    "Use 'descartes' ONLY for match-scoreline predictions (a two-number result like "
+    'a football score); then the categories MUST look like scorelines — "2x1", "1x0", '
+    '"0x0", "2x2", … (home-team goals "x" away-team goals). '
 )
 
 
@@ -380,7 +388,7 @@ async def rewrite_probe_spec(
         "Rephrase the request as a clear 'question' to classify each message. "
         f"{cats_line}"
         'The "label" is a short 2-4 word title. "chart" is one of '
-        f"{', '.join(CHART_TYPES)} (default 'bars').\n"
+        f"{', '.join(CHART_TYPES)} (default 'bars'). {_DESCARTES_NOTE}"
         'Return {"question":"...","categories":["...","..."],"label":"...","chart":"bars"}.'
     )
     try:
@@ -451,7 +459,7 @@ async def _rewrite_auto(client: LLMRunner, system: str, text: str, caller_cats: 
         "For 'open': set 'instruction' (start it like \"Across all the sampled "
         "live-chat messages, ...\") and 'max_words' (caps the answer length).\n"
         f"For 'classification': set 'question' (how to classify each message), "
-        f"'categories', and 'chart' (one of {', '.join(CHART_TYPES)}). {cats_line}"
+        f"'categories', and 'chart' (one of {', '.join(CHART_TYPES)}). {_DESCARTES_NOTE}{cats_line}"
         'The "label" is always a short 2-4 word title.\n'
         'Return e.g. {"kind":"open","instruction":"...","label":"...","max_words":60} '
         'or {"kind":"classification","question":"...","categories":["...","..."],'
