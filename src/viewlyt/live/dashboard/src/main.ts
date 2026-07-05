@@ -1261,24 +1261,19 @@ function ensureCard(probeId: string): HTMLDivElement {
   card.dataset["probeId"] = probeId;
   card.dataset["kind"] = cardKind(probeId);
 
-  // --- header ---
+  // --- header (vertical: a compact meta strip, then the title on its own line) ---
   const header = document.createElement("div");
   header.className = "result-header";
+
+  // Meta strip: kind badge (left) + action controls (right). Keeping the
+  // controls up here means they never steal width from the title below.
+  const headerTop = document.createElement("div");
+  headerTop.className = "result-header-top";
 
   const badge = document.createElement("span");
   badge.className = "result-kind-badge";
   badge.textContent = cardKind(probeId);
-  header.appendChild(badge);
-
-  const titles = document.createElement("div");
-  titles.className = "result-titles";
-  const labelEl = document.createElement("span");
-  labelEl.className = "result-label";
-  const promptEl = document.createElement("span");
-  promptEl.className = "result-prompt";
-  titles.appendChild(labelEl);
-  titles.appendChild(promptEl);
-  header.appendChild(titles);
+  headerTop.appendChild(badge);
 
   const right = document.createElement("div");
   right.className = "result-header-right";
@@ -1345,7 +1340,22 @@ function ensureCard(probeId: string): HTMLDivElement {
   right.appendChild(editBtn);
   right.appendChild(removeBtn);
   right.appendChild(collapseBtn);
-  header.appendChild(right);
+  headerTop.appendChild(right);
+  header.appendChild(headerTop);
+
+  // Title + prompt on their own lines below the meta strip: the label gets a
+  // full, dedicated line (wraps completely, never truncated to an ellipsis) and
+  // the prompt sits under it as a 2-line-clamped subtitle.
+  const titles = document.createElement("div");
+  titles.className = "result-titles";
+  const labelEl = document.createElement("span");
+  labelEl.className = "result-label";
+  const promptEl = document.createElement("span");
+  promptEl.className = "result-prompt";
+  titles.appendChild(labelEl);
+  titles.appendChild(promptEl);
+  header.appendChild(titles);
+
   card.appendChild(header);
 
   // --- inline editor (hidden by default) ---

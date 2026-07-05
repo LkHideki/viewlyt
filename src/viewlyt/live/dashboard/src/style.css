@@ -1487,20 +1487,33 @@ input[type="file"]::file-selector-button:hover {
    Batch 2 — editable result-card chrome, Auto chip, Cost stat card
    ------------------------------------------------------------------------- */
 
-/* --- Result header layout (now multi-line with badge + prompt subtitle) --- */
+/* --- Result header layout ---------------------------------------------------
+   Vertical stack: a compact meta strip (badge + action controls) on top, then
+   the title on its own dedicated full-width line, then the prompt subtitle.
+   Splitting the controls off into the meta strip is what lets the title use the
+   whole card width instead of being squeezed to an ellipsis beside the buttons. */
 
 .result-header {
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
   gap: .5rem;
 }
 
-/* Title column: badge + label + prompt stacked vertically */
+/* Meta strip: kind badge on the left, action controls on the right. */
+.result-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  min-width: 0;
+}
+
+/* Title + prompt column, full width (the whole card, not a leftover sliver). */
 .result-titles {
   display: flex;
   flex-direction: column;
-  gap: .15rem;
+  gap: .2rem;
   min-width: 0;
-  flex: 1;
 }
 
 /* --- Kind badge on the result card (mirrors .probe-kind-badge) --- */
@@ -1516,26 +1529,40 @@ input[type="file"]::file-selector-button:hover {
   color: var(--accent);
   border: 1px solid rgba(76, 139, 245, .25);
   flex-shrink: 0;
-  align-self: flex-start;
 }
 
-/* --- Editable label (bold white title, truncates) --- */
+/* --- Editable label: a bold title on its own line, wrapping in FULL
+   (never clipped to an ellipsis — the whole question stays readable). --- */
 
 .result-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 700;
+  font-size: .95rem;
+  color: #fff;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-/* --- Prompt subtitle under the label --- */
+.result-label:empty {
+  display: none;
+}
+
+/* --- Prompt subtitle under the title: clamped to two lines so a long
+   instruction stays tidy without hiding the title. --- */
 
 .result-prompt {
-  font-size: .76rem;
+  font-size: .78rem;
   color: var(--text-dim);
-  line-height: 1.4;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+.result-prompt:empty {
+  display: none;
 }
 
 /* --- Edit / Remove buttons in .result-header-right --- */
