@@ -1681,13 +1681,13 @@ input[type="file"]::file-selector-button:hover {
   fill: currentColor;
 }
 
-/* Reveal it on card hover, on keyboard focus anywhere in the card, when the
-   button itself is focused, or while the card is already in the 2-column state
-   (so the active state is always discoverable). */
+/* Reveal it on card hover, on keyboard focus anywhere in the card, or when the
+   button itself is focused. It stays hidden otherwise (in BOTH states) so it
+   never occludes chart data — a widened card is self-evidently the "on" state,
+   and hovering surfaces the toggle to switch back. */
 .result-card:hover .card-span,
 .result-card:focus-within .card-span,
-.card-span:focus-visible,
-.card-span.is-wide {
+.card-span:focus-visible {
   opacity: 1;
 }
 
