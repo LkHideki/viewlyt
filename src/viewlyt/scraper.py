@@ -23,7 +23,6 @@ import logging
 import random
 import re
 import time
-from urllib.parse import parse_qs, urlparse
 
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
@@ -36,6 +35,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
+
+from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
 
 log = logging.getLogger("viewlyt")
 
@@ -180,10 +181,6 @@ OVERFLOW_MENU_BUTTON = (
 # Matched case-insensitively against aria-label + textContent of button/a nodes.
 CONSENT_LABELS = ("accept all", "aceitar tudo", "reject all", "rejeitar tudo")
 
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_PATH_ID_RE = re.compile(r"/(?:shorts|embed|v|live)/([A-Za-z0-9_-]{11})")
-_ANY_ID_RE = re.compile(r"([A-Za-z0-9_-]{11})")
-
 _DEFAULT_TIMEOUT_NOTE = 10  # seconds; matches build_driver's page_load_timeout
 
 
@@ -198,35 +195,6 @@ class BlockedError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # URL / navigation helpers
 # --------------------------------------------------------------------------- #
-def extract_video_id(url: str) -> str:
-    """Extract the 11-char video id from any common YouTube URL form."""
-    url = (url or "").strip()
-    if _VIDEO_ID_RE.match(url):
-        return url
-
-    parsed = urlparse(url if "//" in url else "https://" + url)
-    host = (parsed.hostname or "").lower()
-
-    if host.endswith("youtu.be"):
-        candidate = parsed.path.lstrip("/").split("/")[0]
-        if _VIDEO_ID_RE.match(candidate):
-            return candidate
-
-    if "youtube" in host:
-        qs = parse_qs(parsed.query)
-        if "v" in qs and _VIDEO_ID_RE.match(qs["v"][0]):
-            return qs["v"][0]
-        m = _PATH_ID_RE.search(parsed.path)
-        if m:
-            return m.group(1)
-
-    m = _ANY_ID_RE.search(url)
-    if m:
-        return m.group(1)
-
-    raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
-
-
 def safe_get(driver, url: str) -> None:
     """``driver.get`` with the page-load timeout caught: stop loading and carry
     on with whatever DOM is present (the watch page never fully settles)."""

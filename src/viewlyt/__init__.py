@@ -16,11 +16,11 @@ Many videos on ONE reused browser (amortises Chrome startup)::
 
 The pure, dependency-free helpers (``html_to_text``, ``format_comment_lines``,
 ``format_transcript``, ``format_related``, ``group_consecutive_comments``,
-``parse_relative_date``, ``flatten_inline``, ``slugify``) and ``__version__`` are
-importable WITHOUT pulling in Selenium — ``import viewlyt`` stays lightweight. The
-Selenium-backed names (``scrape_video``, ``scrape_videos``, ``Session``,
-``build_driver``, …) are loaded lazily on first access (PEP 562), so they cost
-nothing until you use them.
+``parse_relative_date``, ``flatten_inline``, ``slugify``, ``extract_video_id``)
+and ``__version__`` are importable WITHOUT pulling in Selenium — ``import
+viewlyt`` stays lightweight. The Selenium-backed names (``scrape_video``,
+``scrape_videos``, ``Session``, ``build_driver``, …) are loaded lazily on first
+access (PEP 562), so they cost nothing until you use them.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 # Pure helpers: stdlib only, safe to import eagerly (no Selenium).
 from .htmltext import (
+    extract_video_id,
     flatten_inline,
     format_comment_lines,
     format_related,
@@ -60,20 +61,13 @@ _LAZY = {
     "collect_comments": "scraper",
     "collect_related": "scraper",
     "fetch_transcript": "scraper",
-    "extract_video_id": "scraper",
     "BlockedError": "scraper",
 }
 
 if TYPE_CHECKING:  # let type checkers and IDEs see the real symbols
     from .api import Comment, RelatedVideo, ScrapeResult, Session, scrape_video, scrape_videos
     from .driver import build_driver
-    from .scraper import (
-        BlockedError,
-        collect_comments,
-        collect_related,
-        extract_video_id,
-        fetch_transcript,
-    )
+    from .scraper import BlockedError, collect_comments, collect_related, fetch_transcript
 
 
 def __getattr__(name: str) -> object:  # PEP 562 module-level lazy attribute access
@@ -98,7 +92,6 @@ __all__ = [
     "Comment",
     "RelatedVideo",
     # building blocks (lazy)
-    "extract_video_id",
     "build_driver",
     "collect_comments",
     "collect_related",
@@ -115,5 +108,6 @@ __all__ = [
     "parse_relative_date",
     "flatten_inline",
     "slugify",
+    "extract_video_id",
     "__version__",
 ]

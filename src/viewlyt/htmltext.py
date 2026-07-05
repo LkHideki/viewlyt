@@ -20,6 +20,7 @@ import unicodedata
 from collections.abc import Callable
 from datetime import date, timedelta
 from html.parser import HTMLParser
+from urllib.parse import parse_qs, urlparse
 
 _LINEBREAK_TAGS = {"br"}
 _BLOCK_TAGS = {"p", "div"}
@@ -103,6 +104,40 @@ def flatten_inline(text: str) -> str:
     """Collapse text to a single line: every whitespace run (incl. newlines)
     becomes one space. Used so each comment occupies exactly one output line."""
     return " ".join(text.split())
+
+
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_PATH_ID_RE = re.compile(r"/(?:shorts|embed|v|live)/([A-Za-z0-9_-]{11})")
+_ANY_ID_RE = re.compile(r"([A-Za-z0-9_-]{11})")
+
+
+def extract_video_id(url: str) -> str:
+    """Extract the 11-char video id from any common YouTube URL form."""
+    url = (url or "").strip()
+    if _VIDEO_ID_RE.match(url):
+        return url
+
+    parsed = urlparse(url if "//" in url else "https://" + url)
+    host = (parsed.hostname or "").lower()
+
+    if host.endswith("youtu.be"):
+        candidate = parsed.path.lstrip("/").split("/")[0]
+        if _VIDEO_ID_RE.match(candidate):
+            return candidate
+
+    if "youtube" in host:
+        qs = parse_qs(parsed.query)
+        if "v" in qs and _VIDEO_ID_RE.match(qs["v"][0]):
+            return qs["v"][0]
+        m = _PATH_ID_RE.search(parsed.path)
+        if m:
+            return m.group(1)
+
+    m = _ANY_ID_RE.search(url)
+    if m:
+        return m.group(1)
+
+    raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
 
 
 # Authors we treat as "not a real, identifiable person": never merge or dedup
