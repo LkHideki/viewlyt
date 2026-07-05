@@ -48,7 +48,7 @@ repo root run `uv tool install .`, then just `vl '<url>'`.
 
 - [How the scraper works](#how-the-scraper-works)
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Options](#options)
-- [Several videos (batch mode)](#several-videos-batch-mode)
+- [Several videos (batch mode)](#several-videos-batch-mode) · [Watch mode](#watch-mode-queue-from-the-clipboard)
 - [Transcript](#transcript) · [Related videos](#related-videos) · [Unified output](#unified-output)
 - [Getting past YouTube/Google blocks](#getting-past-youtubegoogle-blocks) · [Output format](#output-format)
 - Optional modes: [`vl live`](#live-mode-real-time) · [`vl ask`](#chat-with-your-collected-data-vl-ask)
@@ -209,6 +209,58 @@ considerably.
 - Each video produces its own `out/<title-slug>-<video_id>.md`.
 
 > Each Chrome instance consumes memory (~300–500 MB). Adjust `--jobs` according to the available RAM.
+
+## Watch mode (queue from the clipboard)
+
+Building a batch by hand means alt-tabbing to a terminal and pasting each URL,
+with line breaks, one at a time. `vl watch` removes that: it polls the system
+clipboard while you browse and copy the videos you want, queues them
+(deduplicated, persisted to disk), and — once you stop — hands the whole queue
+to the exact same batch pipeline `vl` itself uses.
+
+```bash
+# Copy YouTube URLs as you browse; Ctrl-C when done, review, then it scrapes:
+uv run vl watch -c
+
+# Unattended/background use: auto-stop after 10 URLs or 5 minutes, no prompt:
+uv run vl watch --max-count 10 --timeout 300 --yes -c
+
+# Already queued some URLs and stopped? Dispatch what's saved, right now:
+uv run vl watch --run --yes -c
+
+# Peek at (or fix) the saved queue without starting a new poll:
+uv run vl watch --list
+uv run vl watch --drop-last   # pasted the wrong thing? drop it
+```
+
+| Flag | Default | Description |
+|------|--------|-----------|
+| `--poll-interval SECONDS` | `1.0` | clipboard poll interval |
+| `--queue-file PATH` | `<out-dir>/.watch/queue.json` | override the persisted queue file |
+| `--run` | off | skip polling: dispatch the already-saved queue right now |
+| `--list` | off | print the saved queue and exit |
+| `--drop-last` | off | remove the last queued item and exit |
+| `--max-count N` | `0` (off) | stop polling once the queue reaches N items |
+| `--timeout SECONDS` | `0` (off) | stop polling after this many seconds total |
+| `-y, --yes` | off | skip the post-poll review prompt (required for unattended use) |
+| `-o, --out-dir DIR` | `out` | anchors the default queue file; forwarded to the scrape |
+| `-q, --quiet` | off | suppress the `+1 (total N): <url>` line per accepted URL; forwarded |
+
+Any flag `vl` itself accepts (`-c`/`-t`/`-r`/`-u`/`--limit-comments`/...) is
+passed straight through to the batch dispatch, unchanged.
+
+- Stopping (Ctrl-C, `--max-count`, or `--timeout`) opens a small synchronous
+  review — `l` list, `u` undo the last item, `r` run, `q` quit without running
+  — unless `-y`/`--yes` skips straight to dispatch.
+- The queue is written to disk after **every** accepted URL, so a `kill -9`
+  only risks the one item in flight, never the rest of the queue.
+- Selenium-free until the queue actually dispatches: polling the clipboard
+  never opens a browser.
+- **v1 only queues then dispatches** — it does not start scraping a video the
+  moment its URL is detected. That would mean reworking the batch pool's
+  closed-queue contract to accept work mid-run, at the risk of regressions in
+  the pool every `vl` invocation already relies on; left as a possible future
+  opt-in mode.
 
 ## Transcript
 
@@ -545,8 +597,8 @@ doc = join_unified([r.unified_lines() for r in results if r])
 The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
 `group_consecutive_comments`, `format_transcript`, `format_related`,
 `format_unified`, `join_unified`, `parse_relative_date`, `flatten_inline`,
-`slugify` — and the Selenium-backed building blocks (`build_driver`,
-`collect_comments`, `collect_related`, `fetch_transcript`, `extract_video_id`)
+`slugify`, `extract_video_id` — and the Selenium-backed building blocks
+(`build_driver`, `collect_comments`, `collect_related`, `fetch_transcript`)
 are all exposed. `import viewlyt` stays Selenium-free until you touch a
 Selenium-backed name; to use only the pure helpers, import them straight from the
 leaf module: `from viewlyt.htmltext import html_to_text`.
@@ -557,15 +609,16 @@ leaf module: `from viewlyt.htmltext import html_to_text`.
 pyproject.toml            uv project + the `vl` console script
 src/viewlyt/
   __init__.py             public API (scrape_video, helpers) + __version__
-  vl.py                   the `vl` command dispatcher (routes ask/live/split; lazy imports)
+  vl.py                   the `vl` command dispatcher (routes ask/live/split/watch; lazy imports)
   api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
-  htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
+  htmltext.py             HTML→text, relative date, slug, flatten, extract_video_id, format_transcript/related/unified (pure, tested)
   tokens.py               token estimate (lazy tiktoken) + pure budget-splitter (opt-in extra 'tokens')
   split.py                `vl split`: token report + interactive clipboard chunker (Selenium-free)
-  clipboard.py            tiny stdlib clipboard shim (pbcopy/clip/xclip/xsel), shared by cli/split
+  watch.py                `vl watch`: clipboard-queue + dispatch into cli.main's batch (Selenium-free until dispatch)
+  clipboard.py            stdlib clipboard shim, copy (pbcopy/clip/xclip/xsel) + read (pbpaste/...), shared by cli/split/watch
   rag.py                  `vl ask`: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
   live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard; extra 'live')
 tests/test_units.py       browser-free tests for the pure functions
