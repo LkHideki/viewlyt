@@ -70,6 +70,10 @@ def test_capture_opens_popout_injects_snippet_and_quits_on_stop() -> None:
 
     assert any("live_chat?is_popout=1" in u for u in driver.gets)
     assert any(c.get("name") == "SOCS" for c in driver.cookies)  # consent primed
+    # No detour through the (heavy) YouTube home page first — cold-start cost
+    # regression guard: the popout is already a .youtube.com origin, so cookies
+    # go on right there (see _open_and_inject).
+    assert driver.gets == [popout_url("dQw4w9WgXcQ")]
 
     cap.stop()
     assert driver.quit_calls == 1  # no orphaned Chrome

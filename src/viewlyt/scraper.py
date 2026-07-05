@@ -212,18 +212,35 @@ def safe_get(driver, url: str) -> None:
             pass
 
 
+# Single source of truth for the cookies that skip YouTube's "Before you continue"
+# interstitial on a fresh profile — every caller (below, and the live-chat capture
+# flow in live/capture.py, which is already on a .youtube.com origin and skips the
+# home-page hop) sets exactly these, so a future cookie change is a one-line fix.
+_CONSENT_COOKIES: tuple[dict[str, str], ...] = (
+    {"name": "SOCS", "value": "CAI", "domain": ".youtube.com", "path": "/"},
+    {"name": "CONSENT", "value": "YES+", "domain": ".youtube.com", "path": "/"},
+)
+
+
+def add_consent_cookies(driver) -> None:
+    """Best-effort ``add_cookie`` for every consent cookie.
+
+    The driver must already be on a ``.youtube.com`` page — Selenium can only set a
+    cookie for the domain of the page currently loaded.
+    """
+    for cookie in _CONSENT_COOKIES:
+        try:
+            driver.add_cookie(cookie)
+        except WebDriverException as exc:
+            log.debug("add_cookie(%s) failed: %s", cookie["name"], exc)
+
+
 def prime_consent_cookies(driver) -> None:
-    """Pre-set consent cookies so the interstitial is skipped on fresh profiles."""
+    """Visit the YouTube home page and pre-set consent cookies, for a caller not
+    already on a youtube.com page (the real target loads consent-free next)."""
     try:
         safe_get(driver, "https://www.youtube.com/")
-        for cookie in (
-            {"name": "SOCS", "value": "CAI", "domain": ".youtube.com", "path": "/"},
-            {"name": "CONSENT", "value": "YES+", "domain": ".youtube.com", "path": "/"},
-        ):
-            try:
-                driver.add_cookie(cookie)
-            except WebDriverException as exc:
-                log.debug("add_cookie(%s) failed: %s", cookie["name"], exc)
+        add_consent_cookies(driver)
     except WebDriverException as exc:
         log.warning("could not prime consent cookies: %s", exc)
 

@@ -91,10 +91,16 @@ class BrowserCapture:
         return build_driver(headless=True, extra_args=_PNA_DISABLE_FLAGS)
 
     def _open_and_inject(self, driver) -> None:
-        from ..scraper import dismiss_consent_dialog, prime_consent_cookies, safe_get
+        from ..scraper import add_consent_cookies, dismiss_consent_dialog, safe_get
 
-        prime_consent_cookies(driver)
+        # prime_consent_cookies() would work too, but it hops through the (heavy)
+        # YouTube home page first just to be on a .youtube.com origin — pure
+        # cold-start cost here, since the popout IS already that origin. Cookies
+        # go on right after landing on it instead; dismiss_consent_dialog still
+        # covers the rare case where the interstitial rendered on this first load
+        # (before the cookies could take effect), same as it always has.
         safe_get(driver, self._page)
+        add_consent_cookies(driver)
         dismiss_consent_dialog(driver)
         driver.execute_script(self._snippet)
 
