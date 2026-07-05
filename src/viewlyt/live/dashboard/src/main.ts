@@ -2886,6 +2886,12 @@ function connectDashboard(): void {
         el<HTMLSpanElement>("buffer").textContent = String(msg.buffer);
         break;
       case "error":
+        // An LLM failure (bad model, no key, rate limit, ...) answers suggest_probes/
+        // decompose_probe with this frame instead of 'suggestions' — without resetting
+        // here too, the button stays stuck on "Thinking…"/"Splitting…" (disabled) until
+        // its 10s/15s safety timeout, which reads as the button being broken.
+        setSuggestPending(false);
+        setSplitPending(false);
         showError(msg.message);
         break;
       case "chat":
