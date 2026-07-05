@@ -1,24 +1,26 @@
 """Unified ``vl`` entry point.
 
-A thin, dependency-light dispatcher: the reserved first tokens ``ask``, ``live``
-and ``split`` route to the optional subsystems (imported lazily, so their extra
-deps are only touched when actually used), and anything else — a URL/id, a flag,
-no args — falls through to the default scraper CLI.
+A thin, dependency-light dispatcher: the reserved first tokens ``ask``, ``live``,
+``split`` and ``watch`` route to the optional subsystems (imported lazily, so
+their extra deps are only touched when actually used), and anything else — a
+URL/id, a flag, no args — falls through to the default scraper CLI.
 
     vl '<url>'              -> viewlyt.cli:main   (scrape; the default)
     vl ask out/*.md '<q>'   -> viewlyt.rag:main
     vl live '<live-url>'    -> viewlyt.live.cli:main
     vl split out/*.md       -> viewlyt.split:main
+    vl watch                -> viewlyt.watch:main
 
 Kept free of ``viewlyt.cli`` at import time (which pulls in Selenium via
-``.driver``/``.scraper``), so ``vl ask``/``vl live``/``vl split`` don't pay that cost.
+``.driver``/``.scraper``), so ``vl ask``/``vl live``/``vl split``/``vl watch``
+don't pay that cost until they actually dispatch a scrape.
 """
 
 from __future__ import annotations
 
 import sys
 
-_SUBCOMMANDS = ("ask", "live", "split")
+_SUBCOMMANDS = ("ask", "live", "split", "watch")
 
 
 def _subcommand_main(name: str):
@@ -27,6 +29,8 @@ def _subcommand_main(name: str):
         from .rag import main as sub_main
     elif name == "split":
         from .split import main as sub_main
+    elif name == "watch":
+        from .watch import main as sub_main
     else:
         from .live.cli import main as sub_main
     return sub_main
