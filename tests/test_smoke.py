@@ -123,6 +123,15 @@ def test_vl_live_subcommand_routes(monkeypatch):
     assert seen["argv"] == ["https://youtu.be/live"]
 
 
+def test_vl_split_subcommand_routes(monkeypatch):
+    """`vl split ARGS` dispatches to viewlyt.split:main with the `split` token stripped."""
+    from viewlyt import vl
+
+    seen = _spy(monkeypatch, "viewlyt.split", 4)
+    assert vl.main(["split", "out/a.md", "out/b.md"]) == 4
+    assert seen["argv"] == ["out/a.md", "out/b.md"]
+
+
 def test_vl_subcommand_with_no_extra_args(monkeypatch):
     """`vl ask` alone forwards an empty argv (rag decides what to do with it)."""
     from viewlyt import vl
@@ -161,7 +170,10 @@ def test_vl_help_alias_routes_to_scraper_help(monkeypatch):
     assert seen["argv"] == ["--help"]
 
 
-@pytest.mark.parametrize("mod,sub", [("viewlyt.rag", "ask"), ("viewlyt.live.cli", "live")])
+@pytest.mark.parametrize(
+    "mod,sub",
+    [("viewlyt.rag", "ask"), ("viewlyt.live.cli", "live"), ("viewlyt.split", "split")],
+)
 def test_vl_help_subcommand_alias(monkeypatch, mod, sub):
     """`vl help ask` / `vl help live` becomes `<sub> --help`."""
     from viewlyt import vl
@@ -189,6 +201,7 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
     # subcommands are discoverable
     assert "vl ask" in r.stdout
     assert "vl live" in r.stdout
+    assert "vl split" in r.stdout
     # examples use the real command, not the retired `viewlyt` prefix
     assert "vl -c" in r.stdout
     assert "viewlyt -c" not in r.stdout
@@ -199,8 +212,10 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
     [
         (["ask", "--help"], "usage: vl ask"),
         (["live", "--help"], "usage: vl live"),
+        (["split", "--help"], "usage: vl split"),
         (["help", "ask"], "usage: vl ask"),
         (["help", "live"], "usage: vl live"),
+        (["help", "split"], "usage: vl split"),
     ],
 )
 def test_vl_subcommand_help_prog_name(argv, prefix):

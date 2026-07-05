@@ -33,6 +33,7 @@ from queue import Empty, Queue
 
 from tqdm import tqdm
 
+from . import tokens
 from .driver import build_driver
 from .htmltext import (
     REPLY_INDENT,
@@ -83,6 +84,7 @@ examples:
 other modes (use `vl <mode> --help` for each one's options):
   vl ask out/*.md '<question>'                     # chat about the .md already collected
   vl live '<live-url>'                             # real-time live chat analysis
+  vl split out/*.md                                # count tokens; copy budget-sized parts
 """
 
 
@@ -574,29 +576,12 @@ def run_batch(
 
 
 def _copy_to_clipboard(text: str) -> bool:
-    """Put ``text`` on the system clipboard via the first available OS tool.
+    """Put ``text`` on the system clipboard (thin wrapper over the shared shim).
 
-    Tries pbcopy (macOS), clip (Windows), then xclip/xsel (Linux/X11). Returns
-    True on success, False if no tool is found or the copy fails — the caller
-    warns but never aborts (the files are already written)."""
-    import shutil
-    import subprocess
+    Kept as a module-level name so callers (and tests) can monkeypatch it here."""
+    from .clipboard import copy_to_clipboard
 
-    candidates = (
-        ["pbcopy"],
-        ["clip"],
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-    )
-    for cmd in candidates:
-        if shutil.which(cmd[0]) is None:
-            continue
-        try:
-            subprocess.run(cmd, input=text.encode("utf-8"), check=True)
-            return True
-        except Exception:  # tool present but failed (e.g. no DISPLAY) -> try next
-            continue
-    return False
+    return copy_to_clipboard(text)
 
 
 def _safe_quit(driver) -> None:
@@ -740,6 +725,22 @@ def build_parser() -> argparse.ArgumentParser:
         "to the system clipboard",
     )
     p.add_argument(
+        "--budget",
+        type=float,
+        default=tokens.DEFAULT_BUDGET / 1000,
+        metavar="KT",
+        help="context budget in thousands of tokens for the fit/split verdict "
+        "(default: %(default)s kt; Claude Sonnet 5 ≈ 200, Gemini ≈ 1000). "
+        "Split an over-budget file with: vl split <file>",
+    )
+    p.add_argument(
+        "--no-tokens",
+        dest="show_tokens",
+        action="store_false",
+        help="don't print the per-file token estimate after scraping "
+        "(the estimate needs the 'tokens' extra; shown by default when installed)",
+    )
+    p.add_argument(
         "--headed",
         action="store_true",
         help="visible browser instead of headless (more reliable vs the bot wall)",
@@ -864,9 +865,69 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {_color('✓', '32')} {s['video_id']}  " + " | ".join(parts))
     for s in failed:
         print(f"  {_color('✗', '31')} {s['video_id']}  {s['error']}", file=sys.stderr)
+
+    if args.show_tokens and ok:
+        _print_token_report(ok, budget_tokens=int(args.budget * 1000))
+
     if failed and not ok:
         return 1
     return 0
+
+
+def _print_token_report(ok_summaries: list[dict], budget_tokens: int) -> None:
+    """Print a per-file token estimate (in kt) + a fits-in-one-prompt verdict.
+
+    Reads back each distinct produced file so the count is exactly what's on
+    disk. Silently no-ops (with a one-line hint) if the ``tokens`` extra isn't
+    installed — the scrape itself never depends on it."""
+    if not tokens.tiktoken_available():
+        print(
+            _color(
+                "\ntokens: install the estimator with `uv sync --extra tokens` "
+                "to see per-file token counts (and `vl split` to chunk them).",
+                "90",
+            )
+        )
+        return
+
+    # Distinct output files, in first-seen order (unify-all shares one path).
+    seen: dict[str, None] = {}
+    for s in ok_summaries:
+        for key in ("file", "transcript_file", "related_file", "unified_file"):
+            path = s.get(key)
+            if path:
+                seen.setdefault(path, None)
+    if not seen:
+        return
+
+    print(
+        f"\n{_color('Tokens', '1')} (estimate, o200k_base — budget {tokens.fmt_kt(budget_tokens)}):"
+    )
+    total = 0
+    biggest = 0
+    for path in seen:
+        try:
+            n = tokens.count_tokens(Path(path).read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        total += n
+        biggest = max(biggest, n)
+        over = n > budget_tokens
+        kt = _color(tokens.fmt_kt(n).rjust(9), "33" if over else "36")
+        print(f"  {kt}  {path}" + (_color("  ↯ split", "33") if over else ""))
+
+    if len(seen) > 1:
+        print(f"  {_color(tokens.fmt_kt(total).rjust(9), '1;36')}  total")
+    # Verdict: does the largest single file (what you'd paste) fit one prompt?
+    if biggest <= budget_tokens:
+        print(_color(f"  ✓ every file fits one prompt (≤ {tokens.fmt_kt(budget_tokens)}).", "32"))
+    else:
+        print(
+            _color(
+                f"  ↯ some file exceeds {tokens.fmt_kt(budget_tokens)} — split it: vl split <file>",
+                "33",
+            )
+        )
 
 
 if __name__ == "__main__":

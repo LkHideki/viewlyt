@@ -55,6 +55,8 @@ dependencies = [
 live = ["fastapi>=0.116", "uvicorn[standard]>=0.34", "openai>=1.30", "cryptography>=46.0.6"]
 # Ephemeral chat over collected out/*.md (the default `vl ask` engine): LLM on OpenRouter.
 ask = ["openai>=1.30"]
+# Token estimate after a scrape + the `vl split` chunker (tiktoken; o200k_base).
+tokens = ["tiktoken>=0.7"]
 # Persistent LightRAG knowledge-graph index (`vl ask --persist`) + local fastembed embeddings.
 # lightrag-hku>=1.4.14 clears CVE-2026-30762 / CVE-2026-39413 (its bundled API server).
 rag = ["lightrag-hku>=1.4.14", "openai>=1.30", "fastembed>=0.3"]
