@@ -69,6 +69,7 @@ interface StateMsg {
   budget_blocked?: boolean;
   ingested: number;
   latency_ms?: number | null;
+  avg_latency_ms?: number | null;
   tokens_total?: number;
   cost_total?: number;
   probes: ProbeDescriptor[];
@@ -96,6 +97,7 @@ interface ProcMsg {
   type: "proc";
   active: boolean;
   latency_ms?: number;
+  avg_latency_ms?: number;
 }
 
 interface ErrorMsg {
@@ -2675,7 +2677,7 @@ function appendFeed(items: { author: string; text: string }[]): void {
 // State message handler
 // ---------------------------------------------------------------------------
 
-function setProc(active: boolean, latencyMs?: number | null): void {
+function setProc(active: boolean, latencyMs?: number | null, avgLatencyMs?: number | null): void {
   const e = el<HTMLSpanElement>("proc");
   // Top-of-page loading spinner: visible only while an analysis is in flight.
   const spinner = document.getElementById("spinner");
@@ -2687,6 +2689,8 @@ function setProc(active: boolean, latencyMs?: number | null): void {
     e.textContent = latencyMs != null ? `${latencyMs} ms` : "idle";
     e.style.color = "";
   }
+  const avgEl = document.getElementById("avg-latency");
+  if (avgEl && avgLatencyMs != null) avgEl.textContent = `${avgLatencyMs} ms`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2780,7 +2784,7 @@ function handleState(msg: StateMsg): void {
   // Stats — honor the runtime flags so a dashboard connecting mid-analysis or
   // after spending shows the truth instead of "idle / $0".
   el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
-  setProc(!!msg.processing, msg.latency_ms);
+  setProc(!!msg.processing, msg.latency_ms, msg.avg_latency_ms);
 
   // Budget stop is sticky state, not a transient error: show a persistent header
   // chip while analyses are paused by the spending cap (late joiners see it too).
@@ -2855,7 +2859,7 @@ function connectDashboard(): void {
         appendFeed(msg.items);
         break;
       case "proc":
-        setProc(msg.active, msg.latency_ms);
+        setProc(msg.active, msg.latency_ms, msg.avg_latency_ms);
         break;
       case "cost":
         handleCost(msg);

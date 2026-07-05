@@ -164,6 +164,7 @@ class LiveServer:
         self.paused = False
         self.processing = False
         self.last_latency_ms: int | None = None
+        self.avg_latency_ms: int | None = None
         self.ingested = 0
         self.total_tokens = 0
         self.total_cost = 0.0
@@ -203,6 +204,7 @@ class LiveServer:
             "budget_blocked": self.budget_blocked,
             "ingested": self.ingested,
             "latency_ms": self.last_latency_ms,
+            "avg_latency_ms": self.avg_latency_ms,
             "tokens_total": self.total_tokens,
             "cost_total": round(self.total_cost, 6),
             "probes": [p.to_dict() for p in self.probes.values()],
@@ -625,8 +627,19 @@ async def _run_window(
     finally:
         server.processing = False
         server.last_latency_ms = round((time.monotonic() - t0) * 1000)
+        # Real request->response round-trip, averaged over every LLM call so far
+        # (not the whole-window elapsed above, which also covers fan-out/broadcast).
+        # Read the ALREADY-built client (process_window built it) — never build one
+        # in this finally, or a client-construction failure would skip the proc frame
+        # below and freeze the dashboard on "analyzing…".
+        server.avg_latency_ms = getattr(server._client, "avg_latency_ms", None)
         await server.dash.broadcast(
-            {"type": "proc", "active": False, "latency_ms": server.last_latency_ms}
+            {
+                "type": "proc",
+                "active": False,
+                "latency_ms": server.last_latency_ms,
+                "avg_latency_ms": server.avg_latency_ms,
+            }
         )
 
 

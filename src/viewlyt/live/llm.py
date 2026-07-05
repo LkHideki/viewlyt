@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -103,6 +104,8 @@ class LLMClient:
         self.language = cfg.language
         self.total_tokens = 0
         self.total_cost = 0.0
+        self._latency_count = 0
+        self._latency_sum_ms = 0.0
         self._rf_mode: str | None = None  # remembered working response_format mode
         kwargs: dict = {
             "base_url": cfg.base_url,
@@ -144,6 +147,13 @@ class LLMClient:
         except Exception:
             pass
 
+    @property
+    def avg_latency_ms(self) -> int | None:
+        """Average request->response round-trip across every completed LLM call."""
+        if not self._latency_count:
+            return None
+        return round(self._latency_sum_ms / self._latency_count)
+
     async def _complete(self, msgs: list[dict], schema: dict) -> dict:
         """Create a completion, trying structured-output modes in a cached-first order.
 
@@ -164,9 +174,12 @@ class LLMClient:
         last_exc: Exception | None = None
         for mode, rf_kwargs in chain:
             try:
+                t0 = time.monotonic()
                 resp = await self._client.chat.completions.create(
                     model=self.model, messages=msgs, temperature=0, **rf_kwargs, **extra
                 )
+                self._latency_sum_ms += (time.monotonic() - t0) * 1000
+                self._latency_count += 1
                 self._record_usage(resp)
                 self._rf_mode = mode
                 return parse_json_loose(resp.choices[0].message.content or "")
