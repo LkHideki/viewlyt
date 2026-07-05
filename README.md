@@ -102,7 +102,7 @@ uv tool install .       # then: vl 'https://youtu.be/dQw4w9WgXcQ'
 
 The optional modes pull heavier dependencies only when you ask for them:
 `uv sync --extra ask` (chat), `--extra rag` (persistent RAG), `--extra live`
-(real-time dashboard).
+(real-time dashboard), `--extra tokens` (token counts + `vl split`).
 
 ## Usage
 
@@ -181,6 +181,8 @@ uv run vl videos.csv -j 4          # 4 browsers in parallel
 | `-u, --unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
 | `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
 | `--copy` | off | Also copies the full output (the unified doc, or the produced file's content) to the system clipboard (needs `pbcopy`/`clip`/`xclip`/`xsel`) |
+| `--budget KT` | `128` | Context budget in thousands of tokens for the fit/split verdict printed after a scrape (Claude Sonnet 5 ≈ 200, Gemini ≈ 1000). Split an over-budget file with `vl split <file>`. |
+| `--no-tokens` | off | Don't print the per-file token estimate (the estimate needs `uv sync --extra tokens`; shown by default when installed) |
 | `--headed` | off | Uses a visible browser instead of headless |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
@@ -435,6 +437,53 @@ uv run vl ask --persist 'summarize the recurring complaints'   # reuses the inde
 or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
 `prepare_documents` / `build_document` need no extra.
 
+## Token budget & splitting (`vl split`)
+
+> Opt-in: `uv sync --extra tokens` (adds `tiktoken`). Command: **`vl split`**.
+
+Will everything you collected fit in one LLM prompt, or must you paste it in
+pieces? With the `tokens` extra installed, every scrape ends with a **per-file
+token estimate** (in `kt` — thousands of tokens) and a verdict against
+`--budget` (default `128` kt; Claude Sonnet 5 ≈ 200, Gemini ≈ 1000):
+
+```
+Tokens (estimate, o200k_base — budget 200.0 kt):
+    30.1 kt  out/how-to-use-ai-skills-cxQLKsktiBA.transcript.md
+  ✓ every file fits one prompt (≤ 200.0 kt).
+```
+
+When a file *doesn't* fit, **`vl split`** chunks it and copies the parts to the
+clipboard one at a time from a small interactive menu — no heavy TUI:
+
+```bash
+uv sync --extra tokens
+uv run vl split out/big.unified.md -b 200      # budget in kt (-b/--budget)
+```
+
+```
+total: 512.4 kt   |   budget: 200.0 kt
+↯ não cabe → 3 partes (cada uma ≤ 200.0 kt)
+
+    [ 1] 198.7 kt  @user [842 likes, 2026-06-04]: ...
+    [ 2] 199.1 kt  [0:32] então o que a gente ...
+    [ 3] 114.6 kt  1. [1.2B views. ...
+
+nº=copiar · a=todas em sequência · l=listar · q=sair
+> 1
+  ✓ parte 1/7 copiada (198.7 kt) — cole na LLM e volte aqui
+```
+
+- Splits on **blank-line boundaries** (whole comment/section blocks stay
+  together; a single block over budget is hard-split by lines). Each copied part
+  gets a `<!-- viewlyt — parte i/n -->` marker (disable with `--no-part-header`).
+- The count is an **estimate**: `tiktoken`'s `o200k_base` is a proxy — real
+  per-model tokenizers differ by ~10–20%. Pass a lower `--budget` for headroom.
+- Pass several files (`vl split out/*.md`) to size and split them **joined**, as
+  the single thing you'd paste in.
+
+**Library use:** `from viewlyt.tokens import count_tokens, split_by_budget` —
+`split_by_budget(text, budget_tokens, count=...)` is pure (inject any counter).
+
 ## Use as a library
 
 Everything the CLI does is available as a typed library (the package ships
@@ -508,15 +557,19 @@ leaf module: `from viewlyt.htmltext import html_to_text`.
 pyproject.toml            uv project + the `vl` console script
 src/viewlyt/
   __init__.py             public API (scrape_video, helpers) + __version__
-  vl.py                   the `vl` command dispatcher (routes ask/live; lazy imports)
+  vl.py                   the `vl` command dispatcher (routes ask/live/split; lazy imports)
   api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
   scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
   htmltext.py             HTML→text, relative date, slug, flatten, format_transcript/related/unified (pure, tested)
+  tokens.py               token estimate (lazy tiktoken) + pure budget-splitter (opt-in extra 'tokens')
+  split.py                `vl split`: token report + interactive clipboard chunker (Selenium-free)
+  clipboard.py            tiny stdlib clipboard shim (pbcopy/clip/xclip/xsel), shared by cli/split
   rag.py                  `vl ask`: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
   live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard; extra 'live')
 tests/test_units.py       browser-free tests for the pure functions
+tests/test_tokens.py      tokenizer-free tests for the pure token/split helpers
 tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
 tests/test_smoke.py       CLI surface + `vl` dispatcher routing/help/packaging (subprocess, no browser)
 ```
