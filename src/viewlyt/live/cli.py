@@ -8,6 +8,7 @@ server module lazily so FastAPI/uvicorn only load at run time.
 from __future__ import annotations
 
 import argparse
+import os
 from importlib.metadata import PackageNotFoundError, version
 
 from .llm import LLMConfig, provider_base_url
@@ -56,8 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--api-key",
-        default="",
-        help="LLM API key (default: empty; required for cloud providers)",
+        default=os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LLM_API_KEY") or "",
+        help="LLM API key (default: $OPENROUTER_API_KEY or $LLM_API_KEY, else empty; "
+        "required for cloud providers)",
     )
     parser.add_argument(
         "--model",
