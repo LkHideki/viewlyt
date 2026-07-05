@@ -1896,72 +1896,147 @@ function showError(message: string): void {
 // Live chat feed
 // ---------------------------------------------------------------------------
 
-// Autoscroll only while the user is already at the bottom; scrolling up to read
-// pauses it (new lines pile up behind a "↓ N new" jump button) instead of
-// yanking the view back down 4×/s.
+// Autoscroll only while the user is already at the "newest" edge; scrolling away
+// to read pauses it (new lines pile up behind a "N new" jump button) instead of
+// yanking the view back 4×/s. The newest edge is the BOTTOM by default, or the
+// TOP when the user flips the feed to newest-first (persisted preference).
 const FEED_STICK_PX = 40;
+const FEED_MAX = 400;
+const FEED_ORDER_KEY = "viewlyt.feednewestfirst";
 let feedUnread = 0;
+let feedNewestFirst = lsGet(FEED_ORDER_KEY) === "1";
 
-function feedAtBottom(feed: HTMLElement): boolean {
-  return feed.scrollHeight - feed.scrollTop - feed.clientHeight < FEED_STICK_PX;
+/** Is the view parked at the edge where the newest message lands? */
+function feedAtStickEdge(feed: HTMLElement): boolean {
+  return feedNewestFirst
+    ? feed.scrollTop < FEED_STICK_PX
+    : feed.scrollHeight - feed.scrollTop - feed.clientHeight < FEED_STICK_PX;
 }
 
 function updateFeedJump(): void {
   const jump = document.getElementById("feed-jump");
   if (!jump) return;
   jump.classList.toggle("hidden", feedUnread === 0);
-  jump.textContent = `↓ ${feedUnread} new`;
+  jump.textContent = `${feedNewestFirst ? "↑" : "↓"} ${feedUnread} new`;
 }
 
-function jumpFeedToBottom(): void {
+/** Snap the view to the newest edge (bottom, or top in newest-first mode). */
+function jumpFeedToEdge(): void {
   const feed = document.getElementById("feed");
   if (!feed) return;
-  feed.scrollTop = feed.scrollHeight;
+  feed.scrollTop = feedNewestFirst ? 0 : feed.scrollHeight;
   feedUnread = 0;
   updateFeedJump();
+}
+
+function makeFeedLine(author: string, text: string): HTMLDivElement {
+  const line = document.createElement("div");
+  const a = document.createElement("span");
+  a.className = "feed-author";
+  a.textContent = author + ": ";
+  line.appendChild(a);
+  line.appendChild(document.createTextNode(text));
+  return line;
+}
+
+/**
+ * Reflect the current feed direction onto the DOM + the toggle button. Does NOT
+ * reorder existing lines — the caller does that when the user flips the mode.
+ */
+function applyFeedOrder(): void {
+  const wrap = document.querySelector(".feed-wrap");
+  if (wrap) wrap.classList.toggle("newest-first", feedNewestFirst);
+  const btn = document.getElementById("feed-order");
+  if (btn) {
+    const arrow = btn.querySelector(".feed-order-arrow");
+    if (arrow) arrow.textContent = feedNewestFirst ? "↑" : "↓";
+    btn.setAttribute("aria-pressed", String(feedNewestFirst));
+    btn.title = feedNewestFirst
+      ? "Newest messages appear at the top (stack grows down). Click for newest at the bottom."
+      : "Newest messages appear at the bottom (stack grows up). Click for newest at the top.";
+  }
+  updateFeedJump();
+}
+
+/** Flip the DOM order of the already-rendered feed lines (in place). */
+function reverseFeedDom(feed: HTMLElement): void {
+  const lines = Array.from(feed.children);
+  if (lines.length < 2) return; // nothing (or just a placeholder) to flip
+  const frag = document.createDocumentFragment();
+  for (let i = lines.length - 1; i >= 0; i--) frag.appendChild(lines[i]!);
+  feed.appendChild(frag);
 }
 
 function wireFeed(): void {
   const feed = document.getElementById("feed");
   const jump = document.getElementById("feed-jump");
-  if (jump) jump.addEventListener("click", jumpFeedToBottom);
+  const order = document.getElementById("feed-order");
+  if (jump) jump.addEventListener("click", jumpFeedToEdge);
+  if (order && feed) {
+    order.addEventListener("click", () => {
+      reverseFeedDom(feed);
+      feedNewestFirst = !feedNewestFirst;
+      lsSet(FEED_ORDER_KEY, feedNewestFirst ? "1" : "0");
+      applyFeedOrder();
+      jumpFeedToEdge(); // land on the newest edge after the flip
+    });
+  }
   if (feed) {
-    // Scrolling back to the bottom by hand also clears the unread counter.
+    // Scrolling back to the newest edge by hand also clears the unread counter.
     feed.addEventListener("scroll", () => {
-      if (feedUnread > 0 && feedAtBottom(feed)) {
+      if (feedUnread > 0 && feedAtStickEdge(feed)) {
         feedUnread = 0;
         updateFeedJump();
       }
     });
   }
+  applyFeedOrder(); // reflect the persisted preference on load
 }
 
 function appendFeed(items: { author: string; text: string }[]): void {
   const feed = document.getElementById("feed");
-  if (!feed) return;
+  if (!feed || items.length === 0) return;
   // Drop the "No messages yet…" placeholder on the first real batch.
   const placeholder = feed.querySelector(":scope > .empty-hint");
   if (placeholder) placeholder.remove();
-  const stick = feedAtBottom(feed);
+  const stick = feedAtStickEdge(feed);
   const frag = document.createDocumentFragment();
-  for (const { author, text } of items) {
-    const line = document.createElement("div");
-    const a = document.createElement("span");
-    a.className = "feed-author";
-    a.textContent = author + ": ";
-    line.appendChild(a);
-    line.appendChild(document.createTextNode(text));
-    frag.appendChild(line);
-  }
-  feed.appendChild(frag);
-  while (feed.childElementCount > 400 && feed.firstChild) {
-    feed.removeChild(feed.firstChild);
-  }
-  if (stick) {
-    feed.scrollTop = feed.scrollHeight;
+
+  if (feedNewestFirst) {
+    // Newest at the top: emit the batch reversed (newest → oldest) and prepend.
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i]!;
+      frag.appendChild(makeFeedLine(it.author, it.text));
+    }
+    const before = feed.scrollHeight;
+    feed.insertBefore(frag, feed.firstChild);
+    const added = feed.scrollHeight - before; // height gained above the fold
+    if (stick) {
+      feed.scrollTop = 0;
+    } else {
+      // Keep the content the user is reading stationary as lines push in above,
+      // then surface an "↑ N new" nudge toward the top.
+      feed.scrollTop += added;
+      feedUnread += items.length;
+      updateFeedJump();
+    }
+    // Trim the oldest (bottom) — off-screen below, so it never shifts the view.
+    while (feed.childElementCount > FEED_MAX && feed.lastChild) {
+      feed.removeChild(feed.lastChild);
+    }
   } else {
-    feedUnread += items.length;
-    updateFeedJump();
+    // Newest at the bottom (default): append in order.
+    for (const { author, text } of items) frag.appendChild(makeFeedLine(author, text));
+    feed.appendChild(frag);
+    while (feed.childElementCount > FEED_MAX && feed.firstChild) {
+      feed.removeChild(feed.firstChild);
+    }
+    if (stick) {
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      feedUnread += items.length;
+      updateFeedJump();
+    }
   }
 }
 

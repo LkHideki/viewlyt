@@ -82,9 +82,14 @@
             </div>
           </div>
           <div class="results-col results-col-chat">
-            <h2>Live Chat <span class="hint">— raw feed from the popout (proves the bridge)</span></h2>
-            <div id="feed"><p class="empty-hint">No messages yet — start the capture on the chat popout (see the Capture panel below).</p></div>
-            <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
+            <div class="chat-head">
+              <h2>Live Chat <span class="hint">— raw feed from the popout (proves the bridge)</span></h2>
+              <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
+            </div>
+            <div class="feed-wrap">
+              <div id="feed"><p class="empty-hint">No messages yet — start the capture on the chat popout (see the Capture panel below).</p></div>
+              <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
+            </div>
           </div>
         </div>
       </section>

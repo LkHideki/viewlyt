@@ -1189,10 +1189,60 @@ input.scrub-range:focus-visible {
   padding-left: var(--gap);
 }
 
+/* Chat heading row: title on the left, feed-direction toggle on the right. */
+.chat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .results-col-chat h2 {
   font-size: 0.85rem;
   color: var(--text-dim);
   letter-spacing: 0.06em;
+  min-width: 0;
+}
+
+/* Feed-direction toggle: a discreet chip that flips newest-at-bottom (default,
+   arrow ↓) and newest-at-top (arrow ↑). */
+.feed-order-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.feed-order-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.feed-order-arrow {
+  font-size: 0.82rem;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* Wraps #feed + the floating jump pill so the pill anchors to the feed area
+   (below the heading) in both directions, and stretches to fill the column. */
+.feed-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Chat feed fills the bounded chat column and scrolls internally (the column is
@@ -1217,8 +1267,9 @@ input.scrub-range:focus-visible {
   color: var(--accent);
 }
 
-/* Floating "↓ N new" pill: shown while the user scrolled up and messages keep
-   arriving; anchors to the chat column (positioned in both layouts). */
+/* Floating "↓ N new" pill: shown while the user scrolled away from the newest
+   edge and messages keep arriving; anchored to .feed-wrap. Sits at the bottom
+   by default (newest-at-bottom) and flips to the top in newest-first mode. */
 .feed-jump {
   position: absolute;
   bottom: 0.5rem;
@@ -1230,6 +1281,12 @@ input.scrub-range:focus-visible {
   padding: 0.25rem 0.7rem;
   border-radius: 9999px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.feed-wrap.newest-first .feed-jump {
+  top: 0.5rem;
+  bottom: auto;
 }
 
 /* Narrow screens: stack the two columns vertically. */
@@ -1244,7 +1301,7 @@ input.scrub-range:focus-visible {
     padding-left: 0;
     padding-top: var(--gap);
     /* stacked: drop the sticky/viewport cap; the #feed cap below bounds it.
-       relative (not static) keeps the column the anchor for .feed-jump. */
+       (.feed-jump anchors to .feed-wrap, which is always position:relative.) */
     position: relative;
     max-height: none;
   }
