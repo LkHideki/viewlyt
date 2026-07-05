@@ -2701,6 +2701,8 @@ function setGlobalPause(paused: boolean): void {
   btn.title = paused ? "Resume analysis" : "Pause analysis";
   btn.classList.toggle("is-paused", paused);
   btn.setAttribute("aria-pressed", String(paused));
+  document.getElementById("brand-accent")?.classList.toggle("is-paused", paused);
+  document.getElementById("paused-badge")?.classList.toggle("hidden", !paused);
 }
 
 // ---------------------------------------------------------------------------

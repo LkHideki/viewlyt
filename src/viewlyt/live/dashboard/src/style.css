@@ -57,6 +57,11 @@ h1 .accent {
   color: var(--accent);
 }
 
+/* ".live" turns warning-yellow while the global pause toggle is engaged. */
+h1 .accent.is-paused {
+  color: var(--warning);
+}
+
 h2 {
   font-size: 0.85rem;
   font-weight: 600;
@@ -93,9 +98,29 @@ header {
 
 .brand {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+
+.brand-row {
+  display: flex;
   align-items: center;
   gap: 0.6rem;
-  flex-shrink: 0;
+}
+
+/* Shown under the logo whenever the global pause toggle is engaged. */
+.paused-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warning);
+  background: rgba(251, 188, 4, 0.12);
+  border: 1px solid rgba(251, 188, 4, 0.35);
+  border-radius: 99px;
+  padding: 0.1rem 0.55rem;
 }
 
 /* Loading spinner shown at the top while the LLM is analyzing. */
