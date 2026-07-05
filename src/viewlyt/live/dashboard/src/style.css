@@ -1424,11 +1424,10 @@ input.scrub-range:focus-visible {
   align-items: center;
   gap: 0.5rem;
   background: var(--surface);
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 9999px;
   padding: 0.45rem 0.65rem 0.45rem 0.75rem;
   margin-bottom: var(--gap);
-  box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.18), 0 2px 12px rgba(76, 139, 245, 0.10);
   flex-wrap: wrap;
 }
 
