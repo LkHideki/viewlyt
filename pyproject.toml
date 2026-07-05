@@ -1,6 +1,6 @@
 [project]
 name = "viewlyt"
-version = "0.1.0"
+version = "0.1.1"
 description = "CLI tool and typed Python library to collect a YouTube video's transcript, comments and related videos as LLM-ready Markdown (Selenium), with opt-in live-chat and RAG chat modes."
 readme = "README.md"
 requires-python = ">=3.11"
