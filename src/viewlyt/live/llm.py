@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .messages import ChatMessage
-from .probes import Probe, ProbeResult, _numbered
+from .probes import Probe, ProbeResult, _fold_label, _numbered, _parse_pair
 
 logger = logging.getLogger("viewlyt.live")
 
@@ -260,11 +260,19 @@ CHART_TYPES: tuple[str, ...] = (
     "descartes",
 )
 
-# Steer the model to pair the scoreline-grid chart with scoreline categories.
+# Steer the model to pair the "descartes" chart (a generic 2-D Cartesian grid,
+# NOT specific to any domain like sports) with ordered-pair categories.
 _DESCARTES_NOTE = (
-    "Use 'descartes' ONLY for match-scoreline predictions (a two-number result like "
-    'a football score); then the categories MUST look like scorelines — "2x1", "1x0", '
-    '"0x0", "2x2", … (home-team goals "x" away-team goals). '
+    "Use 'descartes' ONLY for a two-dimensional classification on a Cartesian plane "
+    "(e.g. a match-score prediction, or an effort×impact / likelihood×severity grid). "
+    'Every category MUST be an ordered pair written EXACTLY as "(x, y)": x is the '
+    "column (X axis) label, y is the row (Y axis) label — labels may be words or "
+    "numbers (e.g. X in {baixo, medio, alto}, Y in {ruim, bom, otimo}). First pick "
+    "the X labels and the Y labels (keep the grid small: at most 6 per axis), then "
+    "emit EVERY (x, y) combination so the grid is rectangular; reuse each axis "
+    'label VERBATIM and identically across pairs, keeping the exact "(x, y)" '
+    "spelling, spacing and case. Classify each message into the single (x, y) "
+    'coordinate that best fits it, or the plain category "outro" if none fits. '
 )
 
 
@@ -278,7 +286,14 @@ def _clamp_int(value: object, default: int, lo: int, hi: int) -> int:
 
 
 def _clean_categories(raw: object) -> list[str]:
-    """Lowercase/strip a list-ish of category labels, dropping blanks and dupes."""
+    """Strip a list-ish of category labels, dropping blanks and dupes.
+
+    Lowercases plain labels (unchanged behavior). An ordered-pair category
+    ("(x, y)", the 'descartes' chart) is instead canonicalized — trimmed
+    components, single "(x, y)" spacing — WITHOUT lowercasing: lowercasing a
+    coordinate would mangle a legitimate mixed-case/proper-noun axis label (e.g.
+    "São Paulo"). Dedup still folds case/accent/whitespace-insensitively either way.
+    """
     out: list[str] = []
     seen: set[str] = set()
     if isinstance(raw, (list, tuple)):
@@ -286,9 +301,16 @@ def _clean_categories(raw: object) -> list[str]:
     else:
         items = []
     for item in items:
-        cat = str(item).strip().lower()
-        if cat and cat not in seen:
-            seen.add(cat)
+        text = str(item).strip()
+        pair = _parse_pair(text)
+        if pair:
+            cat = f"({pair[0]}, {pair[1]})"
+            key = f"{_fold_label(pair[0])}|{_fold_label(pair[1])}"
+        else:
+            cat = text.lower()
+            key = cat
+        if cat and key not in seen:
+            seen.add(key)
             out.append(cat)
     return out
 

@@ -1069,49 +1069,137 @@ function renderViolin(views: CatView[], probeId: string): Element {
 }
 
 // ---------------------------------------------------------------------------
-// Descartes: a scoreline probe ("qual o seu palpite? 2x1, 3x0, …") plotted on a
-// Cartesian grid — home-team goals on X, away-team goals on Y. Each cell is one
-// exact scoreline; its intensity is the share of the chat that predicted it, and
-// its tint says who wins (home / draw / away). This turns an otherwise huge,
-// hand-typed category list into a single readable coordinate square.
+// Descartes: a GENERIC 2-D coordinate probe ("qual o seu palpite?", "esforço x
+// impacto", …) plotted on a Cartesian grid. Every category is an ordered pair
+// "(x, y)" — x is the column (X axis), y is the row (Y axis); axis labels need
+// not be numeric. Each cell's intensity is the share of the chat that landed on
+// that coordinate. Axes are DERIVED from the probe's categories (first-appearance
+// order = axis order), so no extra fields are needed on the probe descriptor, and
+// the grid itself doubles as the editor: hover the plot to add a column/row
+// before/after, click a tick to rename it, or "✕" to remove it.
 // ---------------------------------------------------------------------------
 
-// Accepts "2x1", "2 x 1", "2×1", "2:1", "2-1", "2/1", "2 a 1" (Portuguese).
-const SCORE_RE = /^(\d+)\s*(?:x|×|:|\/|-|\s+a\s+)\s*(\d+)$/i;
-const DESC_MAX = 6; // cap the grid range so one stray big scoreline can't explode it
+// Matches "(x, y)" with components that may be words or numbers, no nested
+// "," "(" ")" (those are reserved as the pair's own delimiters).
+const PAIR_RE = /^\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)$/;
+const MAX_AXIS = 6; // cap |X|/|Y| so the enum (|X|×|Y| categories) stays small
 
-function parseScore(cat: string): { h: number; a: number } | null {
-  const m = cat.trim().match(SCORE_RE);
-  if (!m) return null;
-  const h = parseInt(m[1]!, 10);
-  const a = parseInt(m[2]!, 10);
-  return Number.isFinite(h) && Number.isFinite(a) ? { h, a } : null;
+function parsePair(cat: string): { x: string; y: string } | null {
+  const m = cat.trim().match(PAIR_RE);
+  return m ? { x: m[1]!.trim(), y: m[2]!.trim() } : null;
 }
 
-/** A default scoreline grid "HxA" for H,A in 0..max, plus an "outro" bucket. */
-function scoreGridCategories(max = 3): string[] {
+function formatPair(x: string, y: string): string {
+  return `(${x.trim()}, ${y.trim()})`;
+}
+
+/** Fold a label for identity comparisons: accent/case/whitespace-insensitive.
+ * Mirrors probes.py's _fold_label (Python) — kept in sync by hand; if the two
+ * ever diverge (e.g. a different casefold vs lower-case edge case), a category
+ * that matches on one side could silently stop matching on the other. */
+function foldAxisLabel(s: string): string {
+  return s
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/** A collision-free Map key for a folded (x, y) pair — JSON-encoded rather than
+ * naively concatenated ("x|y"), so a literal "|" typed into an axis label (they
+ * aren't restricted the way "," "(" ")" are) can never make two DIFFERENT
+ * coordinates collide on the same key. */
+function pairKey(x: string, y: string): string {
+  return JSON.stringify([foldAxisLabel(x), foldAxisLabel(y)]);
+}
+
+/** Trim, drop blanks, and dedup labels (fold-insensitive, first spelling wins). */
+function dedupeLabels(labels: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of labels) {
+    const label = raw.trim();
+    if (!label) continue;
+    const key = foldAxisLabel(label);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out;
+}
+
+/** Distinct X/Y labels in first-appearance order — the array order of
+ *  `categories` IS the axis order, so "add before/after" is just a splice. */
+function deriveAxes(cats: string[]): { xs: string[]; ys: string[] } {
+  const xs: string[] = [];
+  const ys: string[] = [];
+  const seenX = new Set<string>();
+  const seenY = new Set<string>();
+  for (const cat of cats) {
+    const p = parsePair(cat);
+    if (!p) continue; // non-pair (legacy data, stray LLM miss) — not an axis value
+    const fx = foldAxisLabel(p.x);
+    if (!seenX.has(fx)) {
+      seenX.add(fx);
+      xs.push(p.x);
+    }
+    const fy = foldAxisLabel(p.y);
+    if (!seenY.has(fy)) {
+      seenY.add(fy);
+      ys.push(p.y);
+    }
+  }
+  return { xs, ys };
+}
+
+/** The full x×y cross product as canonical "(x, y)" strings, x-major, plus a
+ *  plain "outro" escape category — the enum is strict, so without one the model
+ *  is forced to guess a coordinate even when a message fits none of them.
+ *  deriveAxes already ignores non-pair categories, and renderDescartes already
+ *  routes them into the "fora da grade" bucket, so this needs no other plumbing. */
+function buildGridCategories(xs: string[], ys: string[]): string[] {
   const cats: string[] = [];
-  for (let h = 0; h <= max; h++) for (let a = 0; a <= max; a++) cats.push(`${h}x${a}`);
+  for (const x of xs) for (const y of ys) cats.push(formatPair(x, y));
   cats.push("outro");
   return cats;
 }
 
-/** Team names parsed from "A x B" in the probe question; fallback ["casa","fora"]. */
-function scoreTeams(probeId: string): [string, string] {
-  const q = (probeState.get(probeId)?.question ?? "").trim();
-  const m = q.match(/([\p{L}][\p{L}\d.'-]*)\s+(?:x|×|vs\.?|versus)\s+([\p{L}][\p{L}\d.'-]*)/iu);
-  return m ? [m[1]!, m[2]!] : ["casa", "fora"];
+function seedGridCategories(): string[] {
+  return buildGridCategories(["1", "2", "3"], ["1", "2", "3"]);
 }
 
-/** Seed a probe with a scoreline grid + the descartes chart, then re-render its
- *  card. Lets a user adopt the whole grid in one click, never typing scorelines. */
-function generateScoreGrid(probeId: string, max = 3): void {
+/** If every label on an axis is an integer, suggest the next one (continuing the
+ *  sequence on whichever side is being added to); otherwise "" (force a name). */
+function nextAxisLabel(labels: string[], side: "before" | "after"): string {
+  if (labels.length > 0 && labels.every((l) => /^-?\d+$/.test(l))) {
+    const nums = labels.map(Number);
+    return String(side === "after" ? Math.max(...nums) + 1 : Math.min(...nums) - 1);
+  }
+  return "";
+}
+
+/** Rebuild a probe's categories from explicit X/Y label lists (single write path
+ *  for every axis mutation: add/rename/remove, from the grid or the seed button),
+ *  upsert, then re-render its card at the current snapshot.
+ *
+ *  Known, accepted limitation: this always rebuilds `categories` as the PURE
+ *  x×y cross product (+ "outro"). If a probe somehow already carries a stray
+ *  non-pair category beyond "outro" (e.g. hand-edited via "Import JSON"), the
+ *  first grid edit silently drops it — unlike the empty-state's seed button,
+ *  which confirms before replacing. Narrow enough (requires an unusual
+ *  pre-existing mixed state) that adding a confirm to every add/rename/remove
+ *  wasn't judged worth the added friction on the common case. */
+function applyDescartesAxes(probeId: string, xs: string[], ys: string[]): void {
+  const cleanX = dedupeLabels(xs).slice(0, MAX_AXIS);
+  const cleanY = dedupeLabels(ys).slice(0, MAX_AXIS);
   const prev = probeState.get(probeId);
   const probe: ProbeDescriptor = {
     ...(prev ?? { id: probeId, kind: "classification", label: "" }),
     kind: "classification",
-    categories: scoreGridCategories(max),
+    categories: buildGridCategories(cleanX, cleanY),
     chart: "descartes",
+    colors: {},
   };
   send({ op: "upsert_probe", probe });
   probeState.set(probe.id, probe);
@@ -1123,92 +1211,270 @@ function generateScoreGrid(probeId: string, max = 3): void {
     const vs = viewState.get(probeId);
     renderDisplay(card, probeId, "classification", vs ? vs.index : 0);
   }
-  showToast(`Grade de placares 0–${max} gerada.`, "success");
 }
 
-const WIN_TINT: Record<"home" | "draw" | "away", string> = {
-  home: "76,139,245", // accent blue
-  draw: "251,188,4", // amber
-  away: "234,67,53", // red
-};
+/** First non-colliding "base"/"base 2"/"base 3"/… against `existing` (fold-insensitive) —
+ *  so repeated quick "+" clicks (before the first new tick gets renamed) each land as
+ *  a distinct axis value instead of silently deduping away. */
+function uniqueLabel(base: string, existing: string[]): string {
+  if (!existing.some((l) => foldAxisLabel(l) === foldAxisLabel(base))) return base;
+  for (let i = 2; ; i++) {
+    const candidate = `${base} ${i}`;
+    if (!existing.some((l) => foldAxisLabel(l) === foldAxisLabel(candidate))) return candidate;
+  }
+}
+
+function descartesAddAxis(probeId: string, axis: "x" | "y", side: "before" | "after"): void {
+  const { xs, ys } = deriveAxes(probeState.get(probeId)?.categories ?? []);
+  const target = axis === "x" ? xs : ys;
+  if (target.length >= MAX_AXIS) {
+    showToast(`Máximo de ${MAX_AXIS} ${axis === "x" ? "colunas" : "linhas"}.`, "info");
+    return;
+  }
+  const base = nextAxisLabel(target, side) || (axis === "x" ? "nova coluna" : "nova linha");
+  const label = uniqueLabel(base, target);
+  if (side === "before") target.unshift(label);
+  else target.push(label);
+  applyDescartesAxes(probeId, xs, ys);
+  // Focus the freshly-added tick for an immediate "insert and rename" flow.
+  requestAnimationFrame(() => {
+    const card = document.querySelector<HTMLDivElement>(
+      `[data-probe-id="${CSS.escape(probeId)}"]`,
+    );
+    const sel = `.descartes-tick-label[data-axis="${axis}"][data-label="${CSS.escape(label)}"]`;
+    card?.querySelector<HTMLButtonElement>(sel)?.click();
+  });
+}
+
+/** Returns whether the rename was applied — false (no-op or rejected) tells the
+ *  caller to revert the tick back to its read state showing the ORIGINAL label. */
+function descartesRenameAxis(
+  probeId: string,
+  axis: "x" | "y",
+  oldLabel: string,
+  newLabel: string,
+): boolean {
+  const trimmed = newLabel.trim();
+  if (!trimmed || foldAxisLabel(trimmed) === foldAxisLabel(oldLabel)) return false;
+  const { xs, ys } = deriveAxes(probeState.get(probeId)?.categories ?? []);
+  const list = axis === "x" ? xs : ys;
+  const i = list.findIndex((l) => foldAxisLabel(l) === foldAxisLabel(oldLabel));
+  if (i === -1) return false;
+  // Refuse a rename that collides with a DIFFERENT existing label on the same
+  // axis: applyDescartesAxes dedupes fold-insensitively, so a silent collision
+  // would merge two columns/rows into one, discarding whichever's data lost the
+  // dedup — always warn instead.
+  const collides = list.some((l, j) => j !== i && foldAxisLabel(l) === foldAxisLabel(trimmed));
+  if (collides) {
+    showToast(
+      `Já existe ${axis === "x" ? "uma coluna" : "uma linha"} "${trimmed}" — escolha outro nome.`,
+      "info",
+    );
+    return false;
+  }
+  list[i] = trimmed;
+  applyDescartesAxes(probeId, xs, ys);
+  return true;
+}
+
+function descartesRemoveAxis(probeId: string, axis: "x" | "y", label: string): void {
+  const { xs, ys } = deriveAxes(probeState.get(probeId)?.categories ?? []);
+  const list = axis === "x" ? xs : ys;
+  // Removing the LAST label of an axis would zero out the x×y cross product
+  // entirely — wiping the OTHER axis's labels too, since they only exist as far
+  // as some category still pairs with them. Refuse instead of silently emptying
+  // the whole grid; the empty-state's own (confirmed) reseed is the way to start over.
+  if (list.length <= 1) {
+    showToast(
+      `Não é possível remover ${axis === "x" ? "a última coluna" : "a última linha"} — a grade ficaria vazia.`,
+      "info",
+    );
+    return;
+  }
+  const next = list.filter((l) => foldAxisLabel(l) !== foldAxisLabel(label));
+  applyDescartesAxes(probeId, axis === "x" ? next : xs, axis === "y" ? next : ys);
+}
+
+/** One axis tick: a click-to-rename label + a hover-reveal "✕" to remove the
+ *  whole column/row. Used for both the X (bottom) and Y (left) gutters. */
+function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClass: string): HTMLElement {
+  const wrap = document.createElement("span");
+  wrap.className = `${gridClass} descartes-tick`;
+
+  const renderReadState = (): void => {
+    const text = document.createElement("button");
+    text.type = "button";
+    text.className = "descartes-tick-label";
+    text.dataset["axis"] = axis;
+    text.dataset["label"] = label;
+    text.textContent = label;
+    text.title = `${label} — clique para renomear`;
+    text.addEventListener("click", enterEditState);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "descartes-tick-del";
+    del.textContent = "✕";
+    del.title = axis === "x" ? "Remover coluna" : "Remover linha";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      descartesRemoveAxis(probeId, axis, label);
+    });
+    wrap.replaceChildren(text, del);
+  };
+
+  const enterEditState = (): void => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "descartes-tick-input";
+    input.value = label;
+    let committed = false;
+    const commit = (): void => {
+      if (committed) return;
+      committed = true;
+      // On success, applyDescartesAxes triggers a full card re-render that
+      // discards this tick entirely — nothing else to do. On failure (blank/
+      // unchanged/colliding name), the re-render never happens, so revert this
+      // tick to its read state (showing the ORIGINAL label) instead of leaving
+      // a dead, unfocused <input> behind.
+      if (!descartesRenameAxis(probeId, axis, label, input.value)) renderReadState();
+    };
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") input.blur();
+      else if (ev.key === "Escape") {
+        committed = true; // suppress the blur commit that follows
+        renderReadState();
+      }
+    });
+    input.addEventListener("blur", commit);
+    wrap.replaceChildren(input);
+    input.focus();
+    input.select();
+  };
+
+  renderReadState();
+  return wrap;
+}
+
+function buildAxisAddButton(
+  probeId: string,
+  axis: "x" | "y",
+  side: "before" | "after",
+): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `descartes-addbtn descartes-add-${axis}-${side}`;
+  btn.textContent = "+";
+  btn.title =
+    axis === "x"
+      ? side === "before"
+        ? "Adicionar coluna antes"
+        : "Adicionar coluna depois"
+      : side === "before"
+        ? "Adicionar linha abaixo"
+        : "Adicionar linha acima";
+  btn.addEventListener("click", () => descartesAddAxis(probeId, axis, side));
+  return btn;
+}
 
 function renderDescartes(views: CatView[], probeId: string): HTMLElement {
   const root = document.createElement("div");
   root.className = "descartes";
 
-  // Split categories into scoreline cells vs. the leftover ("outro"/unparseable).
-  const cells: { h: number; a: number; pct: number }[] = [];
+  const categories = probeState.get(probeId)?.categories ?? [];
+  const derived = deriveAxes(categories);
+  // Clamp at render time (not just on interactive edits): categories can also
+  // arrive from the LLM/ask-bar or a pasted "Import JSON" probe spec, neither of
+  // which goes through applyDescartesAxes's own MAX_AXIS cap. Anything beyond
+  // the clamp still exists in `categories` (so its data isn't silently wrong),
+  // it just isn't drawn — its pct is folded into "outro" below.
+  const xs = derived.xs.slice(0, MAX_AXIS);
+  const ys = derived.ys.slice(0, MAX_AXIS);
+  const xsSet = new Set(xs.map(foldAxisLabel));
+  const ysSet = new Set(ys.map(foldAxisLabel));
+
+  // pct by (x,y) pair key; anything that isn't a parseable pair (legacy data, a
+  // stray LLM miss, or "outro" itself), or that falls outside the clamped axes,
+  // is never treated as a plotted coordinate — it lands in "outro" instead.
+  const pctByPair = new Map<string, number>();
   let outro = 0;
   for (const v of views) {
-    const s = parseScore(v.cat);
-    if (s && s.h <= DESC_MAX && s.a <= DESC_MAX) cells.push({ h: s.h, a: s.a, pct: v.pct });
-    else outro += v.pct;
+    const p = parsePair(v.cat);
+    if (p && xsSet.has(foldAxisLabel(p.x)) && ysSet.has(foldAxisLabel(p.y))) {
+      pctByPair.set(pairKey(p.x, p.y), v.pct);
+    } else {
+      outro += v.pct;
+    }
   }
 
-  // No scoreline categories yet → an empty state that offers to build the grid,
-  // so the user never has to enumerate every possible scoreline by hand.
-  if (cells.length === 0) {
+  // No axes yet → an empty state that offers to seed a 3×3 grid, so the user
+  // never has to hand-type every coordinate.
+  if (xs.length === 0 || ys.length === 0) {
     const empty = document.createElement("div");
     empty.className = "descartes-empty";
     const hint = document.createElement("p");
     hint.className = "empty-hint";
-    hint.textContent = "Descartes plota placares (ex.: 2x1) num plano casa × visitante.";
+    hint.textContent =
+      "Descartes mapeia cada mensagem numa coordenada (x, y) de um plano cartesiano.";
     const gen = document.createElement("button");
     gen.type = "button";
     gen.className = "btn-secondary btn-small";
-    gen.textContent = "Gerar grade de placares (0–3)";
-    gen.addEventListener("click", () => generateScoreGrid(probeId));
+    gen.textContent = "Gerar grade 3×3";
+    gen.addEventListener("click", () => {
+      // Switching an existing (non-pair) classification probe to descartes must
+      // never silently wipe its real categories.
+      if (
+        categories.length > 0 &&
+        !window.confirm("Isso substitui as categorias atuais desta probe. Continuar?")
+      ) {
+        return;
+      }
+      const seeded = deriveAxes(seedGridCategories());
+      applyDescartesAxes(probeId, seeded.xs, seeded.ys);
+      showToast("Grade 3×3 gerada.", "success");
+    });
     empty.appendChild(hint);
     empty.appendChild(gen);
     root.appendChild(empty);
     return root;
   }
 
-  const [homeTeam, awayTeam] = scoreTeams(probeId);
-  const maxH = Math.min(DESC_MAX, Math.max(3, ...cells.map((c) => c.h)));
-  const maxA = Math.min(DESC_MAX, Math.max(3, ...cells.map((c) => c.a)));
-  const maxPct = Math.max(1, ...cells.map((c) => c.pct));
-  const byKey = new Map(cells.map((c) => [`${c.h}x${c.a}`, c.pct]));
+  let maxPct = 0;
+  for (const pct of pctByPair.values()) maxPct = Math.max(maxPct, pct);
+  maxPct = Math.max(1, maxPct);
   let modalKey = "";
   let modalPct = -1;
-  for (const c of cells) {
-    if (c.pct > modalPct) {
-      modalPct = c.pct;
-      modalKey = `${c.h}x${c.a}`;
+  for (const [key, pct] of pctByPair) {
+    if (pct > modalPct) {
+      modalPct = pct;
+      modalKey = key;
     }
   }
 
-  // Rotated Y team title beside the plot grid.
   const main = document.createElement("div");
   main.className = "descartes-main";
-  const yTitle = document.createElement("div");
-  yTitle.className = "descartes-ytitle";
-  yTitle.textContent = awayTeam;
-  main.appendChild(yTitle);
 
   const plot = document.createElement("div");
   plot.className = "descartes-plot";
-  plot.style.setProperty("--cols", String(maxH + 1));
-  plot.style.setProperty("--rows", String(maxA + 1));
+  plot.style.setProperty("--cols", String(xs.length));
+  plot.style.setProperty("--rows", String(ys.length));
 
-  // Rows top→bottom = away goals maxA..0 (origin bottom-left, like a real plane).
-  for (let a = maxA; a >= 0; a--) {
-    const ylab = document.createElement("span");
-    ylab.className = "descartes-ylabel";
-    ylab.textContent = String(a);
-    plot.appendChild(ylab);
-    for (let h = 0; h <= maxH; h++) {
-      const key = `${h}x${a}`;
-      const pct = byKey.get(key);
+  // Rows top→bottom = ys reversed: the LAST y (appended) draws at the top, the
+  // FIRST y (prepended) draws at the bottom — the origin, like a real plane.
+  for (let r = ys.length - 1; r >= 0; r--) {
+    const y = ys[r]!;
+    plot.appendChild(buildAxisTick(probeId, "y", y, "descartes-ylabel"));
+    for (const x of xs) {
+      const key = pairKey(x, y);
+      const pct = pctByPair.get(key);
       const cell = document.createElement("div");
       cell.className = "descartes-cell";
       if (pct === undefined) {
         cell.classList.add("is-empty");
+        cell.setAttribute("aria-label", `${x}, ${y}: sem dados`);
       } else {
-        const outcome: "home" | "draw" | "away" = h > a ? "home" : h < a ? "away" : "draw";
-        cell.classList.add("is-" + outcome);
         const alpha = 0.12 + 0.88 * (pct / maxPct);
-        cell.style.background = `rgba(${WIN_TINT[outcome]},${alpha.toFixed(3)})`;
+        cell.style.background = `rgba(76, 139, 245, ${alpha.toFixed(3)})`;
         if (key === modalKey && modalPct > 0) cell.classList.add("is-modal");
         if (pct >= 2) {
           const t = document.createElement("span");
@@ -1216,50 +1482,38 @@ function renderDescartes(views: CatView[], probeId: string): HTMLElement {
           t.textContent = pct.toFixed(0);
           cell.appendChild(t);
         }
-        cell.title = `${homeTeam} ${h} × ${a} ${awayTeam} — ${pct.toFixed(1)}%`;
+        cell.title = `(${x}, ${y}) — ${pct.toFixed(1)}%`;
+        cell.setAttribute("aria-label", `${x}, ${y}: ${pct.toFixed(1)}%`);
       }
       plot.appendChild(cell);
     }
   }
-  // Bottom axis row: empty corner + home-goal numbers 0..maxH.
+  // Bottom axis row: empty corner + the X ticks, left→right.
   const corner = document.createElement("span");
   corner.className = "descartes-corner";
   plot.appendChild(corner);
-  for (let h = 0; h <= maxH; h++) {
-    const xlab = document.createElement("span");
-    xlab.className = "descartes-xlabel";
-    xlab.textContent = String(h);
-    plot.appendChild(xlab);
-  }
+  for (const x of xs) plot.appendChild(buildAxisTick(probeId, "x", x, "descartes-xlabel"));
   main.appendChild(plot);
 
-  const xTitle = document.createElement("div");
-  xTitle.className = "descartes-xtitle";
-  xTitle.textContent = homeTeam;
-  main.appendChild(xTitle);
+  // Hover-reveal "+" on all 4 edges: left/right add a column before/after,
+  // bottom/top add a row before(origin)/after — mirrors the axis-derivation order.
+  main.appendChild(buildAxisAddButton(probeId, "x", "before"));
+  main.appendChild(buildAxisAddButton(probeId, "x", "after"));
+  main.appendChild(buildAxisAddButton(probeId, "y", "before"));
+  main.appendChild(buildAxisAddButton(probeId, "y", "after"));
   root.appendChild(main);
 
-  // Legend (who wins) + the out-of-grid bucket, if any.
+  // Legend: a single sequential-intensity gradient (this is a generic density
+  // map, not a win/lose outcome) + the out-of-grid bucket, if any.
   const foot = document.createElement("div");
   foot.className = "descartes-foot";
   const legend = document.createElement("div");
   legend.className = "descartes-legend";
-  const legendItems: [string, string][] = [
-    [`${homeTeam} vence`, "is-home"],
-    ["empate", "is-draw"],
-    [`${awayTeam} vence`, "is-away"],
-  ];
-  for (const [txt, cls] of legendItems) {
-    const it = document.createElement("span");
-    it.className = "descartes-legend-item " + cls;
-    const sw = document.createElement("span");
-    sw.className = "descartes-legend-swatch";
-    const lb = document.createElement("span");
-    lb.textContent = txt;
-    it.appendChild(sw);
-    it.appendChild(lb);
-    legend.appendChild(it);
-  }
+  legend.appendChild(document.createTextNode("menos"));
+  const bar = document.createElement("span");
+  bar.className = "descartes-legend-bar";
+  legend.appendChild(bar);
+  legend.appendChild(document.createTextNode("mais"));
   foot.appendChild(legend);
   if (outro > 0.05) {
     const o = document.createElement("span");
@@ -1378,11 +1632,16 @@ function buildOpenBody(probeId: string, index: number): HTMLElement {
 
 /** (Re)render a card's single .result-display at the given snapshot index. */
 function renderDisplay(card: HTMLDivElement, probeId: string, kind: string, index: number): void {
+  const existing = card.querySelector<HTMLDivElement>(".result-display");
+  // Never clobber an in-progress descartes axis-tick rename (an <input> mid-edit,
+  // e.g. because a periodic snapshot/result frame landed while the user was
+  // typing) — the next render, once the user commits/cancels, picks up the
+  // latest data anyway.
+  if (existing?.querySelector(".descartes-tick-input:focus")) return;
   const next =
     kind === "classification"
       ? buildClassificationBody(probeId, index)
       : buildOpenBody(probeId, index);
-  const existing = card.querySelector<HTMLDivElement>(".result-display");
   if (existing) existing.replaceWith(next);
   else card.appendChild(next);
 }
@@ -1524,11 +1783,11 @@ function ensureCard(probeId: string): HTMLDivElement {
     const probe: ProbeDescriptor = prev
       ? { ...prev, chart: chosen }
       : { id: probeId, kind: "classification", label: "", chart: chosen };
-    // Descartes needs scoreline categories. If the probe has none at all, seed a
-    // default grid so picking it just works (never clobbers existing categories —
-    // a probe that already has some shows the grid's "generate" empty-state).
+    // Descartes needs "(x, y)" pair categories. If the probe has none at all, seed
+    // a default 3×3 grid so picking it just works (never clobbers existing
+    // categories — a probe that already has some shows the grid's empty-state).
     if (chosen === "descartes" && (prev?.categories?.length ?? 0) === 0) {
-      probe.categories = scoreGridCategories();
+      probe.categories = seedGridCategories();
     }
     send({ op: "upsert_probe", probe });
     probeState.set(probe.id, probe);
@@ -1900,7 +2159,17 @@ function openEditor(probeId: string): void {
   const editCats = card.querySelector<HTMLDivElement>(".edit-categories");
   if (editCats) {
     editCats.innerHTML = "";
-    if (kind === "classification") {
+    // Descartes' categories are "(x, y)" pairs — a flat per-pair list (one row
+    // per grid cell, up to 36) is unreadable and pointless: axes are edited
+    // directly on the grid itself (hover the plot to add, click a tick to
+    // rename, "✕" to remove). Point users there instead.
+    if (kind === "classification" && probeChart(probeId) === "descartes") {
+      editCats.classList.remove("hidden");
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "Edite as colunas e linhas direto no gráfico do card.";
+      editCats.appendChild(hint);
+    } else if (kind === "classification") {
       editCats.classList.remove("hidden");
       const cats = probe?.categories ?? [];
       cats.forEach((cat, i) => editCats.appendChild(buildEditCatRow(probeId, cat, i)));
@@ -1940,7 +2209,21 @@ function saveEditor(probeId: string): void {
   const prompt = card.querySelector<HTMLTextAreaElement>(".edit-prompt")?.value.trim() ?? "";
 
   let probe: ProbeDescriptor;
-  if (kind === "classification") {
+  if (kind === "classification" && probeChart(probeId) === "descartes") {
+    // Descartes' categories/colors are managed on the grid itself (see openEditor):
+    // the flat .edit-cat-row list is never populated for it, so reading it here
+    // would silently wipe the whole grid. Preserve them; only label/question/
+    // per-probe settings come from this editor.
+    probe = {
+      kind: "classification",
+      id: probeId,
+      label,
+      question: prompt,
+      categories: prev?.categories ?? [],
+      chart: "descartes",
+      colors: prev?.colors ?? {},
+    };
+  } else if (kind === "classification") {
     const categories: string[] = [];
     const colors: Record<string, string> = {};
     const seen = new Set<string>();

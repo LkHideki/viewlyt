@@ -17,6 +17,7 @@ creates/edits them live. Pure: no Selenium, no openai, no I/O.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -114,10 +115,25 @@ def _fold_label(s: str) -> str:
     """Normalize a category label for tolerant matching: strip accents, casefold,
     and collapse internal whitespace — so a model that answers "Técnico da Seleção"
     (or "  tecnico  da  selecao ") still matches the category "técnico da seleção".
+
+    Mirrors the dashboard's ``foldAxisLabel`` (dashboard/src/main.ts) — kept in
+    sync by hand; if the two ever diverge, a category could fold to a match on
+    one side and not the other.
     """
     decomposed = unicodedata.normalize("NFKD", s)
     no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
     return " ".join(no_accents.split()).casefold()
+
+
+# Matches the "descartes" chart's ordered-pair category shape "(x, y)" — mirrors
+# the frontend's PAIR_RE (src/viewlyt/live/dashboard/src/main.ts).
+_PAIR_RE = re.compile(r"^\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)$")
+
+
+def _parse_pair(s: str) -> tuple[str, str] | None:
+    """Parse a "(x, y)" ordered-pair category into ``(x, y)``, else ``None``."""
+    m = _PAIR_RE.match(s.strip())
+    return (m.group(1).strip(), m.group(2).strip()) if m else None
 
 
 class Probe:
@@ -223,12 +239,41 @@ class ClassificationProbe(Probe):
     def aggregate(self, parsed: dict, messages: list[ChatMessage]) -> ProbeResult:
         # Tolerant matching: models routinely vary the case/accents/whitespace of the
         # exact category text, so fold both sides before comparing (see _fold_label).
-        norm_to_cat = {_fold_label(c): c for c in self.categories}
+        #
+        # Ordered-pair categories ("(x, y)", the 'descartes' chart) additionally fold
+        # each COMPONENT separately and match on the (x, y) tuple, not the raw folded
+        # string — otherwise the enum's "(2, 1)" and a looser model's "(2,1)" differ
+        # only in comma-spacing and never match, silently reading 0%.
+        #
+        # This is detected STRUCTURALLY (does a category parse as a pair?), never via
+        # self.chart: chart is a presentation choice the chart-select dropdown lets the
+        # user flip independently of categories, so a probe switched away from
+        # 'descartes' while its categories are still "(x, y)" pairs must keep matching
+        # them tuple-wise — gating on chart alone would silently regress to whole-
+        # string folding for those. A mixed set (pairs + a plain escape category like
+        # "outro") is expected and handled by falling back to flat matching per-item.
+        pair_to_cat: dict[tuple[str, str], str] = {}
+        flat_to_cat: dict[str, str] = {}
+        for c in self.categories:
+            p = _parse_pair(c)
+            if p:
+                pair_to_cat[(_fold_label(p[0]), _fold_label(p[1]))] = c
+            else:
+                flat_to_cat[_fold_label(c)] = c
+
+        def resolve(raw: str) -> str | None:
+            p = _parse_pair(raw)
+            if p:
+                canon = pair_to_cat.get((_fold_label(p[0]), _fold_label(p[1])))
+                if canon is not None:
+                    return canon
+            return flat_to_cat.get(_fold_label(raw))
+
         counts: Counter[str] = Counter()
         for item in (parsed or {}).get("labels", []) or []:
             # Accept a flat "category" string (current shape) or a legacy {"label": …} dict.
             raw = item.get("label", "") if isinstance(item, dict) else item
-            canon = norm_to_cat.get(_fold_label(str(raw)))
+            canon = resolve(str(raw))
             if canon is not None:
                 counts[canon] += 1
         total = sum(counts.values())
