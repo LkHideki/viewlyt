@@ -132,6 +132,15 @@ def test_vl_split_subcommand_routes(monkeypatch):
     assert seen["argv"] == ["out/a.md", "out/b.md"]
 
 
+def test_vl_watch_subcommand_routes(monkeypatch):
+    """`vl watch ARGS` dispatches to viewlyt.watch:main with the `watch` token stripped."""
+    from viewlyt import vl
+
+    seen = _spy(monkeypatch, "viewlyt.watch", 6)
+    assert vl.main(["watch", "--yes"]) == 6
+    assert seen["argv"] == ["--yes"]
+
+
 def test_vl_subcommand_with_no_extra_args(monkeypatch):
     """`vl ask` alone forwards an empty argv (rag decides what to do with it)."""
     from viewlyt import vl
@@ -172,7 +181,12 @@ def test_vl_help_alias_routes_to_scraper_help(monkeypatch):
 
 @pytest.mark.parametrize(
     "mod,sub",
-    [("viewlyt.rag", "ask"), ("viewlyt.live.cli", "live"), ("viewlyt.split", "split")],
+    [
+        ("viewlyt.rag", "ask"),
+        ("viewlyt.live.cli", "live"),
+        ("viewlyt.split", "split"),
+        ("viewlyt.watch", "watch"),
+    ],
 )
 def test_vl_help_subcommand_alias(monkeypatch, mod, sub):
     """`vl help ask` / `vl help live` becomes `<sub> --help`."""
@@ -202,6 +216,7 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
     assert "vl ask" in r.stdout
     assert "vl live" in r.stdout
     assert "vl split" in r.stdout
+    assert "vl watch" in r.stdout
     # examples use the real command, not the retired `viewlyt` prefix
     assert "vl -c" in r.stdout
     assert "viewlyt -c" not in r.stdout
@@ -213,9 +228,11 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
         (["ask", "--help"], "usage: vl ask"),
         (["live", "--help"], "usage: vl live"),
         (["split", "--help"], "usage: vl split"),
+        (["watch", "--help"], "usage: vl watch"),
         (["help", "ask"], "usage: vl ask"),
         (["help", "live"], "usage: vl live"),
         (["help", "split"], "usage: vl split"),
+        (["help", "watch"], "usage: vl watch"),
     ],
 )
 def test_vl_subcommand_help_prog_name(argv, prefix):
@@ -224,26 +241,30 @@ def test_vl_subcommand_help_prog_name(argv, prefix):
     assert prefix in r.stdout, r.stdout
 
 
-@pytest.mark.parametrize("sub", ["ask", "live"])
+@pytest.mark.parametrize("sub", ["ask", "live", "watch"])
 def test_vl_subcommand_version_parity(sub):
-    """Every mode answers --version with its own prog name (vl / vl ask / vl live)."""
+    """Every mode answers --version with its own prog name (vl / vl ask / vl live / ...).
+
+    ``split`` is deliberately excluded: it has no ``-V/--version`` of its own
+    (a pre-existing gap, unrelated to this parity check)."""
     r = cli_run_vl([sub, "--version"])
     assert r.returncode == 0, r.stderr
     assert r.stdout.startswith(f"vl {sub} "), r.stdout
 
 
-def test_vl_ask_path_never_imports_selenium_or_scraper():
-    """DX/perf guarantee: the analysis path must not drag in the scraper/Selenium."""
+@pytest.mark.parametrize("sub", ["ask", "live", "split", "watch"])
+def test_vl_subcommand_help_never_imports_selenium_or_scraper(sub):
+    """DX/perf guarantee: no Selenium-free subcommand may drag in the scraper/Selenium."""
     code = (
         "import sys\n"
         "from viewlyt.vl import main\n"
         "try:\n"
-        "    main(['ask', '--help'])\n"
+        f"    main(['{sub}', '--help'])\n"
         "except SystemExit:\n"
         "    pass\n"
-        "assert 'selenium' not in sys.modules, 'selenium imported on vl ask'\n"
-        "assert 'viewlyt.cli' not in sys.modules, 'scraper CLI imported on vl ask'\n"
-        "assert 'viewlyt.scraper' not in sys.modules, 'scraper imported on vl ask'\n"
+        f"assert 'selenium' not in sys.modules, 'selenium imported on vl {sub}'\n"
+        f"assert 'viewlyt.cli' not in sys.modules, 'scraper CLI imported on vl {sub}'\n"
+        f"assert 'viewlyt.scraper' not in sys.modules, 'scraper imported on vl {sub}'\n"
         "print('OK')\n"
     )
     env = {**os.environ, "PYTHONPATH": SRC}

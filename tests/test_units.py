@@ -845,6 +845,52 @@ def test_extract_video_id_more_forms() -> None:
     print("ok: extract_video_id_more_forms")
 
 
+def test_extract_video_id_is_shared_with_htmltext() -> None:
+    # scraper.py re-exports the SAME function object (moved, not duplicated) so
+    # `vl watch` can import it from viewlyt.htmltext without pulling in Selenium.
+    from viewlyt.htmltext import extract_video_id as pure_extract_video_id
+    from viewlyt.scraper import extract_video_id as scraper_extract_video_id
+
+    assert scraper_extract_video_id is pure_extract_video_id
+    print("ok: extract_video_id_is_shared_with_htmltext")
+
+
+def test_watch_check_new_url_and_poll_once() -> None:
+    from viewlyt.watch import _check_new_url, _poll_once
+
+    seen: set[str] = set()
+    assert _check_new_url("https://youtu.be/" + ID, seen) == (ID, "https://youtu.be/" + ID)
+    assert _check_new_url("not a url", seen) is None  # invalid -> ignored
+    assert _check_new_url("", seen) is None
+    assert _check_new_url(None, seen) is None
+
+    queue: list[dict] = []
+    assert _poll_once("https://youtu.be/" + ID, seen, queue) is True
+    assert len(queue) == 1 and queue[0]["video_id"] == ID
+    # same video, different URL form -> deduped by id, queue unchanged
+    assert _poll_once("https://www.youtube.com/watch?v=" + ID, seen, queue) is False
+    assert len(queue) == 1
+    # a second, distinct video -> accepted
+    assert _poll_once("https://youtu.be/TgMJUAo-tWA", seen, queue) is True
+    assert len(queue) == 2
+    print("ok: watch_check_new_url_and_poll_once")
+
+
+def test_watch_queue_roundtrip() -> None:
+    from viewlyt.watch import _load_queue, _save_queue
+
+    with tempfile.TemporaryDirectory() as d:
+        qf = Path(d) / "sub" / "queue.json"  # nested, non-existent dir
+        assert _load_queue(qf) == []  # missing file -> empty, never raises
+        queue = [{"video_id": ID, "url": "https://youtu.be/" + ID, "added_at": "2026-01-01"}]
+        _save_queue(qf, queue)
+        assert qf.exists()
+        assert _load_queue(qf) == queue
+        _save_queue(qf, [])
+        assert _load_queue(qf) == []
+    print("ok: watch_queue_roundtrip")
+
+
 def test_group_consecutive_orphan_and_dropped_replies() -> None:
     # A leading orphan reply (no preceding comment) is passed through untouched.
     out = group_consecutive_comments([_r("@x", "@gone", "orphan"), _c("@a", "c1")])
@@ -944,6 +990,9 @@ if __name__ == "__main__":
     test_html_to_text_blocks_and_nested_anchor()
     test_parse_relative_date_edges()
     test_extract_video_id_more_forms()
+    test_extract_video_id_is_shared_with_htmltext()
+    test_watch_check_new_url_and_poll_once()
+    test_watch_queue_roundtrip()
     test_group_consecutive_orphan_and_dropped_replies()
     test_group_consecutive_merge_then_dedup()
     test_format_comment_lines_reply_without_parent()

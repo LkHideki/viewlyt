@@ -9,6 +9,8 @@ would not rebind the names the code actually calls.
 
 from __future__ import annotations
 
+import argparse
+
 import pytest
 from conftest import FakeDriver, make_scrape_one
 from conftest import make_comment as _c
@@ -16,6 +18,7 @@ from conftest import make_reply as _r
 
 import viewlyt.api as api
 import viewlyt.cli as cli
+import viewlyt.watch as watch
 from viewlyt.cli import format_comment_lines
 from viewlyt.htmltext import (
     format_related,
@@ -964,3 +967,177 @@ def test_scrape_videos_empty_returns_empty(monkeypatch):
 
     monkeypatch.setattr(api, "build_driver", boom)
     assert api.scrape_videos([]) == []
+
+
+# --------------------------------------------------------------------------- #
+# vl watch
+# --------------------------------------------------------------------------- #
+def test_watch_run_daemon_stops_at_max_count(monkeypatch, tmp_path):
+    values = iter(["https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/TgMJUAo-tWA"])
+    monkeypatch.setattr(watch, "read_clipboard", lambda: next(values, None))
+    monkeypatch.setattr(watch.time, "sleep", lambda s: None)
+
+    args = argparse.Namespace(max_count=2, timeout=0, poll_interval=0, quiet=True)
+    queue = watch._run_daemon(args, tmp_path / "queue.json")
+    assert [item["video_id"] for item in queue] == ["dQw4w9WgXcQ", "TgMJUAo-tWA"]
+
+
+def test_watch_run_daemon_stops_at_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(watch, "read_clipboard", lambda: None)
+    monkeypatch.setattr(watch.time, "sleep", lambda s: None)
+    clock = iter([0.0, 0.0, 5.0])  # start; first check (not yet); second check (timed out)
+    monkeypatch.setattr(watch.time, "monotonic", lambda: next(clock))
+
+    args = argparse.Namespace(max_count=0, timeout=3.0, poll_interval=0, quiet=True)
+    queue = watch._run_daemon(args, tmp_path / "queue.json")
+    assert queue == []
+
+
+def test_watch_main_no_clipboard_tool_exits_two(monkeypatch, tmp_path, capsys):
+    def boom():
+        raise RuntimeError("no clipboard read tool found (pbpaste/powershell/xclip/xsel)")
+
+    monkeypatch.setattr(watch, "read_clipboard", boom)
+    rc = watch.main(["--queue-file", str(tmp_path / "q.json"), "--poll-interval", "0"])
+    assert rc == 2
+    assert "no clipboard read tool found" in capsys.readouterr().err
+
+
+def test_watch_list_prints_saved_queue(tmp_path, capsys):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
+    rc = watch.main(["--queue-file", str(qf), "--list"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "aaaaaaaaaaa" in out and "u1" in out
+
+
+def test_watch_list_on_empty_queue(tmp_path, capsys):
+    rc = watch.main(["--queue-file", str(tmp_path / "q.json"), "--list"])
+    assert rc == 0
+    assert "vazia" in capsys.readouterr().out
+
+
+def test_watch_drop_last_removes_and_persists(tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(
+        qf,
+        [
+            {"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"},
+            {"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"},
+        ],
+    )
+    rc = watch.main(["--queue-file", str(qf), "--drop-last"])
+    assert rc == 0
+    assert [i["video_id"] for i in watch._load_queue(qf)] == ["aaaaaaaaaaa"]
+
+
+def test_watch_drop_last_on_empty_queue_is_noop(tmp_path, capsys):
+    qf = tmp_path / "queue.json"
+    rc = watch.main(["--queue-file", str(qf), "--drop-last"])
+    assert rc == 0
+    assert "vazia" in capsys.readouterr().err
+    assert not qf.exists()
+
+
+def test_watch_review_prompt_undo_then_run(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    queue = [
+        {"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"},
+        {"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"},
+    ]
+    watch._save_queue(qf, queue)
+    responses = iter(["u", "r"])
+    monkeypatch.setattr("builtins.input", lambda *_a: next(responses))
+
+    assert watch._review_prompt(queue, qf) == "run"
+    assert [i["video_id"] for i in queue] == ["aaaaaaaaaaa"]  # last item undone
+    assert watch._load_queue(qf) == queue  # the undo was persisted
+
+
+def test_watch_review_prompt_quit_on_eof(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    queue = [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}]
+
+    def raise_eof(*_a):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+    assert watch._review_prompt(queue, qf) == "quit"
+
+
+def test_watch_run_and_yes_dispatches_to_cli_main(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(
+        qf,
+        [
+            {"video_id": "aaaaaaaaaaa", "url": "https://youtu.be/aaaaaaaaaaa", "added_at": "x"},
+            {"video_id": "bbbbbbbbbbb", "url": "https://youtu.be/bbbbbbbbbbb", "added_at": "y"},
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(cli, "main", lambda argv: captured.__setitem__("argv", argv) or 0)
+
+    rc = watch.main(["--queue-file", str(qf), "--run", "--yes", "-c", "-o", str(tmp_path)])
+    assert rc == 0
+    assert captured["argv"] == [
+        "https://youtu.be/aaaaaaaaaaa",
+        "https://youtu.be/bbbbbbbbbbb",
+        "-c",
+        "--out-dir",
+        str(tmp_path),
+    ]
+    assert watch._load_queue(qf) == []  # queue emptied after a successful dispatch
+
+
+def test_watch_quiet_flag_forwarded_to_dispatch(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
+    captured = {}
+    monkeypatch.setattr(cli, "main", lambda argv: captured.__setitem__("argv", argv) or 0)
+
+    watch.main(["--queue-file", str(qf), "--run", "--yes", "--quiet", "-o", str(tmp_path)])
+    assert "--quiet" in captured["argv"]
+
+
+def test_watch_run_without_yes_prompts_then_dispatches(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
+    monkeypatch.setattr("builtins.input", lambda *_a: "r")
+    captured = {}
+    monkeypatch.setattr(cli, "main", lambda argv: captured.__setitem__("argv", argv) or 0)
+
+    rc = watch.main(["--queue-file", str(qf), "--run", "-o", str(tmp_path)])
+    assert rc == 0
+    assert captured["argv"][0] == "u1"
+
+
+def test_watch_run_without_yes_quit_does_not_dispatch(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
+    monkeypatch.setattr("builtins.input", lambda *_a: "q")
+
+    def unreached(argv):
+        raise AssertionError("cli.main must not be called when the review is quit")
+
+    monkeypatch.setattr(cli, "main", unreached)
+
+    rc = watch.main(["--queue-file", str(qf), "--run", "-o", str(tmp_path)])
+    assert rc == 0
+    assert watch._load_queue(qf) == [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}]
+
+
+def test_watch_empty_queue_never_dispatches(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+
+    def unreached(argv):
+        raise AssertionError("cli.main must not be called for an empty queue")
+
+    monkeypatch.setattr(cli, "main", unreached)
+    monkeypatch.setattr(watch, "read_clipboard", lambda: None)
+    monkeypatch.setattr(watch.time, "sleep", lambda s: None)
+    clock = iter([0.0, 5.0])  # start; first check already past the timeout
+    monkeypatch.setattr(watch.time, "monotonic", lambda: next(clock))
+
+    rc = watch.main(["--queue-file", str(qf), "--timeout", "1", "--yes"])
+    assert rc == 0
