@@ -97,12 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--capture",
         choices=["browser", "server"],
-        default="browser",
+        default="server",
         help=(
-            "How chat messages reach the server: 'browser' = you run the snippet/"
-            "extension in the YouTube popout (default); 'server' = this process "
-            "drives its own headless Chrome on the popout — nothing to paste, and "
-            "the ONLY option that works with Safari (default: %(default)s)"
+            "How chat messages reach the server: 'server' = this process drives "
+            "its own headless Chrome on the popout — nothing to paste, and the "
+            "ONLY option that works with Safari (default); 'browser' = you run "
+            "the snippet/extension in the YouTube popout yourself "
+            "(default: %(default)s)"
         ),
     )
     parser.add_argument(

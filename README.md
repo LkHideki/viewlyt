@@ -361,11 +361,13 @@ question, set a spending budget, pick the output language, and more). Run
 
 ```bash
 uv sync --extra live
+# Default capture is server-side: this process drives its own headless Chrome
+# on the chat popout — nothing to paste into any browser, and the only route
+# that works with Safari (WebKit blocks insecure ws:// from https pages):
 uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
 
-# Safari users (or zero-setup capture): the server drives its own headless
-# Chrome on the chat popout — nothing to paste into any browser:
-uv run vl live --capture server 'https://www.youtube.com/watch?v=LIVE_ID'
+# Prefer running the snippet/extension in your own browser? opt back into it:
+uv run vl live --capture browser 'https://www.youtube.com/watch?v=LIVE_ID'
 ```
 
 ## Chat with your collected data (`vl ask`)
