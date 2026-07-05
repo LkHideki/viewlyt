@@ -211,7 +211,14 @@ def _apply_key(key: str, cursor: int, selected: list[bool]) -> tuple[int, str | 
 def _render_checklist(queue: list[dict], selected: list[bool], cursor: int, redraw: bool) -> None:
     """Draw the checkbox list. Each line is truncated to the terminal width so
     it can never wrap — which would throw off the next redraw's "move the
-    cursor up N lines" math (there's no curses here, just plain ANSI)."""
+    cursor up N lines" math (there's no curses here, just plain ANSI).
+
+    Lines are joined/terminated with ``\\r\\n``, never a bare ``\\n``: raw mode
+    (see :func:`_raw_terminal`) turns off OPOST, so the tty no longer adds the
+    carriage return a bare ``\\n`` gets in cooked mode — without the explicit
+    ``\\r`` each line would start where the previous one ended instead of at
+    column 0, staircasing the whole display.
+    """
     width = shutil.get_terminal_size((100, 24)).columns
     lines = ["fila — espaço=marcar/desmarcar · ↑/↓=navegar · enter=rodar · esc/q=sair"]
     for i, item in enumerate(queue):
@@ -220,8 +227,8 @@ def _render_checklist(queue: list[dict], selected: list[bool], cursor: int, redr
         line = f"{pointer} [{box}] {i + 1:>2}  {item['video_id']:<12}  {item['url']}"
         lines.append(line[: max(width - 1, 10)])
     if redraw:
-        sys.stdout.write(f"\x1b[{len(lines)}A\x1b[J")
-    sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.write(f"\x1b[{len(lines)}A\r\x1b[J")
+    sys.stdout.write("\r\n".join(lines) + "\r\n")
     sys.stdout.flush()
 
 
