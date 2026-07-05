@@ -1669,22 +1669,20 @@ input[type="file"]::file-selector-button:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 0.4rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: rgba(22, 26, 32, 0.82);
   color: var(--text-dim);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease,
     background 0.15s ease;
-}
-
-.card-span svg {
-  display: block;
-  fill: currentColor;
 }
 
 /* Reveal it on card hover, on keyboard focus anywhere in the card, or when the

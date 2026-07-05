@@ -1777,25 +1777,6 @@ function editorOpen(card: HTMLDivElement): boolean {
   return editor != null && !editor.classList.contains("hidden");
 }
 
-// --- Column-span control glyph (1 vs 2 grid columns) -----------------------
-function spanRect(x: number, w: number): SVGRectElement {
-  return svg("rect", { x, y: 2.5, width: w, height: 11, rx: 1.5 });
-}
-
-/** A tiny panel glyph: two side-by-side panels for the "two columns" target,
- *  one wide panel for the "one column" target. Built via the shared `svg()`
- *  helper (no innerHTML), so it needs no sanitising. */
-function spanGlyph(twoCol: boolean): SVGSVGElement {
-  const s = svg("svg", { viewBox: "0 0 16 16", width: 13, height: 13, "aria-hidden": "true" });
-  if (twoCol) {
-    s.appendChild(spanRect(2, 5));
-    s.appendChild(spanRect(9, 5));
-  } else {
-    s.appendChild(spanRect(2.5, 11));
-  }
-  return s;
-}
-
 /**
  * Find (or build) the .result-card for a probe. A freshly-built card has the
  * FULL skeleton and its static handlers wired exactly once; the kind-specific
@@ -2070,8 +2051,9 @@ function ensureCard(probeId: string): HTMLDivElement {
     spanBtn.classList.toggle("is-wide", wide);
     spanBtn.setAttribute("aria-pressed", String(wide));
     spanBtn.title = wide ? "Shrink to one column" : "Expand to two columns";
-    // The glyph previews the TARGET state (what a click will produce).
-    spanBtn.replaceChildren(spanGlyph(!wide));
+    // The label previews the TARGET state (what a click will produce), as a
+    // width multiplier — not a glyph, which read as a music-player pause icon.
+    spanBtn.textContent = wide ? "x1" : "x2";
   };
   setSpan(lsGet(spanKey) === "1");
   spanBtn.addEventListener("click", () => {
