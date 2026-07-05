@@ -1777,6 +1777,11 @@ function editorOpen(card: HTMLDivElement): boolean {
   return editor != null && !editor.classList.contains("hidden");
 }
 
+// Two 340px cards + the 0.75rem (12px) grid gap — mirrors the @container
+// (max-width: 691px) breakpoint in style.css that collapses "span 2" back to
+// one column when the results column can't actually fit two side by side.
+const TWO_COL_MIN_WIDTH = 692;
+
 /**
  * Find (or build) the .result-card for a probe. A freshly-built card has the
  * FULL skeleton and its static handlers wired exactly once; the kind-specific
@@ -2060,6 +2065,18 @@ function ensureCard(probeId: string): HTMLDivElement {
     const next = !card.classList.contains("span-2");
     setSpan(next);
     lsSet(spanKey, next ? "1" : "0");
+    // Below TWO_COL_MIN_WIDTH the @container query in style.css (kept in sync
+    // by hand) forces every card back to one column, so "x2" saves the
+    // preference but has nothing visible to do until the window widens —
+    // say so, or the click just looks broken.
+    const resultsWidth = document.getElementById("results")?.clientWidth ?? Infinity;
+    if (next && resultsWidth < TWO_COL_MIN_WIDTH) {
+      showToast(
+        "Janela estreita demais para 2 colunas agora — a preferência foi salva " +
+          "e vale quando você alargar a janela.",
+        "info",
+      );
+    }
   });
   card.appendChild(spanBtn);
 
