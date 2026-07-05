@@ -2675,6 +2675,17 @@ function setProc(active: boolean, latencyMs?: number | null, avgLatencyMs?: numb
   if (avgEl && avgLatencyMs != null) avgEl.textContent = `${avgLatencyMs} ms`;
 }
 
+/** Global pause/resume toggle: icon + title show the click's EFFECT (⏸ while
+ *  running, ▶ while paused), mirroring the card-span toggle's convention. */
+function setGlobalPause(paused: boolean): void {
+  const btn = document.getElementById("global-pause") as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.textContent = paused ? "▶" : "⏸";
+  btn.title = paused ? "Resume analysis" : "Pause analysis";
+  btn.classList.toggle("is-paused", paused);
+  btn.setAttribute("aria-pressed", String(paused));
+}
+
 // ---------------------------------------------------------------------------
 // Cost frame (A5): update the Cost stat card. Shows USD when the provider
 // reports it, else a compact token count. Both elements are optional — bail
@@ -2772,6 +2783,7 @@ function handleState(msg: StateMsg): void {
   // chip while analyses are paused by the spending cap (late joiners see it too).
   const budgetFlag = document.getElementById("budget-flag");
   if (budgetFlag) budgetFlag.classList.toggle("hidden", !msg.budget_blocked);
+  setGlobalPause(msg.paused);
   if (!lastCost && ((msg.tokens_total ?? 0) > 0 || (msg.cost_total ?? 0) > 0)) {
     handleCost({
       type: "cost",
@@ -3062,6 +3074,10 @@ function wireButtons(): void {
 
   el("pause").addEventListener("click", () => send({ op: "pause" }));
   el("resume").addEventListener("click", () => send({ op: "resume" }));
+  el<HTMLButtonElement>("global-pause").addEventListener("click", () => {
+    const paused = el<HTMLButtonElement>("global-pause").getAttribute("aria-pressed") === "true";
+    send({ op: paused ? "resume" : "pause" });
+  });
   el("clear").addEventListener("click", () => send({ op: "clear" }));
   el("force-run").addEventListener("click", () => send({ op: "force_run" }));
 

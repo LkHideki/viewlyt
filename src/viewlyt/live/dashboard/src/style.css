@@ -156,6 +156,37 @@ header {
   border: 1px solid rgba(234, 67, 53, 0.30);
 }
 
+/* Global pause/resume toggle: a compact icon button that locks/unlocks ALL
+   automatic analysis (server.paused). Shows the icon of the click's EFFECT
+   (⏸ while running, ▶ while paused), matching the span-toggle convention. */
+.global-pause {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.global-pause:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.global-pause.is-paused {
+  color: var(--warning);
+  border-color: rgba(251, 188, 4, 0.35);
+  background: rgba(251, 188, 4, 0.12);
+}
+
 /* Sticky "budget cap reached" chip: analyses are paused by the spending cap. */
 .budget-flag {
   font-size: 0.75rem;
