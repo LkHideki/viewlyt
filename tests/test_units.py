@@ -855,12 +855,29 @@ def test_extract_video_id_is_shared_with_htmltext() -> None:
     print("ok: extract_video_id_is_shared_with_htmltext")
 
 
+def test_looks_like_youtube_reference() -> None:
+    from viewlyt.htmltext import looks_like_youtube_reference as looks
+
+    assert looks("https://youtu.be/" + ID) is True
+    assert looks("https://www.youtube.com/watch?v=" + ID) is True
+    assert looks(ID) is True  # bare id, exact match
+    # ordinary prose containing an 11-char alnum/hyphen run must NOT pass —
+    # extract_video_id's last-resort fallback would otherwise treat it as an id.
+    assert looks("a linha do all-models-here projeta 59%") is False
+    assert looks("") is False
+    assert looks(None) is False
+    print("ok: looks_like_youtube_reference")
+
+
 def test_watch_check_new_url_and_poll_once() -> None:
     from viewlyt.watch import _check_new_url, _poll_once
 
     seen: set[str] = set()
     assert _check_new_url("https://youtu.be/" + ID, seen) == (ID, "https://youtu.be/" + ID)
     assert _check_new_url("not a url", seen) is None  # invalid -> ignored
+    # ordinary copied prose with an embedded 11-char run must be ignored too
+    # (regression guard: this used to be swallowed as a bogus "video").
+    assert _check_new_url("a linha do all-models-here projeta 59%", seen) is None
     assert _check_new_url("", seen) is None
     assert _check_new_url(None, seen) is None
 
@@ -874,6 +891,27 @@ def test_watch_check_new_url_and_poll_once() -> None:
     assert _poll_once("https://youtu.be/TgMJUAo-tWA", seen, queue) is True
     assert len(queue) == 2
     print("ok: watch_check_new_url_and_poll_once")
+
+
+def test_watch_apply_key_pure_transitions() -> None:
+    from viewlyt.watch import _apply_key
+
+    selected = [True, True, True]
+    cursor, action = _apply_key("down", 0, selected)
+    assert cursor == 1 and action is None
+    cursor, action = _apply_key("up", cursor, selected)
+    assert cursor == 0 and action is None
+    cursor, action = _apply_key("up", cursor, selected)  # wraps to the last item
+    assert cursor == 2 and action is None
+    cursor, action = _apply_key("space", cursor, selected)
+    assert selected == [True, True, False] and action is None
+    _, action = _apply_key("enter", cursor, selected)
+    assert action == "run"
+    _, action = _apply_key("quit", cursor, selected)
+    assert action == "quit"
+    _, action = _apply_key("", cursor, selected)  # unrecognized key -> no-op
+    assert action is None and selected == [True, True, False]
+    print("ok: watch_apply_key_pure_transitions")
 
 
 def test_watch_queue_roundtrip() -> None:
@@ -991,7 +1029,9 @@ if __name__ == "__main__":
     test_parse_relative_date_edges()
     test_extract_video_id_more_forms()
     test_extract_video_id_is_shared_with_htmltext()
+    test_looks_like_youtube_reference()
     test_watch_check_new_url_and_poll_once()
+    test_watch_apply_key_pure_transitions()
     test_watch_queue_roundtrip()
     test_group_consecutive_orphan_and_dropped_replies()
     test_group_consecutive_merge_then_dedup()

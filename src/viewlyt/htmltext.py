@@ -140,6 +140,27 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
 
 
+_YOUTUBE_HOST_RE = re.compile(r"youtube\.com|youtu\.be", re.I)
+
+
+def looks_like_youtube_reference(text: str | None) -> bool:
+    """Whether ``text`` is worth handing to :func:`extract_video_id` at all.
+
+    Guards passive listeners — like ``vl watch``'s clipboard poll, which sees
+    ANY copied text, not just deliberate CLI input — against
+    :func:`extract_video_id`'s last-resort "any 11-char run" fallback: fine for
+    an explicit URL/id a user typed, but it would treat ordinary prose that
+    happens to contain an 11-character token as a video id. Accepts a bare
+    video id or anything mentioning a YouTube host; rejects everything else.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    if _VIDEO_ID_RE.match(text):
+        return True
+    return bool(_YOUTUBE_HOST_RE.search(text))
+
+
 # Authors we treat as "not a real, identifiable person": never merge or dedup
 # two of these together (two anonymous comments are not the same author).
 _ANON_AUTHORS = {"", "unknown"}
