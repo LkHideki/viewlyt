@@ -165,6 +165,7 @@ class LiveServer:
         self.processing = False
         self.last_latency_ms: int | None = None
         self.avg_latency_ms: int | None = None
+        self.analyzing_probe_ids: list[str] = []  # ids in the CURRENTLY in-flight batch
         self.ingested = 0
         self.total_tokens = 0
         self.total_cost = 0.0
@@ -205,6 +206,7 @@ class LiveServer:
             "ingested": self.ingested,
             "latency_ms": self.last_latency_ms,
             "avg_latency_ms": self.avg_latency_ms,
+            "analyzing_probe_ids": list(self.analyzing_probe_ids),
             "tokens_total": self.total_tokens,
             "cost_total": round(self.total_cost, 6),
             "probes": [p.to_dict() for p in self.probes.values()],
@@ -618,14 +620,20 @@ async def _run_window(
     """Run one snapshot through the probes, always clearing the ``processing`` guard.
 
     Brackets the analysis with ``proc`` frames so the dashboard can show a live
-    'analyzing…' indicator and the latency of the last batch.
+    'analyzing…' indicator and the latency of the last batch. ``probe_ids`` rides
+    along on both frames so the dashboard can glow the border of just the cards
+    IN THIS BATCH — probes each have their own refresh cadence, so at any moment
+    a batch is usually a subset of all probes, never "every card at once".
     """
-    await server.dash.broadcast({"type": "proc", "active": True})
+    probe_ids = [p.id for p in probes] if probes else []
+    server.analyzing_probe_ids = probe_ids
+    await server.dash.broadcast({"type": "proc", "active": True, "probe_ids": probe_ids})
     t0 = time.monotonic()
     try:
         await process_window(server, window, now_wall, probes)
     finally:
         server.processing = False
+        server.analyzing_probe_ids = []
         server.last_latency_ms = round((time.monotonic() - t0) * 1000)
         # Real request->response round-trip, averaged over every LLM call so far
         # (not the whole-window elapsed above, which also covers fan-out/broadcast).
@@ -639,6 +647,7 @@ async def _run_window(
                 "active": False,
                 "latency_ms": server.last_latency_ms,
                 "avg_latency_ms": server.avg_latency_ms,
+                "probe_ids": probe_ids,
             }
         )
 

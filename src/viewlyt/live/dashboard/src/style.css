@@ -513,6 +513,33 @@ button:active {
   position: relative;
 }
 
+/* "Thinking" state: this card's probe is IN THE CURRENTLY in-flight batch
+   (each probe can have its own refresh cadence, so this is per-card, never a
+   single global light). Border + shadow only — background/content untouched. */
+@keyframes viewlyt-analyzing-glow {
+  0%,
+  100% {
+    border-color: rgba(76, 139, 245, 0.55);
+    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.3), 0 0 10px 1px rgba(76, 139, 245, 0.25);
+  }
+  50% {
+    border-color: rgba(76, 139, 245, 0.95);
+    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.75), 0 0 20px 5px rgba(76, 139, 245, 0.6);
+  }
+}
+
+.result-card.analyzing {
+  animation: viewlyt-analyzing-glow 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-card.analyzing {
+    animation: none;
+    border-color: rgba(76, 139, 245, 0.85);
+    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.45);
+  }
+}
+
 /* A card the user widened to two columns. */
 .result-card.span-2 {
   grid-column: span 2;

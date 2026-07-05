@@ -70,6 +70,7 @@ interface StateMsg {
   ingested: number;
   latency_ms?: number | null;
   avg_latency_ms?: number | null;
+  analyzing_probe_ids?: string[];
   tokens_total?: number;
   cost_total?: number;
   probes: ProbeDescriptor[];
@@ -98,6 +99,7 @@ interface ProcMsg {
   active: boolean;
   latency_ms?: number;
   avg_latency_ms?: number;
+  probe_ids?: string[];
 }
 
 interface ErrorMsg {
@@ -2705,6 +2707,20 @@ function setGlobalPause(paused: boolean): void {
   document.getElementById("paused-badge")?.classList.toggle("hidden", !paused);
 }
 
+/**
+ * Glow the border of exactly the cards IN THIS BATCH — each probe can run on
+ * its own cadence, so "analyzing" is per-card, never a single global light.
+ * Called from the transient 'proc' frame (batch start/end) and from 'state'
+ * (so a dashboard that connects/reconnects mid-batch still sees it).
+ */
+function setAnalyzingProbes(probeIds: string[], active: boolean): void {
+  const ids = new Set(probeIds);
+  document.querySelectorAll<HTMLDivElement>(".result-card").forEach((card) => {
+    const id = card.dataset["probeId"];
+    card.classList.toggle("analyzing", active && id !== undefined && ids.has(id));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Cost frame (A5): update the Cost stat card. Shows USD when the provider
 // reports it, else a compact token count. Both elements are optional — bail
@@ -2819,6 +2835,10 @@ function handleState(msg: StateMsg): void {
     probeState.set(p.id, p);
   }
   syncCardsFromState();
+  // Cards now exist (ensureCard, just above) — safe to toggle their glow. Runs
+  // AFTER syncCardsFromState so a dashboard connecting mid-batch sees it too.
+  const analyzingIds = msg.analyzing_probe_ids ?? [];
+  setAnalyzingProbes(analyzingIds, analyzingIds.length > 0);
 
   // A state frame is the ack of an ask-bar rewrite — restore the send button.
   if (askPending) setAskPending(false);
@@ -2873,6 +2893,7 @@ function connectDashboard(): void {
         break;
       case "proc":
         setProc(msg.active, msg.latency_ms, msg.avg_latency_ms);
+        setAnalyzingProbes(msg.probe_ids ?? [], msg.active);
         break;
       case "cost":
         handleCost(msg);
