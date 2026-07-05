@@ -189,6 +189,10 @@ class ClassificationProbe(Probe):
         ema_alpha: float = 0.0,
         chart: str = "bars",
         colors: dict[str, str] | None = None,
+        x_label: str = "",
+        y_label: str = "",
+        value_mode: str = "pct",
+        pct_decimals: int = 0,
     ) -> None:
         super().__init__(id, label)
         self.question = question
@@ -196,6 +200,13 @@ class ClassificationProbe(Probe):
         self.ema_alpha = float(ema_alpha)
         self.chart = str(chart) if chart else "bars"
         self.colors: dict[str, str] = dict(colors) if colors else {}
+        # descartes-only presentation settings: what the x/y axes represent, and
+        # whether cells show a raw count or a percentage (with how many decimals).
+        # Purely cosmetic — never consulted by aggregate()/output_schema().
+        self.x_label = str(x_label or "")
+        self.y_label = str(y_label or "")
+        self.value_mode = str(value_mode) if value_mode else "pct"
+        self.pct_decimals = int(pct_decimals or 0)
         self._ema: dict[str, float] | None = None
 
     def build_prompt(self, messages: list[ChatMessage]) -> tuple[str, str]:
@@ -306,9 +317,15 @@ class ClassificationProbe(Probe):
             categories=self.categories,
             ema_alpha=self.ema_alpha,
             chart=self.chart,
+            value_mode=self.value_mode,
+            pct_decimals=self.pct_decimals,
         )
         if self.colors:
             d["colors"] = self.colors
+        if self.x_label:
+            d["x_label"] = self.x_label
+        if self.y_label:
+            d["y_label"] = self.y_label
         return d
 
     @classmethod
@@ -330,6 +347,10 @@ class ClassificationProbe(Probe):
             ema_alpha=float(d.get("ema_alpha") or 0.0),
             chart=str(d.get("chart") or "bars"),
             colors=colors,
+            x_label=str(d.get("x_label") or ""),
+            y_label=str(d.get("y_label") or ""),
+            value_mode=str(d.get("value_mode") or "pct"),
+            pct_decimals=int(d.get("pct_decimals") or 0),
         )
 
 

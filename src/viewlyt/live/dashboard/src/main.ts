@@ -119,6 +119,12 @@ interface ProbeDescriptor {
   // Optional per-category color overrides (category name -> hex like "#4c8bf5").
   // Empty/missing entries fall back to the palette (getCategoryColor).
   colors?: Record<string, string>;
+  // descartes-only presentation settings: what the x/y axes represent, whether
+  // cells show a raw count or a percentage, and with how many decimals.
+  x_label?: string;
+  y_label?: string;
+  value_mode?: "pct" | "abs";
+  pct_decimals?: number;
   max_words?: number;
   // Per-probe overrides; 0/absent = follow the global Window config.
   interval_s?: number; // own re-analysis cadence, seconds
@@ -1295,6 +1301,26 @@ function descartesRemoveAxis(probeId: string, axis: "x" | "y", label: string): v
   applyDescartesAxes(probeId, axis === "x" ? next : xs, axis === "y" ? next : ys);
 }
 
+/** Flip a descartes probe between showing a raw message count ("#") and a
+ *  percentage ("%") per cell — persisted like any other axis edit. */
+function descartesToggleValueMode(probeId: string): void {
+  const prev = probeState.get(probeId);
+  if (!prev) return;
+  const probe: ProbeDescriptor = {
+    ...prev,
+    value_mode: prev.value_mode === "abs" ? "pct" : "abs",
+  };
+  send({ op: "upsert_probe", probe });
+  probeState.set(probeId, probe);
+  const card = document.querySelector<HTMLDivElement>(
+    `[data-probe-id="${CSS.escape(probeId)}"]`,
+  );
+  if (card) {
+    const vs = viewState.get(probeId);
+    renderDisplay(card, probeId, "classification", vs ? vs.index : 0);
+  }
+}
+
 /** One axis tick: a click-to-rename label + a hover-reveal "✕" to remove the
  *  whole column/row. Used for both the X (bottom) and Y (left) gutters. */
 function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClass: string): HTMLElement {
@@ -1377,12 +1403,15 @@ function buildAxisAddButton(
   return btn;
 }
 
-function renderDescartes(views: CatView[], probeId: string): HTMLElement {
+function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElement {
   const root = document.createElement("div");
   root.className = "descartes";
 
-  const categories = probeState.get(probeId)?.categories ?? [];
+  const probe = probeState.get(probeId);
+  const categories = probe?.categories ?? [];
   const derived = deriveAxes(categories);
+  const valueMode: "pct" | "abs" = probe?.value_mode === "abs" ? "abs" : "pct";
+  const decimals = Math.min(2, Math.max(0, Math.round(probe?.pct_decimals ?? 0)));
   // Clamp at render time (not just on interactive edits): categories can also
   // arrive from the LLM/ask-bar or a pasted "Import JSON" probe spec, neither of
   // which goes through applyDescartesAxes's own MAX_AXIS cap. Anything beyond
@@ -1476,14 +1505,17 @@ function renderDescartes(views: CatView[], probeId: string): HTMLElement {
         const alpha = 0.12 + 0.88 * (pct / maxPct);
         cell.style.background = `rgba(76, 139, 245, ${alpha.toFixed(3)})`;
         if (key === modalKey && modalPct > 0) cell.classList.add("is-modal");
+        const abs = Math.round((pct / 100) * n);
+        const value =
+          valueMode === "abs" ? String(abs) : `${pct.toFixed(decimals)}%`;
         if (pct >= 2) {
           const t = document.createElement("span");
           t.className = "descartes-pct";
-          t.textContent = pct.toFixed(0);
+          t.textContent = value;
           cell.appendChild(t);
         }
-        cell.title = `(${x}, ${y}) — ${pct.toFixed(1)}%`;
-        cell.setAttribute("aria-label", `${x}, ${y}: ${pct.toFixed(1)}%`);
+        cell.title = `(${x}, ${y}) — ${value}`;
+        cell.setAttribute("aria-label", `${x}, ${y}: ${value}`);
       }
       plot.appendChild(cell);
     }
@@ -1501,7 +1533,29 @@ function renderDescartes(views: CatView[], probeId: string): HTMLElement {
   main.appendChild(buildAxisAddButton(probeId, "x", "after"));
   main.appendChild(buildAxisAddButton(probeId, "y", "before"));
   main.appendChild(buildAxisAddButton(probeId, "y", "after"));
-  root.appendChild(main);
+
+  // Axis titles — what x/y represent, set in the Edit panel — placed right
+  // next to their axis: Y rotated alongside the row ticks, X under the column
+  // ticks. Hidden entirely until named (no placeholder clutter by default).
+  const graph = document.createElement("div");
+  graph.className = "descartes-graph";
+  if (probe?.y_label) {
+    const yTitle = document.createElement("div");
+    yTitle.className = "descartes-ytitle";
+    yTitle.textContent = probe.y_label;
+    graph.appendChild(yTitle);
+  }
+  const body = document.createElement("div");
+  body.className = "descartes-body";
+  body.appendChild(main);
+  if (probe?.x_label) {
+    const xTitle = document.createElement("div");
+    xTitle.className = "descartes-xtitle";
+    xTitle.textContent = probe.x_label;
+    body.appendChild(xTitle);
+  }
+  graph.appendChild(body);
+  root.appendChild(graph);
 
   // Legend: a single sequential-intensity gradient (this is a generic density
   // map, not a win/lose outcome) + the out-of-grid bucket, if any.
@@ -1514,6 +1568,14 @@ function renderDescartes(views: CatView[], probeId: string): HTMLElement {
   bar.className = "descartes-legend-bar";
   legend.appendChild(bar);
   legend.appendChild(document.createTextNode("mais"));
+  const modeBtn = document.createElement("button");
+  modeBtn.type = "button";
+  modeBtn.className = "descartes-valuemode";
+  modeBtn.textContent = valueMode === "abs" ? "#" : "%";
+  modeBtn.title =
+    valueMode === "abs" ? "Mostrar como percentual" : "Mostrar como contagem (#)";
+  modeBtn.addEventListener("click", () => descartesToggleValueMode(probeId));
+  legend.appendChild(modeBtn);
   foot.appendChild(legend);
   if (outro > 0.05) {
     const o = document.createElement("span");
@@ -1594,7 +1656,7 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
       viz.appendChild(renderViolin(views, probeId));
       break;
     case "descartes":
-      viz.appendChild(renderDescartes(views, probeId));
+      viz.appendChild(renderDescartes(views, probeId, snap.n));
       break;
     default:
       viz.appendChild(renderBars(probeId, views));
@@ -2169,6 +2231,63 @@ function openEditor(probeId: string): void {
       hint.className = "hint";
       hint.textContent = "Edite as colunas e linhas direto no gráfico do card.";
       editCats.appendChild(hint);
+
+      const axisRow = document.createElement("div");
+      axisRow.className = "edit-axis-row";
+      const xLabelInput = document.createElement("input");
+      xLabelInput.className = "edit-xlabel";
+      xLabelInput.type = "text";
+      xLabelInput.placeholder = "Eixo X representa";
+      xLabelInput.value = probe?.x_label ?? "";
+      const yLabelInput = document.createElement("input");
+      yLabelInput.className = "edit-ylabel";
+      yLabelInput.type = "text";
+      yLabelInput.placeholder = "Eixo Y representa";
+      yLabelInput.value = probe?.y_label ?? "";
+      axisRow.appendChild(xLabelInput);
+      axisRow.appendChild(yLabelInput);
+      editCats.appendChild(axisRow);
+
+      const decimalsField = document.createElement("label");
+      decimalsField.className = "edit-setting";
+      const decimalsSpan = document.createElement("span");
+      decimalsSpan.textContent = "Casas decimais (%)";
+      const decimalsInput = document.createElement("input");
+      decimalsInput.className = "edit-decimals";
+      decimalsInput.type = "number";
+      decimalsInput.min = "0";
+      decimalsInput.max = "2";
+      decimalsInput.step = "1";
+      decimalsInput.value = String(probe?.pct_decimals ?? 0);
+      decimalsField.appendChild(decimalsSpan);
+      decimalsField.appendChild(decimalsInput);
+
+      // "#" (absolute count) vs "%" (relative share) — the same toggle as the
+      // card's own footer button, mirrored here so it's reachable from Edit too.
+      const modeRow = document.createElement("div");
+      modeRow.className = "ask-chips edit-valuemode-row";
+      const pctBtn = document.createElement("button");
+      pctBtn.type = "button";
+      pctBtn.className = "ask-chip edit-valuemode-btn";
+      pctBtn.dataset["mode"] = "pct";
+      pctBtn.textContent = "%";
+      const absBtn = document.createElement("button");
+      absBtn.type = "button";
+      absBtn.className = "ask-chip edit-valuemode-btn";
+      absBtn.dataset["mode"] = "abs";
+      absBtn.textContent = "#";
+      const syncMode = (mode: string): void => {
+        pctBtn.classList.toggle("ask-chip-active", mode !== "abs");
+        absBtn.classList.toggle("ask-chip-active", mode === "abs");
+        decimalsField.classList.toggle("hidden", mode === "abs");
+      };
+      pctBtn.addEventListener("click", () => syncMode("pct"));
+      absBtn.addEventListener("click", () => syncMode("abs"));
+      syncMode(probe?.value_mode ?? "pct");
+      modeRow.appendChild(pctBtn);
+      modeRow.appendChild(absBtn);
+      editCats.appendChild(modeRow);
+      editCats.appendChild(decimalsField);
     } else if (kind === "classification") {
       editCats.classList.remove("hidden");
       const cats = probe?.categories ?? [];
@@ -2214,6 +2333,14 @@ function saveEditor(probeId: string): void {
     // the flat .edit-cat-row list is never populated for it, so reading it here
     // would silently wipe the whole grid. Preserve them; only label/question/
     // per-probe settings come from this editor.
+    const xLabel = card.querySelector<HTMLInputElement>(".edit-xlabel")?.value.trim() ?? "";
+    const yLabel = card.querySelector<HTMLInputElement>(".edit-ylabel")?.value.trim() ?? "";
+    const decimalsRaw = Number(card.querySelector<HTMLInputElement>(".edit-decimals")?.value);
+    const decimals = Number.isFinite(decimalsRaw) ? Math.min(2, Math.max(0, Math.round(decimalsRaw))) : 0;
+    const activeModeBtn = card.querySelector<HTMLButtonElement>(
+      ".edit-valuemode-btn.ask-chip-active",
+    );
+    const valueMode = activeModeBtn?.dataset["mode"] === "abs" ? "abs" : "pct";
     probe = {
       kind: "classification",
       id: probeId,
@@ -2222,6 +2349,10 @@ function saveEditor(probeId: string): void {
       categories: prev?.categories ?? [],
       chart: "descartes",
       colors: prev?.colors ?? {},
+      x_label: xLabel,
+      y_label: yLabel,
+      value_mode: valueMode,
+      pct_decimals: decimals,
     };
   } else if (kind === "classification") {
     const categories: string[] = [];

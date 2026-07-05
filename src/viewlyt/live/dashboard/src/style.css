@@ -469,6 +469,12 @@ button:active {
   .result-card.span-2 {
     grid-column: auto;
   }
+  /* The card is back to a single track here, so the descartes board must not
+     keep the widened caps — it would overflow the (narrower) card. */
+  .result-card.span-2 .descartes-plot {
+    grid-template-columns: auto repeat(var(--cols), minmax(0, 84px));
+    grid-template-rows: repeat(var(--rows), minmax(28px, 46px)) auto;
+  }
 }
 
 /* Collapsed card: header (badge + label + meta) stays; body folds away. */
@@ -1759,6 +1765,25 @@ input[type="file"]::file-selector-button:hover {
   padding: 0.2rem 0.45rem;
 }
 
+/* --- Descartes axis-caption inputs inside the editor --- */
+
+.edit-axis-row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.35rem 0;
+}
+
+.edit-axis-row input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.edit-valuemode-row {
+  margin: 0.35rem 0;
+}
+
 /* --- Category list inside the editor --- */
 
 .edit-categories {
@@ -1950,6 +1975,46 @@ input.edit-cat-name {
   gap: 3px;
   justify-content: start;
   align-items: stretch;
+}
+
+/* A card widened to two columns has roughly double the width to spend — let
+   the board grow into it instead of staying pinned at the 1-column cap. */
+.result-card.span-2 .descartes-plot {
+  grid-template-columns: auto repeat(var(--cols), minmax(0, 160px));
+  grid-template-rows: repeat(var(--rows), minmax(36px, 72px)) auto;
+}
+
+/* What the x/y axes represent (set in the card's Edit panel), placed right
+   next to their axis: Y rotated alongside the row ticks, X under the columns. */
+.descartes-graph {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.descartes-ytitle {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.descartes-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.descartes-xtitle {
+  text-align: center;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
 }
 
 .descartes-cell {
@@ -2166,6 +2231,25 @@ input.edit-cat-name {
   font-size: 0.7rem;
   color: var(--text-dim);
   font-family: var(--font-mono);
+}
+
+/* "#"/"%" — flips a cell's displayed value between a raw count and a share. */
+.descartes-valuemode {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+}
+
+.descartes-valuemode:hover,
+.descartes-valuemode:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 /* Empty state: no axes yet → offer to seed the default grid. */

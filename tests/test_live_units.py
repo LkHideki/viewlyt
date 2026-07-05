@@ -354,6 +354,39 @@ def test_classification_roundtrip() -> None:
     print("ok: classification_roundtrip")
 
 
+def test_classification_descartes_settings_default() -> None:
+    orig = _clf(["(1, 1)", "outro"])
+    d = orig.to_dict()
+    assert d["value_mode"] == "pct"
+    assert d["pct_decimals"] == 0
+    assert "x_label" not in d and "y_label" not in d
+    restored = probe_from_dict(d)
+    assert isinstance(restored, ClassificationProbe)
+    assert restored.x_label == "" and restored.y_label == ""
+    print("ok: classification_descartes_settings_default")
+
+
+def test_classification_descartes_settings_roundtrip() -> None:
+    orig = ClassificationProbe(
+        id="score",
+        label="Placar",
+        question="Qual o placar?",
+        categories=["(0, 0)", "(1, 0)", "outro"],
+        chart="descartes",
+        x_label="Noruega",
+        y_label="Brasil",
+        value_mode="abs",
+        pct_decimals=2,
+    )
+    restored = probe_from_dict(orig.to_dict())
+    assert isinstance(restored, ClassificationProbe)
+    assert restored.x_label == "Noruega"
+    assert restored.y_label == "Brasil"
+    assert restored.value_mode == "abs"
+    assert restored.pct_decimals == 2
+    print("ok: classification_descartes_settings_roundtrip")
+
+
 def test_open_summary_roundtrip() -> None:
     orig = _opn()
     d = orig.to_dict()
@@ -435,6 +468,8 @@ if __name__ == "__main__":
     test_classification_ema_smoothing()
     test_open_summary_aggregate_returns_text()
     test_classification_roundtrip()
+    test_classification_descartes_settings_default()
+    test_classification_descartes_settings_roundtrip()
     test_open_summary_roundtrip()
     test_probe_from_dict_unknown_kind_raises()
     test_probe_per_probe_overrides_roundtrip()
