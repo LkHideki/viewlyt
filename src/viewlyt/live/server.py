@@ -677,9 +677,12 @@ async def worker(server: LiveServer) -> None:
             now = time.monotonic()
             # A user 'force_run' analyzes the current buffer immediately, bypassing the
             # pause state, the refresh timer, and the idle cost-guard.
+            # Peek only — cleared below, and ONLY once the batch actually launches.
+            # Clearing it here unconditionally would drop the "run immediately" intent
+            # whenever a batch happened to already be in flight at this exact tick
+            # (common with a slow LLM), silently demoting a just-added probe back to
+            # ordinary due-scheduling.
             forced = server.force_now
-            if forced:
-                server.force_now = False
             # Otherwise emit a window only when probes are due AND new messages arrived
             # since the last analysis — so an idle/quiet chat never triggers a paid LLM
             # request. A probe with its own ``interval_s`` follows its own clock; one
@@ -726,6 +729,8 @@ async def worker(server: LiveServer) -> None:
                 and (forced or due)
                 and not over_budget
             ):
+                if forced:
+                    server.force_now = False
                 # Capture the cleaned sample synchronously (O(n), not O(capacity)),
                 # sized for the largest per-probe sample_n in this batch.
                 batch = due_probes if due_probes else list(server.probes.values())
