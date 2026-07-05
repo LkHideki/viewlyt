@@ -73,7 +73,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/viewlyt"]
-exclude = ["src/viewlyt/live/dashboard/node_modules", "src/viewlyt/live/dashboard/dist"]
+# The wheel ships only the BUILT dashboard (src/viewlyt/live/static/); the Vite/TS
+# source (dashboard/) is build-time only — kept in the sdist, excluded from the wheel.
+exclude = ["src/viewlyt/live/dashboard"]
 
 [dependency-groups]
 dev = [
