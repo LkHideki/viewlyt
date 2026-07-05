@@ -249,13 +249,19 @@ uv run vl watch --drop-last   # pasted the wrong thing? drop it
 Any flag `vl` itself accepts (`-c`/`-t`/`-r`/`-u`/`--limit-comments`/...) is
 passed straight through to the batch dispatch, unchanged.
 
-- Stopping (Ctrl-C, `--max-count`, or `--timeout`) opens a small synchronous
-  review — `l` list, `u` undo the last item, `r` run, `q` quit without running
-  — unless `-y`/`--yes` skips straight to dispatch.
+- Stopping (Ctrl-C, `--max-count`, or `--timeout`) opens an interactive
+  checkbox review — every queued URL starts checked; `↑`/`↓`/`j`/`k` move,
+  `space` toggles the item under the cursor, `enter` dispatches everything
+  still checked, `esc`/`q` quits without running anything. Unchecked items
+  stay queued for next time (nothing is deleted) — unless `-y`/`--yes` skips
+  straight to dispatching the whole queue.
 - The queue is written to disk after **every** accepted URL, so a `kill -9`
   only risks the one item in flight, never the rest of the queue.
 - Selenium-free until the queue actually dispatches: polling the clipboard
   never opens a browser.
+- Only text that mentions a YouTube host (or is itself a bare 11-char video
+  id) is ever considered — copying ordinary prose while you work never gets
+  mistaken for a video.
 - **v1 only queues then dispatches** — it does not start scraping a video the
   moment its URL is detected. That would mean reworking the batch pool's
   closed-queue contract to accept work mid-run, at the risk of regressions in

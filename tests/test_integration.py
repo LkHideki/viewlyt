@@ -10,6 +10,7 @@ would not rebind the names the code actually calls.
 from __future__ import annotations
 
 import argparse
+import contextlib
 
 import pytest
 from conftest import FakeDriver, make_scrape_one
@@ -1040,30 +1041,43 @@ def test_watch_drop_last_on_empty_queue_is_noop(tmp_path, capsys):
     assert not qf.exists()
 
 
-def test_watch_review_prompt_undo_then_run(monkeypatch, tmp_path):
-    qf = tmp_path / "queue.json"
+def test_watch_review_tui_deselect_then_run(monkeypatch):
     queue = [
         {"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"},
         {"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"},
     ]
-    watch._save_queue(qf, queue)
-    responses = iter(["u", "r"])
-    monkeypatch.setattr("builtins.input", lambda *_a: next(responses))
+    keys = iter(["down", "space", "enter"])  # move to item 2, deselect it, run item 1
+    monkeypatch.setattr(watch, "_read_key", lambda: next(keys))
+    monkeypatch.setattr(watch, "_raw_terminal", contextlib.nullcontext)
 
-    assert watch._review_prompt(queue, qf) == "run"
-    assert [i["video_id"] for i in queue] == ["aaaaaaaaaaa"]  # last item undone
-    assert watch._load_queue(qf) == queue  # the undo was persisted
+    to_run = watch._review_tui(queue)
+    assert [i["video_id"] for i in to_run] == ["aaaaaaaaaaa"]
+    assert [i["video_id"] for i in queue] == ["bbbbbbbbbbb"]  # deselected item stays queued
 
 
-def test_watch_review_prompt_quit_on_eof(monkeypatch, tmp_path):
-    qf = tmp_path / "queue.json"
+def test_watch_review_tui_quit_leaves_queue_untouched(monkeypatch):
     queue = [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}]
+    monkeypatch.setattr(watch, "_read_key", lambda: "quit")
+    monkeypatch.setattr(watch, "_raw_terminal", contextlib.nullcontext)
 
-    def raise_eof(*_a):
-        raise EOFError
+    assert watch._review_tui(queue) is None
+    assert len(queue) == 1
 
-    monkeypatch.setattr("builtins.input", raise_eof)
-    assert watch._review_prompt(queue, qf) == "quit"
+
+def test_watch_review_tui_cursor_wraps_and_toggles_correct_item(monkeypatch):
+    queue = [
+        {"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"},
+        {"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"},
+        {"video_id": "ccccccccccc", "url": "u3", "added_at": "z"},
+    ]
+    # up from cursor 0 wraps to the last item; deselect it; run the rest.
+    keys = iter(["up", "space", "enter"])
+    monkeypatch.setattr(watch, "_read_key", lambda: next(keys))
+    monkeypatch.setattr(watch, "_raw_terminal", contextlib.nullcontext)
+
+    to_run = watch._review_tui(queue)
+    assert [i["video_id"] for i in to_run] == ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+    assert [i["video_id"] for i in queue] == ["ccccccccccc"]
 
 
 def test_watch_run_and_yes_dispatches_to_cli_main(monkeypatch, tmp_path):
@@ -1100,22 +1114,51 @@ def test_watch_quiet_flag_forwarded_to_dispatch(monkeypatch, tmp_path):
     assert "--quiet" in captured["argv"]
 
 
-def test_watch_run_without_yes_prompts_then_dispatches(monkeypatch, tmp_path):
+def test_watch_run_without_yes_requires_a_real_tty(monkeypatch, tmp_path):
+    """Under pytest neither stdin nor stdout is a real tty — the raw-mode TUI
+    can't run, so it must fail loud (pointing at --yes) instead of hanging."""
     qf = tmp_path / "queue.json"
     watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
-    monkeypatch.setattr("builtins.input", lambda *_a: "r")
+
+    def unreached(argv):
+        raise AssertionError("cli.main must not be called without a tty/--yes")
+
+    monkeypatch.setattr(cli, "main", unreached)
+    rc = watch.main(["--queue-file", str(qf), "--run", "-o", str(tmp_path)])
+    assert rc == 2
+    assert watch._load_queue(qf) == [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}]
+
+
+def test_watch_run_without_yes_uses_review_tui(monkeypatch, tmp_path):
+    qf = tmp_path / "queue.json"
+    watch._save_queue(
+        qf,
+        [
+            {"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"},
+            {"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"},
+        ],
+    )
+    monkeypatch.setattr(watch.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(watch.sys.stdout, "isatty", lambda: True)
+    keys = iter(["down", "space", "enter"])  # deselect item 2, run item 1 only
+    monkeypatch.setattr(watch, "_read_key", lambda: next(keys))
+    monkeypatch.setattr(watch, "_raw_terminal", contextlib.nullcontext)
     captured = {}
     monkeypatch.setattr(cli, "main", lambda argv: captured.__setitem__("argv", argv) or 0)
 
     rc = watch.main(["--queue-file", str(qf), "--run", "-o", str(tmp_path)])
     assert rc == 0
     assert captured["argv"][0] == "u1"
+    assert watch._load_queue(qf) == [{"video_id": "bbbbbbbbbbb", "url": "u2", "added_at": "y"}]
 
 
 def test_watch_run_without_yes_quit_does_not_dispatch(monkeypatch, tmp_path):
     qf = tmp_path / "queue.json"
     watch._save_queue(qf, [{"video_id": "aaaaaaaaaaa", "url": "u1", "added_at": "x"}])
-    monkeypatch.setattr("builtins.input", lambda *_a: "q")
+    monkeypatch.setattr(watch.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(watch.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(watch, "_read_key", lambda: "quit")
+    monkeypatch.setattr(watch, "_raw_terminal", contextlib.nullcontext)
 
     def unreached(argv):
         raise AssertionError("cli.main must not be called when the review is quit")
