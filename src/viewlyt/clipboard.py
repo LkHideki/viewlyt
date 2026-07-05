@@ -1,7 +1,7 @@
 """System clipboard shim — the smallest possible, stdlib-only.
 
 Kept out of ``cli`` (which imports Selenium) so light subcommands like
-``vl split`` can copy without paying that cost.
+``vl split``/``vl watch`` can copy/read without paying that cost.
 """
 
 from __future__ import annotations
@@ -32,3 +32,37 @@ def copy_to_clipboard(text: str) -> bool:
         except Exception:  # tool present but failed (e.g. no DISPLAY) -> try next
             continue
     return False
+
+
+def read_clipboard() -> str | None:
+    """Read the system clipboard's text via the first available OS tool.
+
+    Tries pbpaste (macOS), PowerShell's Get-Clipboard (Windows), then xclip/xsel
+    (Linux/X11). Raises ``RuntimeError`` when NO such tool exists on the system at
+    all — a poller (``vl watch``) must know up front it will never work, instead
+    of looping silently forever. Returns ``None`` when a tool exists but this
+    particular read failed (e.g. xclip with no ``$DISPLAY``): a transient hiccup
+    the caller just retries on the next tick.
+    """
+    import shutil
+    import subprocess
+
+    candidates = (
+        ["pbpaste"],
+        ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+        ["xclip", "-selection", "clipboard", "-o"],
+        ["xsel", "--clipboard", "--output"],
+    )
+    found_tool = False
+    for cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        found_tool = True
+        try:
+            out = subprocess.run(cmd, capture_output=True, check=True)
+            return out.stdout.decode("utf-8")
+        except Exception:  # tool present but failed (e.g. no DISPLAY) -> try next
+            continue
+    if not found_tool:
+        raise RuntimeError("no clipboard read tool found (pbpaste/powershell/xclip/xsel)")
+    return None
