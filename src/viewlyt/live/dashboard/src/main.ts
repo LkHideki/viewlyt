@@ -366,7 +366,7 @@ function svg<K extends keyof SVGElementTagNameMap>(
 // The sparkline is a compact ACCENT, not the chart: cap its points so a long
 // session (up to 60 snapshots) can't widen its auto-sized grid column and
 // starve the 1fr track of the real (colored) bar.
-const SPARK_POINTS = 16;
+const SPARK_POINTS = 10;
 
 /** Map a 0–100 value to one of the 8 unicode block characters (last N points). */
 function sparkline(values: number[]): string {
@@ -1194,7 +1194,6 @@ function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): 
   const range = card.querySelector<HTMLInputElement>(".scrub-range");
   const meta = card.querySelector<HTMLDivElement>(".scrub-meta");
   const live = card.querySelector<HTMLSpanElement>(".scrub-live");
-  const headerMeta = card.querySelector<HTMLSpanElement>(".result-meta");
 
   if (scrubber) scrubber.classList.toggle("is-single", history.length <= 1);
   if (range) {
@@ -1220,7 +1219,6 @@ function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): 
       live.classList.add("scrub-behind");
     }
   }
-  if (headerMeta && snap) headerMeta.textContent = snapStamp(snap);
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,10 +1341,6 @@ function ensureCard(probeId: string): HTMLDivElement {
     card.remove();
   });
 
-  const metaEl = document.createElement("span");
-  metaEl.className = "result-meta";
-
-  right.appendChild(metaEl);
   right.appendChild(select);
   right.appendChild(editBtn);
   right.appendChild(removeBtn);
