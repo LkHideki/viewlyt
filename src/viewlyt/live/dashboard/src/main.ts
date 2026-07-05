@@ -1243,6 +1243,25 @@ function editorOpen(card: HTMLDivElement): boolean {
   return editor != null && !editor.classList.contains("hidden");
 }
 
+// --- Column-span control glyph (1 vs 2 grid columns) -----------------------
+function spanRect(x: number, w: number): SVGRectElement {
+  return svg("rect", { x, y: 2.5, width: w, height: 11, rx: 1.5 });
+}
+
+/** A tiny panel glyph: two side-by-side panels for the "two columns" target,
+ *  one wide panel for the "one column" target. Built via the shared `svg()`
+ *  helper (no innerHTML), so it needs no sanitising. */
+function spanGlyph(twoCol: boolean): SVGSVGElement {
+  const s = svg("svg", { viewBox: "0 0 16 16", width: 13, height: 13, "aria-hidden": "true" });
+  if (twoCol) {
+    s.appendChild(spanRect(2, 5));
+    s.appendChild(spanRect(9, 5));
+  } else {
+    s.appendChild(spanRect(2.5, 11));
+  }
+  return s;
+}
+
 /**
  * Find (or build) the .result-card for a probe. A freshly-built card has the
  * FULL skeleton and its static handlers wired exactly once; the kind-specific
@@ -1498,6 +1517,29 @@ function ensureCard(probeId: string): HTMLDivElement {
   placeholder.textContent = "Waiting for first result…";
   display.appendChild(placeholder);
   card.appendChild(display);
+
+  // --- column-span toggle: a discreet button at the card's bottom-right that
+  // flips the card between one and two grid columns. Purely a client display
+  // preference (like collapse), persisted per-probe in localStorage. ---
+  const spanBtn = document.createElement("button");
+  spanBtn.type = "button";
+  spanBtn.className = "card-span";
+  const spanKey = "viewlyt.cardspan." + probeId;
+  const setSpan = (wide: boolean): void => {
+    card.classList.toggle("span-2", wide);
+    spanBtn.classList.toggle("is-wide", wide);
+    spanBtn.setAttribute("aria-pressed", String(wide));
+    spanBtn.title = wide ? "Shrink to one column" : "Expand to two columns";
+    // The glyph previews the TARGET state (what a click will produce).
+    spanBtn.replaceChildren(spanGlyph(!wide));
+  };
+  setSpan(lsGet(spanKey) === "1");
+  spanBtn.addEventListener("click", () => {
+    const next = !card.classList.contains("span-2");
+    setSpan(next);
+    lsSet(spanKey, next ? "1" : "0");
+  });
+  card.appendChild(spanBtn);
 
   // Drop the top-level "Waiting for results…" hint (a DIRECT child of #results;
   // never a card's own nested placeholder) the moment the first card appears.
