@@ -25,18 +25,37 @@ from pathlib import Path
 _SUBCOMMANDS = ("ask", "live", "split", "watch")
 
 
+def _find_dotenv() -> Path | None:
+    """Nearest ``.env`` walking up from the CWD to the filesystem root.
+
+    Running ``vl`` from a subdirectory of the project (not just its root) still
+    finds the project's ``.env`` — the reason a plain ``Path.cwd()/.env`` check
+    would silently miss it and leave the API key empty.
+    """
+    cwd = Path.cwd()
+    for directory in (cwd, *cwd.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _load_dotenv(path: Path | None = None) -> None:
     """Best-effort load of a ``.env`` (``KEY=VALUE`` per line) into ``os.environ``.
 
     Stdlib-only (no python-dotenv dep, which is only transitively present under
-    the ``live`` extra). A NON-EMPTY value already in the real environment is
-    never overridden, so an explicit ``export`` (or a ``--api-key`` on the
-    command line) still wins; an env var present but set to an empty string is
-    treated as unset, so a shell that exports ``OPENROUTER_API_KEY=`` doesn't
-    shadow the ``.env``. Silently does nothing if the file is missing/unreadable
-    — the CLI must never crash because of a malformed dotenv.
+    the ``live`` extra). The file is the nearest ``.env`` found walking up from
+    the CWD (see :func:`_find_dotenv`), so it works from a subdirectory too. A
+    NON-EMPTY value already in the real environment is never overridden, so an
+    explicit ``export`` (or a ``--api-key`` on the command line) still wins; an
+    env var present but set to an empty string is treated as unset, so a shell
+    that exports ``OPENROUTER_API_KEY=`` doesn't shadow the ``.env``. Silently
+    does nothing if no file is found/readable — the CLI must never crash because
+    of a missing or malformed dotenv.
     """
-    env_path = path or Path.cwd() / ".env"
+    env_path = path or _find_dotenv()
+    if env_path is None:
+        return
     try:
         raw = env_path.read_text(encoding="utf-8")
     except OSError:
