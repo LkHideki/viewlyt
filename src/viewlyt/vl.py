@@ -29,10 +29,12 @@ def _load_dotenv(path: Path | None = None) -> None:
     """Best-effort load of a ``.env`` (``KEY=VALUE`` per line) into ``os.environ``.
 
     Stdlib-only (no python-dotenv dep, which is only transitively present under
-    the ``live`` extra). Values already set in the real environment are NEVER
-    overridden, so an explicit ``export`` or a ``--api-key`` on the command line
-    still wins. Silently does nothing if the file is missing/unreadable — the
-    CLI must never crash because of a malformed dotenv.
+    the ``live`` extra). A NON-EMPTY value already in the real environment is
+    never overridden, so an explicit ``export`` (or a ``--api-key`` on the
+    command line) still wins; an env var present but set to an empty string is
+    treated as unset, so a shell that exports ``OPENROUTER_API_KEY=`` doesn't
+    shadow the ``.env``. Silently does nothing if the file is missing/unreadable
+    — the CLI must never crash because of a malformed dotenv.
     """
     env_path = path or Path.cwd() / ".env"
     try:
@@ -46,7 +48,7 @@ def _load_dotenv(path: Path | None = None) -> None:
         key, _, value = line.partition("=")
         key = key.removeprefix("export ").strip()
         value = value.strip().strip("\"'")
-        if key and key not in os.environ:
+        if key and not os.environ.get(key):
             os.environ[key] = value
 
 
