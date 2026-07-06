@@ -161,7 +161,10 @@ class LiveServer:
         self.llm_cfg = llm_cfg
         self.window = window
         self.probes: dict[str, Probe] = {}
-        self.paused = False
+        # Start PAUSED: no LLM spend until the user explicitly resumes from the
+        # dashboard (the worker gates on ``not paused``; the dashboard shows the
+        # ▶/"Paused" state from the connect snapshot).
+        self.paused = True
         self.processing = False
         self.last_latency_ms: int | None = None
         self.avg_latency_ms: int | None = None
