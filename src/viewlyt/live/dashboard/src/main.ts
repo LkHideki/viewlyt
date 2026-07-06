@@ -2722,9 +2722,9 @@ function setAnalyzingProbes(probeIds: string[], active: boolean): void {
 }
 
 // ---------------------------------------------------------------------------
-// Cost frame (A5): update the Cost stat card. Shows USD when the provider
-// reports it, else a compact token count. Both elements are optional — bail
-// quietly if the stats-bar hasn't got the Cost card.
+// Cost frame (A5): update the Cost stat card. Always shows USD (OpenRouter
+// reports real spend on usage.cost; local providers render "$0.0000"). Both
+// elements are optional — bail quietly if the stats-bar hasn't got the Cost card.
 // ---------------------------------------------------------------------------
 
 // Budget cap (B8): the last-known spending budget in USD (0 = off) and the most
@@ -2732,11 +2732,6 @@ function setAnalyzingProbes(probeIds: string[], active: boolean): void {
 // a budget change by re-rendering from this cached frame.
 let currentBudget = 0;
 let lastCost: CostMsg | null = null;
-
-/** "1.2k tok" for >=1000, else "842 tok". */
-function fmtTok(n: number): string {
-  return n >= 1000 ? (n / 1000).toFixed(1) + "k tok" : n + " tok";
-}
 
 /**
  * Render `value` with a leading "+" when it is >= 0 (a negative value already
@@ -2755,19 +2750,16 @@ function handleCost(msg: CostMsg): void {
   if (!main || !delta) return;
 
   if (currentBudget > 0) {
-    // Budget mode: show spent / budget regardless of whether the provider
-    // reports a dollar cost (0 spend renders as "$0.0000 / $<budget>").
+    // Budget mode: show spent / budget (0 spend renders as "$0.0000 / $<budget>").
     main.textContent =
       "$" + msg.cost_total.toFixed(4) + " / $" + currentBudget.toFixed(2);
   } else {
-    const hasCost = msg.cost_total > 0;
-    main.textContent = hasCost ? "$" + msg.cost_total.toFixed(4) : fmtTok(msg.tokens_total);
+    // Always dollars — even before any spend (renders "$0.0000"), so a fresh /
+    // paused session never flips the Cost card to a confusing token count.
+    main.textContent = "$" + msg.cost_total.toFixed(4);
   }
 
-  const hasCost = msg.cost_total > 0;
-  delta.textContent = hasCost
-    ? signed(msg.cost_delta, (n) => "$" + n.toFixed(4))
-    : signed(msg.tokens_delta, fmtTok);
+  delta.textContent = signed(msg.cost_delta, (n) => "$" + n.toFixed(4));
 }
 
 function handleState(msg: StateMsg): void {
