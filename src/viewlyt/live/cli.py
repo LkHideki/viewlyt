@@ -63,8 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default="google/gemini-3.1-flash-lite",
-        help="LLM model name (default: %(default)s)",
+        default=os.environ.get("LLM_NAME") or "google/gemini-3.1-flash-lite",
+        help="LLM model name (default: $LLM_NAME, else google/gemini-3.1-flash-lite)",
     )
     parser.add_argument(
         "-n",
