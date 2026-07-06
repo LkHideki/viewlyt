@@ -1784,6 +1784,97 @@ function editorOpen(card: HTMLDivElement): boolean {
 // one column when the results column can't actually fit two side by side.
 const TWO_COL_MIN_WIDTH = 692;
 
+// ---------------------------------------------------------------------------
+// Drag-and-drop card reordering (native HTML5 DnD). Only the small grip handle
+// in each card's header is draggable — never the whole card — so clicks,
+// selects and inputs inside a card keep working. The order is client-only:
+// no state frame carries it, and syncCardsFromState/upsertResultCard never
+// reposition an existing card, so a plain DOM move survives every later
+// frame. Persisted to localStorage so it also survives a page reload.
+// ---------------------------------------------------------------------------
+
+const CARD_ORDER_KEY = "viewlyt.cardorder";
+let draggedCard: HTMLDivElement | null = null;
+
+/** Snapshot the current on-screen card order (probe ids, top to bottom). */
+function saveCardOrder(): void {
+  const container = document.getElementById("results");
+  if (!container) return;
+  const ids = Array.from(
+    container.querySelectorAll<HTMLDivElement>(".result-card[data-probe-id]"),
+  )
+    .map((c) => c.dataset["probeId"])
+    .filter((id): id is string => id !== undefined);
+  lsSet(CARD_ORDER_KEY, JSON.stringify(ids));
+}
+
+/** Reapply a previously-saved order to whatever cards exist right now. Cards
+ *  not in the saved list (e.g. just added) are left wherever they already are. */
+function applyStoredCardOrder(): void {
+  const raw = lsGet(CARD_ORDER_KEY);
+  if (!raw) return;
+  let order: unknown;
+  try {
+    order = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(order)) return;
+  const container = document.getElementById("results");
+  if (!container) return;
+  for (const id of order) {
+    if (typeof id !== "string") continue;
+    const card = container.querySelector<HTMLDivElement>(
+      `.result-card[data-probe-id="${CSS.escape(id)}"]`,
+    );
+    if (card) container.appendChild(card);
+  }
+}
+
+/**
+ * The card (other than the one being dragged) whose center is closest to
+ * (x, y), plus whether the dragged card should land after it — needed because
+ * the results grid can have several columns and span-2 cards, so a plain
+ * "compare Y" rule isn't enough.
+ */
+function closestCard(
+  container: HTMLElement,
+  x: number,
+  y: number,
+): { el: HTMLDivElement; after: boolean } | null {
+  const cards = Array.from(
+    container.querySelectorAll<HTMLDivElement>(".result-card[data-probe-id]:not(.dragging)"),
+  );
+  let best: { el: HTMLDivElement; cx: number; cy: number; dist: number } | null = null;
+  for (const card of cards) {
+    const r = card.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dist = (x - cx) ** 2 + (y - cy) ** 2;
+    if (!best || dist < best.dist) best = { el: card, cx, cy, dist };
+  }
+  if (!best) return null;
+  const after = y > best.cy || (Math.abs(y - best.cy) < 12 && x > best.cx);
+  return { el: best.el, after };
+}
+
+/** Wire the container-level drag-over: live-moves the dragged card as the
+ *  pointer crosses other cards (the standard vanilla-JS sortable pattern). */
+function wireCardDragAndDrop(): void {
+  const container = el<HTMLDivElement>("results");
+  container.addEventListener("dragover", (e: DragEvent) => {
+    if (!draggedCard) return;
+    e.preventDefault();
+    const target = closestCard(container, e.clientX, e.clientY);
+    if (!target || target.el === draggedCard) return;
+    if (target.after) target.el.after(draggedCard);
+    else target.el.before(draggedCard);
+  });
+  container.addEventListener("drop", (e: DragEvent) => {
+    e.preventDefault();
+  });
+}
+
 /**
  * Find (or build) the .result-card for a probe. A freshly-built card has the
  * FULL skeleton and its static handlers wired exactly once; the kind-specific
@@ -1810,6 +1901,27 @@ function ensureCard(probeId: string): HTMLDivElement {
   // controls up here means they never steal width from the title below.
   const headerTop = document.createElement("div");
   headerTop.className = "result-header-top";
+
+  // Drag handle: reorders cards (see the drag-and-drop block above). Only this
+  // element is draggable, never the card itself.
+  const dragHandle = document.createElement("span");
+  dragHandle.className = "card-drag-handle";
+  dragHandle.draggable = true;
+  dragHandle.textContent = "⠿";
+  dragHandle.title = "Arraste para reordenar";
+  dragHandle.addEventListener("dragstart", (e: DragEvent) => {
+    draggedCard = card;
+    e.dataTransfer?.setData("text/plain", probeId); // required by Firefox to start the drag
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer?.setDragImage(card, 16, 16); // drag a preview of the whole card, not just the handle
+    requestAnimationFrame(() => card.classList.add("dragging"));
+  });
+  dragHandle.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    draggedCard = null;
+    saveCardOrder();
+  });
+  headerTop.appendChild(dragHandle);
 
   const badge = document.createElement("span");
   badge.className = "result-kind-badge";
@@ -2829,6 +2941,10 @@ function handleState(msg: StateMsg): void {
     probeState.set(p.id, p);
   }
   syncCardsFromState();
+  // Reapply any user drag-reorder — syncCardsFromState only creates/removes
+  // cards, it never repositions existing ones, so this is safe to redo on
+  // every state frame (idempotent once the DOM already matches it).
+  applyStoredCardOrder();
   // Cards now exist (ensureCard, just above) — safe to toggle their glow. Runs
   // AFTER syncCardsFromState so a dashboard connecting mid-batch sees it too.
   const analyzingIds = msg.analyzing_probe_ids ?? [];
@@ -3497,6 +3613,7 @@ updateProbeFieldVisibility();
 wireButtons();
 wireFeed();
 wireGroups();
+wireCardDragAndDrop();
 connectDashboard();
 connectControl();
 loadSnippet();

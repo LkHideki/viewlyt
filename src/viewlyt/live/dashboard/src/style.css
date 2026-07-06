@@ -1760,6 +1760,34 @@ input[type="file"]::file-selector-button:hover {
   padding: .25rem .55rem;
 }
 
+/* --- Drag handle: reorders cards via native HTML5 drag-and-drop. Only the
+   handle is draggable (not the whole card), so clicks/selects/inputs inside
+   the card are unaffected. --- */
+.card-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: grab;
+}
+
+.card-drag-handle:hover {
+  color: var(--text);
+}
+
+.card-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* The card currently being dragged: faded so the drop target reads clearly. */
+.result-card.dragging {
+  opacity: 0.4;
+}
+
 /* --- Column-span toggle: a discreet icon button at the card's bottom-right.
    Stays out of the way (fades in on hover / focus / when the card is widened)
    so it never competes with the chart, then flips 1 ↔ 2 grid columns. --- */
