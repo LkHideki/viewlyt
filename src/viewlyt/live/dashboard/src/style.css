@@ -398,6 +398,15 @@ button:active {
   filter: brightness(0.9);
 }
 
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button:disabled:hover {
+  filter: none;
+}
+
 .btn-primary {
   background: var(--accent);
   color: #fff;

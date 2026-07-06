@@ -2683,6 +2683,8 @@ function setProc(active: boolean, latencyMs?: number | null, avgLatencyMs?: numb
   // Top-of-page loading spinner: visible only while an analysis is in flight.
   const spinner = document.getElementById("spinner");
   if (spinner) spinner.classList.toggle("hidden", !active);
+  const stopBtn = document.getElementById("stop-batch") as HTMLButtonElement | null;
+  if (stopBtn) stopBtn.disabled = !active;
   if (active) {
     e.textContent = "analyzing…";
     e.style.color = "#fbbf24";
@@ -3118,6 +3120,10 @@ function wireButtons(): void {
   });
   el("clear").addEventListener("click", () => send({ op: "clear" }));
   el("force-run").addEventListener("click", () => send({ op: "force_run" }));
+  el("stop-batch").addEventListener("click", () => {
+    send({ op: "stop_batch" });
+    showToast("Análise interrompida.", "info");
+  });
 
   // Analysis language (header selector): applies immediately; set_model keeps the
   // rest of the model config unchanged (omitted fields fall back to the current).

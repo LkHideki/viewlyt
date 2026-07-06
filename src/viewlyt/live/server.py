@@ -166,6 +166,7 @@ class LiveServer:
         # ▶/"Paused" state from the connect snapshot).
         self.paused = True
         self.processing = False
+        self.current_batch_task: asyncio.Task | None = None  # cancelled by 'stop_batch'
         self.last_latency_ms: int | None = None
         self.avg_latency_ms: int | None = None
         self.analyzing_probe_ids: list[str] = []  # ids in the CURRENTLY in-flight batch
@@ -323,6 +324,15 @@ async def apply_control(server: LiveServer, data: dict) -> None:
         elif op == "force_run":
             # Analyze the current buffer immediately, bypassing the refresh timer.
             server.force_now = True
+        elif op == "stop_batch":
+            # Hard-cancel the in-flight batch: cancelling this task propagates into
+            # the asyncio.gather in run_probes, aborting every in-flight LLM HTTP
+            # call immediately rather than waiting for it to finish naturally.
+            # _run_window's `finally` still runs, clearing `processing` and
+            # broadcasting proc(active=False) so the dashboard un-glows right away.
+            # cancel() on an already-finished task is a documented no-op.
+            if server.current_batch_task is not None:
+                server.current_batch_task.cancel()
         elif op == "suggest_probes":
             # Off-loop: an LLM proposes two probes from the typed text + live sample,
             # then the task itself broadcasts the 'suggestions' frame (not persisted).
@@ -770,8 +780,11 @@ async def worker(server: LiveServer) -> None:
                 last_analyzed = server.ingested
                 server.processing = True
                 # NON-BLOCKING: the LLM call runs in the background so the loop keeps
-                # draining the queue and flushing the feed while it works.
-                asyncio.create_task(_run_window(server, window, time.time(), batch))
+                # draining the queue and flushing the feed while it works. The handle
+                # is kept so a 'stop_batch' control op can cancel it outright.
+                server.current_batch_task = asyncio.create_task(
+                    _run_window(server, window, time.time(), batch)
+                )
             if now - last_flush >= 0.25:
                 # Flush the batched feed + settle the counters ~4 times a second.
                 if pending:
