@@ -524,33 +524,44 @@ button:disabled:hover {
 
 /* "Thinking" state: this card's probe is IN THE CURRENTLY in-flight batch
    (each probe can have its own refresh cadence, so this is per-card, never a
-   single global light). A conic-gradient "comet" spins around the border via
-   ::before, rotated with `transform` rather than the gradient's own angle
-   (animating a plain custom property doesn't interpolate without @property).
-   The mask pair (content-box XOR border-box) keeps it a thin ring — the
-   card's own background/content is never touched. */
+   single global light). A conic-gradient "comet" sweeps around the border via
+   ::before. We animate the gradient's START ANGLE (registered with @property so
+   it interpolates) — NOT a `transform: rotate` on the element, which would spin
+   the border-mask with it, tilting the rectangular ring off the card's edges.
+   The mask pair (content-box XOR border-box) keeps it a thin ring — the card's
+   own background/content is never touched. */
+@property --viewlyt-ring-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
 .result-card.analyzing::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  padding: 2px;
+  padding: 2.5px;
   background: conic-gradient(
-    from 0deg,
+    from var(--viewlyt-ring-angle),
     transparent 0deg,
-    rgba(76, 139, 245, 0.9) 70deg,
-    transparent 140deg
+    var(--accent) 55deg,
+    #a9c6ff 90deg,
+    var(--accent) 125deg,
+    transparent 180deg
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
+  /* Soft glow so the sweeping comet reads as "alive", not a hairline. */
+  filter: drop-shadow(0 0 3px rgba(76, 139, 245, 0.6));
   animation: viewlyt-analyzing-spin 1.6s linear infinite;
   pointer-events: none;
 }
 
 @keyframes viewlyt-analyzing-spin {
   to {
-    transform: rotate(360deg);
+    --viewlyt-ring-angle: 360deg;
   }
 }
 
@@ -693,6 +704,7 @@ button:disabled:hover {
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 /* Stacked bar */
@@ -1684,11 +1696,12 @@ input[type="file"]::file-selector-button:hover {
   gap: .5rem;
 }
 
-/* Meta strip: kind badge on the left, action controls on the right. */
+/* Meta strip: drag handle + kind badge on the left, action controls pushed to
+   the right (via margin-left:auto on .result-header-right — NOT space-between,
+   which would strand the badge in the middle now that the handle is a 3rd item). */
 .result-header-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: .5rem;
   min-width: 0;
 }
