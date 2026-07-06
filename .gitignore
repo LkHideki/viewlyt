@@ -43,6 +43,7 @@ unified-all.md
 # ---- Secrets / credentials (never commit) ----
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.crt

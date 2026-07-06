@@ -18,9 +18,36 @@ don't pay that cost until they actually dispatch a scrape.
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 
 _SUBCOMMANDS = ("ask", "live", "split", "watch")
+
+
+def _load_dotenv(path: Path | None = None) -> None:
+    """Best-effort load of a ``.env`` (``KEY=VALUE`` per line) into ``os.environ``.
+
+    Stdlib-only (no python-dotenv dep, which is only transitively present under
+    the ``live`` extra). Values already set in the real environment are NEVER
+    overridden, so an explicit ``export`` or a ``--api-key`` on the command line
+    still wins. Silently does nothing if the file is missing/unreadable — the
+    CLI must never crash because of a malformed dotenv.
+    """
+    env_path = path or Path.cwd() / ".env"
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.removeprefix("export ").strip()
+        value = value.strip().strip("\"'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _subcommand_main(name: str):
@@ -38,6 +65,7 @@ def _subcommand_main(name: str):
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    _load_dotenv()
 
     # `vl help` / `vl help <sub>` -> the matching --help (git-style discoverability).
     if argv and argv[0] == "help":
