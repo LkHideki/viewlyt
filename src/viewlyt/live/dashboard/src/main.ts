@@ -1512,7 +1512,14 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
         const abs = Math.round((pct / 100) * n);
         const value =
           valueMode === "abs" ? String(abs) : `${pct.toFixed(decimals)}%`;
-        if (pct >= 2) {
+        // Show the number in every cell that actually got a hit. The old
+        // `pct >= 2` gate blanked single-vote cells on sparse grids — 2 of 130
+        // messages is 1.5% < 2%, yet that count is exactly what to show. Unvoted
+        // cells still carry pct 0 (they render at the min-intensity floor), so
+        // gate on the real value: a non-zero count (# mode) or percentage (% mode).
+        const hasValue =
+          valueMode === "abs" ? abs >= 1 : Number(pct.toFixed(decimals)) > 0;
+        if (hasValue) {
           const t = document.createElement("span");
           t.className = "descartes-pct";
           t.textContent = value;
