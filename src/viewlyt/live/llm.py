@@ -160,7 +160,14 @@ class LLMClient:
         The first mode that works for this client/provider is remembered, so later
         requests skip the dead attempts: a provider that doesn't support ``json_schema``
         is probed once, then we go straight to ``json_object``/plain instead of paying a
-        failed request every time. If every mode fails, the last exception propagates
+        failed request every time.
+
+        Only a FORMAT rejection (HTTP 400/404/422 — the provider doesn't accept this
+        ``response_format``) falls through to the next mode. A timeout / connection /
+        auth / rate-limit / server error is not format-related, so we fail FAST instead
+        of re-issuing the same doomed request under the other two modes — otherwise an
+        unreachable endpoint hangs for ``3 × timeout`` (e.g. 3 × 60s = a 3-minute "stuck
+        analyzing…") before giving up. If every mode fails, the last exception propagates
         (``run_probes`` surfaces it in the dashboard).
         """
         extra = {"extra_body": self._usage_extra} if self._usage_extra else {}
@@ -185,6 +192,10 @@ class LLMClient:
                 return parse_json_loose(resp.choices[0].message.content or "")
             except Exception as exc:
                 last_exc = exc
+                # openai's APIStatusError carries .status_code; timeout/connection
+                # errors don't (getattr -> None), so they fail fast here.
+                if getattr(exc, "status_code", None) not in (400, 404, 422):
+                    raise
         assert last_exc is not None
         raise last_exc
 

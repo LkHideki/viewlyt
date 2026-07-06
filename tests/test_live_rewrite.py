@@ -116,9 +116,71 @@ def test_suggest_probes_guards_untrusted_sample() -> None:
     print("ok: suggest_probes_guards_untrusted_sample")
 
 
+# ---------------------------------------------------------------------------
+# LLMClient._complete: fail-fast on non-format errors (no 3× timeout hang).
+# ---------------------------------------------------------------------------
+
+
+class _RaisingCompletions:
+    """Fake ``chat.completions`` whose ``create`` always raises, counting calls."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = 0
+
+    async def create(self, **_kw: object) -> object:
+        self.calls += 1
+        raise self.exc
+
+
+def _bare_client(exc: Exception):
+    """An LLMClient wired to a raising fake, WITHOUT running __init__ (no openai)."""
+    from viewlyt.live.llm import LLMClient
+
+    comp = _RaisingCompletions(exc)
+    client = object.__new__(LLMClient)
+    client._client = type("_C", (), {"chat": type("_Ch", (), {"completions": comp})()})()
+    client.model = "m"
+    client._usage_extra = {}
+    client._rf_mode = None
+    client._latency_count = 0
+    client._latency_sum_ms = 0.0
+    return client, comp
+
+
+def test_complete_fails_fast_on_timeout() -> None:
+    # A timeout carries no .status_code, so _complete must NOT retry the other two
+    # response_format modes — otherwise a dead endpoint hangs for 3× the timeout.
+    client, comp = _bare_client(TimeoutError("endpoint not responding"))
+    try:
+        asyncio.run(client._complete([{"role": "user", "content": "x"}], {"name": "s"}))
+        raise AssertionError("expected the timeout to propagate")
+    except TimeoutError:
+        pass
+    assert comp.calls == 1, f"expected 1 attempt, got {comp.calls}"
+    print("ok: complete_fails_fast_on_timeout")
+
+
+def test_complete_falls_through_on_format_rejection() -> None:
+    # A 400 means the provider rejected this response_format, so _complete SHOULD
+    # fall through to json_object then plain — three attempts before giving up.
+    err = Exception("bad response_format")
+    err.status_code = 400  # type: ignore[attr-defined]
+    client, comp = _bare_client(err)
+    try:
+        asyncio.run(client._complete([{"role": "user", "content": "x"}], {"name": "s"}))
+        raise AssertionError("expected the error to propagate after all modes")
+    except Exception as exc:  # noqa: BLE001
+        assert getattr(exc, "status_code", None) == 400
+    assert comp.calls == 3, f"expected 3 attempts, got {comp.calls}"
+    print("ok: complete_falls_through_on_format_rejection")
+
+
 if __name__ == "__main__":
     test_open_spec_builds_probe()
     test_classification_infers_categories()
     test_caller_categories_win()
     test_suggest_probes_guards_untrusted_sample()
+    test_complete_fails_fast_on_timeout()
+    test_complete_falls_through_on_format_rejection()
     print("ALL TESTS PASSED")
