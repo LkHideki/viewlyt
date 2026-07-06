@@ -515,28 +515,39 @@ button:active {
 
 /* "Thinking" state: this card's probe is IN THE CURRENTLY in-flight batch
    (each probe can have its own refresh cadence, so this is per-card, never a
-   single global light). Border + shadow only — background/content untouched. */
-@keyframes viewlyt-analyzing-glow {
-  0%,
-  100% {
-    border-color: rgba(76, 139, 245, 0.55);
-    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.3), 0 0 10px 1px rgba(76, 139, 245, 0.25);
-  }
-  50% {
-    border-color: rgba(76, 139, 245, 0.95);
-    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.75), 0 0 20px 5px rgba(76, 139, 245, 0.6);
-  }
+   single global light). A conic-gradient "comet" spins around the border via
+   ::before, rotated with `transform` rather than the gradient's own angle
+   (animating a plain custom property doesn't interpolate without @property).
+   The mask pair (content-box XOR border-box) keeps it a thin ring — the
+   card's own background/content is never touched. */
+.result-card.analyzing::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    rgba(76, 139, 245, 0.9) 70deg,
+    transparent 140deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: viewlyt-analyzing-spin 1.6s linear infinite;
+  pointer-events: none;
 }
 
-.result-card.analyzing {
-  animation: viewlyt-analyzing-glow 1.6s ease-in-out infinite;
+@keyframes viewlyt-analyzing-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .result-card.analyzing {
+  .result-card.analyzing::before {
     animation: none;
-    border-color: rgba(76, 139, 245, 0.85);
-    box-shadow: 0 0 0 1px rgba(76, 139, 245, 0.45);
   }
 }
 
