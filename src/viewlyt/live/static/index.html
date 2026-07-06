@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>viewlyt.live — Control Panel</title>
-    <script type="module" crossorigin src="./assets/index-nilv16WX.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CuTS7b7N.css">
+    <script type="module" crossorigin src="./assets/index-BNjEuLPq.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-4ALq50vi.css">
   </head>
   <body>
     <header>
@@ -84,6 +84,7 @@
                 <a href="/export.json" class="btn-secondary btn-small btn-link" download title="Download every probe's snapshot history as JSON">Export JSON</a>
                 <a href="/export.csv" class="btn-secondary btn-small btn-link" download title="Download the snapshot history flattened as CSV">Export CSV</a>
                 <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
+                <button type="button" id="stop-batch" class="btn-danger btn-small" disabled title="Immediately cancels the in-flight LLM batch">Stop</button>
               </div>
             </div>
             <div id="results" class="results-list">
