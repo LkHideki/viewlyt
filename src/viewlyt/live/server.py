@@ -223,6 +223,18 @@ class LiveServer:
         }
 
 
+def resolve_launch_api_key(provided: str, persisted: str) -> str:
+    """Which API key the restored config should use.
+
+    The api_key is a runtime credential, not state to restore: a key supplied at
+    launch (``--api-key`` / ``$OPENROUTER_API_KEY``) WINS over the persisted one,
+    so a stale or empty saved key never clobbers a valid launch key — the cause
+    of a persistent "Missing Authentication header" 401 across restarts. Falls
+    back to the saved key only when none was provided this launch.
+    """
+    return provided or persisted
+
+
 async def persist(server: LiveServer) -> None:
     """Snapshot the server's persisted state to disk off the event loop."""
     await asyncio.to_thread(
@@ -1101,9 +1113,10 @@ def run(
         server.window = WindowConfig.from_dict(st["window"])
         server.buffer = WindowBuffer(maxlen=server.window.capacity)
         m = st["model"]
+        provided_key = (llm_cfg.api_key if llm_cfg else "") or ""
         server.llm_cfg = LLMConfig(
             base_url=m["base_url"],
-            api_key=m.get("api_key", ""),
+            api_key=resolve_launch_api_key(provided_key, m.get("api_key", "")),
             model=m["model"],
             budget_usd=float(m.get("budget", 0.0)),
             language=str(m.get("language") or "Portuguese (Brazil)"),

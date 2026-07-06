@@ -351,6 +351,43 @@ def _persist_to_tmp(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
 
 
+def test_resolve_launch_api_key_prefers_the_launch_key() -> None:
+    # A key supplied at launch wins over the persisted one...
+    assert live_server.resolve_launch_api_key("sk-launch", "sk-old") == "sk-launch"
+    # ...even (especially) when the persisted key is a stale empty string.
+    assert live_server.resolve_launch_api_key("sk-launch", "") == "sk-launch"
+    # No launch key -> fall back to the saved one (dashboard-set key survives).
+    assert live_server.resolve_launch_api_key("", "sk-saved") == "sk-saved"
+
+
+def test_run_launch_key_wins_over_stale_persisted_empty_key(tmp_path, monkeypatch) -> None:
+    # Regression: an old session persisted an EMPTY api_key; on every restart the
+    # restored (empty) key clobbered the valid launch key -> permanent 401.
+    _persist_to_tmp(tmp_path, monkeypatch)
+    from viewlyt.live import persistence
+
+    persistence.save_state(
+        {"n": 230, "gap": 45.0, "mode": "hybrid", "capacity": 3000},
+        {"base_url": "https://openrouter.ai/api/v1", "model": "m", "api_key": ""},
+        [],
+    )
+    captured: dict = {}
+    real_init = LiveServer.__init__
+
+    def _spy_init(self, *a, **k):
+        real_init(self, *a, **k)
+        captured["server"] = self
+
+    monkeypatch.setattr(LiveServer, "__init__", _spy_init)
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: None)
+    live_server.run(
+        host="127.0.0.1",
+        llm_cfg=LLMConfig(base_url="https://openrouter.ai/api/v1", api_key="sk-launch", model="m"),
+        open_browser=False,
+    )
+    assert captured["server"].llm_cfg.api_key == "sk-launch"
+
+
 def test_set_model_drops_key_when_base_url_is_unknown(tmp_path, monkeypatch) -> None:
     _persist_to_tmp(tmp_path, monkeypatch)
     srv = LiveServer(
