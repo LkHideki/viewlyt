@@ -38,6 +38,8 @@ devx/
 *.transcript.md
 *.related.md
 *.unified.md
+*.channel.md
+*.snapshot.md
 unified-all.md
 
 # ---- Secrets / credentials (never commit) ----
