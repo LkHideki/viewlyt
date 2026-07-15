@@ -37,7 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
 from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
-from .htmltext import format_view_count
+from .htmltext import parse_view_count
 
 log = logging.getLogger("viewlyt")
 
@@ -356,24 +356,24 @@ return '';
 """
 
 
-def get_video_views(driver) -> str:
-    """Return the main video's formatted view count, e.g. ``"1,234,567 views"``.
+def get_video_views(driver) -> int | None:
+    """Return the main video's EXACT view count as an int, e.g. ``1234567``.
 
     A single ``execute_script`` with an internal fallback: (1) the
     ``meta[itemprop="interactionCount"]`` microdata tag (present in <head>, an
     exact attribute-value selector, never a class-substring match), then
-    (2) ``window.ytInitialPlayerResponse.videoDetails.viewCount``. The raw
-    digits are normalized through :func:`viewlyt.htmltext.format_view_count`.
-    Never raises; returns ``""`` on any failure or when no count is found.
+    (2) ``window.ytInitialPlayerResponse.videoDetails.viewCount``. Both expose
+    the full integer — unlike the rendered "1.2M views" label — so this returns
+    the number itself and leaves rendering to
+    :func:`viewlyt.htmltext.format_view_count` at write time.
+    Never raises; returns ``None`` on any failure or when no count is found.
     """
     try:
         raw = driver.execute_script(_VIEW_COUNT_JS) or ""
     except WebDriverException:
-        return ""
+        return None
     digits = re.sub(r"\D", "", str(raw))
-    if not digits:
-        return ""
-    return format_view_count(int(digits))
+    return int(digits) if digits else None
 
 
 def detect_block(driver) -> str | None:
@@ -1055,6 +1055,12 @@ def collect_channel_videos(
             _sleep_jitter(0.35)
 
         items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
+        # The grid only ever renders an abbreviated count ("1.2M views"), so the
+        # exact int is available only when YouTube happened to print it in full.
+        # parse_view_count returns None for abbreviations rather than inventing
+        # precision; format_related then falls back to the verbatim string.
+        for it in items:
+            it["views_int"] = parse_view_count(it.get("views") or "")
         if progress:
             log.info("collected %d channel videos", len(items))
         return name, items[:limit]

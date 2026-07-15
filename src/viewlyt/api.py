@@ -31,6 +31,7 @@ from .htmltext import (
     format_related,
     format_transcript,
     format_unified,
+    format_view_count,
     html_to_text,
     pair_lines,
     slugify,
@@ -82,13 +83,22 @@ class ScrapeResult:
 
     video_id: str
     title: str
-    views: str = ""  # e.g. "1,234,567 views"; "" when unavailable
+    # The EXACT view count (e.g. 1234567), or None when unavailable. This is the
+    # source of truth: the watch page's microdata exposes the full integer, so
+    # nothing is rounded here. Use `.views` for the rendered "1,234,567 views".
+    views_int: int | None = None
     comments: list[Comment] = field(default_factory=list)
     transcript: list[tuple[str, str]] = field(default_factory=list)
     related: list[RelatedVideo] = field(default_factory=list)
     # Raw scraper records (with HTML), kept so comment_lines()/write() can reuse the
     # exact CLI merge+format pipeline. Private; hidden from repr.
     _records: list[dict] = field(default_factory=list, repr=False)
+
+    @property
+    def views(self) -> str:
+        """The view count rendered for display, e.g. ``"1,234,567 views"`` (``""``
+        when unavailable). Presentation only — read ``views_int`` for the number."""
+        return format_view_count(self.views_int)
 
     @property
     def top_level(self) -> list[Comment]:
@@ -224,7 +234,7 @@ def _scrape_url(
     if block:
         raise BlockedError(block)
     title = get_video_title(driver)
-    views = get_video_views(driver)
+    views_int = get_video_views(driver)
     records = (
         collect_comments(
             driver,
@@ -244,7 +254,7 @@ def _scrape_url(
     return ScrapeResult(
         video_id=video_id,
         title=title,
-        views=views,
+        views_int=views_int,
         comments=_to_comments(records),
         transcript=tx,
         related=_to_related(rel),

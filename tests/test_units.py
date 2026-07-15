@@ -602,6 +602,53 @@ class _ChannelStubDriver:
         return None
 
 
+def test_get_video_views_returns_exact_int() -> None:
+    # The microdata/player payload carries the FULL integer, so get_video_views
+    # must hand back the number itself — not a rendered string, and never a
+    # rounded one. Formatting happens at write time.
+    from viewlyt.scraper import get_video_views
+
+    class _ViewsDriver:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def execute_script(self, script, *args):
+            return self._raw
+
+    assert get_video_views(_ViewsDriver("1234567")) == 1234567
+    # The microdata value is a string of digits; commas/spaces are stripped.
+    assert get_video_views(_ViewsDriver("1,234,567")) == 1234567
+    assert get_video_views(_ViewsDriver(4321987)) == 4321987
+    # Nothing found / driver failure -> None (never raises, never 0-as-unknown).
+    assert get_video_views(_ViewsDriver("")) is None
+    assert get_video_views(_ViewsDriver(None)) is None
+
+    class _BoomDriver:
+        def execute_script(self, script, *args):
+            raise WebDriverException("boom")
+
+    assert get_video_views(_BoomDriver()) is None
+    print("ok: get_video_views_returns_exact_int")
+
+
+def test_collect_channel_videos_exact_views_when_available() -> None:
+    # The channel grid renders an ABBREVIATED count. collect_channel_videos must
+    # attach views_int only when the text is exact, and None otherwise — so
+    # format_related falls back to the verbatim string instead of a fake number.
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [
+        {"video_id": "abc12345678", "title": "A", "views": "1,234,567 views", "url": "u1"},
+        {"video_id": "def12345678", "title": "B", "views": "1.2M views", "url": "u2"},
+    ]
+    _, out = collect_channel_videos(
+        _ChannelStubDriver(items), "@someone", limit=2, order="recent", progress=False
+    )
+    assert out[0]["views_int"] == 1234567
+    assert out[1]["views_int"] is None  # rounded: no precision to recover
+    print("ok: collect_channel_videos_exact_views_when_available")
+
+
 def test_collect_channel_videos_resilience() -> None:
     # limit<=0 short-circuits before touching the driver at all (works with the
     # bare _StubDriver, which has no .get); any WebDriver error (incl. on
@@ -803,6 +850,29 @@ def test_lazy_import_no_selenium() -> None:
     print("ok: lazy_import_no_selenium")
 
 
+def test_format_related_prefers_exact_int_over_rounded_string() -> None:
+    # views_int is the source of truth: when present it WINS over the verbatim
+    # string, so a channel listing shows the exact 1,234,567 instead of the
+    # rounded "1.2M views" the grid rendered. Without it, the verbatim string
+    # is still used (the related sidebar exposes nothing better).
+    from viewlyt.htmltext import format_related
+
+    exact = [{"title": "T", "views": "1.2M views", "views_int": 1234567, "url": "u"}]
+    assert format_related(exact) == ["1. [1,234,567 views. T](u)"]
+
+    # views_int=None (abbreviation that couldn't be parsed) -> keep verbatim.
+    rounded = [{"title": "T", "views": "1.2M views", "views_int": None, "url": "u"}]
+    assert format_related(rounded) == ["1. [1.2M views. T](u)"]
+
+    # No views_int key at all (the related product's shape) -> unchanged.
+    legacy = [{"title": "T", "views": "1.2B views", "url": "u"}]
+    assert format_related(legacy) == ["1. [1.2B views. T](u)"]
+
+    # Neither -> no count prefix.
+    assert format_related([{"title": "T", "views": "", "url": "u"}]) == ["1. [T](u)"]
+    print("ok: format_related_prefers_exact_int_over_rounded_string")
+
+
 def test_format_related() -> None:
     items = [
         {
@@ -921,6 +991,32 @@ def test_format_view_count() -> None:
     print("ok: format_view_count")
 
 
+def test_parse_view_count() -> None:
+    from viewlyt.htmltext import parse_view_count
+
+    # Exact text -> the exact int (round-trips with format_view_count).
+    assert parse_view_count("1,234,567 views") == 1234567
+    assert parse_view_count(format_view_count(987)) == 987
+    assert parse_view_count("5 views") == 5
+    # ABBREVIATED text -> None, never a fabricated number. "1.2M" is not
+    # 1200000: YouTube rounded it, and inventing the zeros would invent
+    # precision. Callers needing an exact count must read it from a source
+    # that exposes one (yt-dlp view_count / the interactionCount microdata).
+    for rounded in (
+        "1.2M views",
+        "20M views",
+        "1.2B views",
+        "850K views",
+        "3,4 mi de visualizações",
+    ):
+        assert parse_view_count(rounded) is None, rounded
+    # No digits / empty -> None.
+    assert parse_view_count("") is None
+    assert parse_view_count("views") is None
+    assert parse_view_count(None) is None  # type: ignore[arg-type]
+    print("ok: parse_view_count")
+
+
 def test_format_duration() -> None:
     assert format_duration(754) == "12:34"
     assert format_duration(3723) == "1:02:03"
@@ -944,7 +1040,9 @@ def test_ytdl_entry_to_item() -> None:
     assert _entry_to_item(e) == {
         "video_id": "abc123def45",
         "title": "Some Title",
+        # The exact int is the source of truth; "views" is its rendered form.
         "views": "1,234,567 views",
+        "views_int": 1234567,
         "url": "https://www.youtube.com/watch?v=abc123def45",
     }
     # view_count None (common on the "old" uploads-playlist entries) -> "" not "None views"
@@ -961,7 +1059,13 @@ def test_ytdl_entry_to_item() -> None:
     got3 = _entry_to_item(e3)
     assert got3["url"] == "https://www.youtube.com/watch?v=qqq", got3
     # completely empty entry never raises
-    assert _entry_to_item({}) == {"video_id": "", "title": "", "views": "", "url": ""}
+    assert _entry_to_item({}) == {
+        "video_id": "",
+        "title": "",
+        "views": "",
+        "views_int": None,
+        "url": "",
+    }
     print("ok: ytdl_entry_to_item")
 
 
@@ -1582,6 +1686,8 @@ if __name__ == "__main__":
     test_comments_disabled()
     test_harvest_thread_fallback()
     test_collect_related_resilience()
+    test_get_video_views_returns_exact_int()
+    test_collect_channel_videos_exact_views_when_available()
     test_collect_channel_videos_resilience()
     test_collect_channel_videos_happy_path()
     test_collect_channel_videos_popular_clicks_chip()
@@ -1595,6 +1701,8 @@ if __name__ == "__main__":
     test_format_unified_subtitle()
     test_extract_channel_ref()
     test_format_view_count()
+    test_parse_view_count()
+    test_format_related_prefers_exact_int_over_rounded_string()
     test_format_duration()
     test_ytdl_entry_to_item()
     test_ytdl_channel_entries_recent_uses_extract()

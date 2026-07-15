@@ -87,19 +87,18 @@ def test_run_batch_surfaces_views_in_summary(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli,
         "scrape_one",
-        lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], [], "1,234,567 views"),
+        lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], [], 1234567),
     )
 
     sums = _run_batch([("vid", "id")], tmp_path)
-    assert sums[0]["views"] == "1,234,567 views"
+    # The summary carries the exact int; the string is rendered only for display.
+    assert sums[0]["views_int"] == 1234567
 
 
 def test_run_batch_unify_passes_views_as_subtitle(monkeypatch, tmp_path):
     recs = [_c("@a", "oi", likes="5")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(
-        cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], "42 views")
-    )
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], 42))
 
     _run_batch([("vid", "id")], tmp_path, unify=True, with_comments=True)
 
@@ -108,7 +107,7 @@ def test_run_batch_unify_passes_views_as_subtitle(monkeypatch, tmp_path):
     expected = format_unified(
         "T",
         [("Comments", format_comment_lines(recs, progress=False, merge_comments=True))],
-        subtitle="42 views",
+        subtitle="42 views",  # the int 42, rendered
     )
     assert body == "\n".join(expected) + "\n"
     assert "42 views" in body.splitlines()[2]  # right after the title + blank line
@@ -1133,7 +1132,7 @@ def test_gather_channel_refs_from_file(tmp_path):
 # --------------------------------------------------------------------------- #
 # scrape_video (library API)
 # --------------------------------------------------------------------------- #
-def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title", views=""):
+def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title", views=None):
     """Patch the api-bound Selenium boundary to canned no-ops; return nothing."""
     monkeypatch.setattr(api, "build_driver", lambda **k: drv)
     for name in ("prime_consent_cookies", "safe_get", "dismiss_consent_dialog"):
@@ -1181,16 +1180,18 @@ def test_scrape_video_returns_structured_result(monkeypatch):
 
 def test_scrape_video_surfaces_views(monkeypatch):
     drv = FakeDriver()
-    _patch_api_boundary(monkeypatch, drv, title="T", views="1,234,567 views")
+    _patch_api_boundary(monkeypatch, drv, title="T", views=1234567)
     monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
 
     r = api.scrape_video("dQw4w9WgXcQ", comments=True)
+    # The int is canonical; .views renders it for display.
+    assert r.views_int == 1234567
     assert r.views == "1,234,567 views"
 
 
 def test_scrape_video_views_default_empty(monkeypatch):
     drv = FakeDriver()
-    _patch_api_boundary(monkeypatch, drv, title="T")  # views="" default
+    _patch_api_boundary(monkeypatch, drv, title="T")  # views=None default
     monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
 
     r = api.scrape_video("dQw4w9WgXcQ", comments=True)
@@ -1404,7 +1405,8 @@ def test_scrape_result_unified_lines_matches_standalone(monkeypatch):
 
 
 def test_scrape_result_unified_lines_passes_views_as_subtitle(monkeypatch):
-    r = _scrape_all_three(monkeypatch, title="T", views="1,234,567 views")
+    r = _scrape_all_three(monkeypatch, title="T", views=1234567)
+    assert r.views_int == 1234567
     assert r.views == "1,234,567 views"
     expected = format_unified(
         "T",
@@ -1444,7 +1446,7 @@ def _patch_session_boundary(monkeypatch, *, on_safe_get=None, on_detect=None):
     monkeypatch.setattr(api, "safe_get", on_safe_get or (lambda *a, **k: None))
     monkeypatch.setattr(api, "detect_block", on_detect or (lambda d: ""))
     monkeypatch.setattr(api, "get_video_title", lambda d: "T")
-    monkeypatch.setattr(api, "get_video_views", lambda d: "")
+    monkeypatch.setattr(api, "get_video_views", lambda d: None)
     monkeypatch.setattr(
         api,
         "collect_comments",

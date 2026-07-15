@@ -49,7 +49,9 @@ def test_e2e_get_video_views():
         views = get_video_views(driver)
     finally:
         driver.quit()
-    assert views != ""
+    # The exact int, not a rounded "1.2B" label: Rick Astley is well past 1e9.
+    assert isinstance(views, int)
+    assert views > 1_000_000
     assert views.endswith(" views")
 
 

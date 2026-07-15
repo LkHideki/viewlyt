@@ -78,22 +78,29 @@ def _extract(url: str, opts: dict) -> dict:
 
 
 def _entry_to_item(e: dict) -> dict:
-    """Flat playlist/tab entry -> ``{"video_id", "title", "views", "url"}``.
+    """Flat playlist/tab entry -> ``{"video_id", "title", "views", "views_int", "url"}``.
 
     Pure (no I/O): the shape matches what ``htmltext.format_related`` expects,
-    so channel listings can reuse it verbatim. ``views`` is pre-formatted with
-    :func:`viewlyt.htmltext.format_view_count` (``""`` when ``view_count`` is
-    missing/zero, e.g. most ``old``-order entries where YouTube's flat tab
-    payload tends to omit it).
+    so channel listings can reuse it verbatim.
+
+    ``views_int`` is yt-dlp's EXACT ``view_count`` and is the source of truth
+    (``None`` when the payload omits it, e.g. most ``old``-order entries).
+    ``views`` is the rendered form kept only so the dict stays drop-in
+    compatible with the Selenium fallback's shape; ``format_related`` prefers
+    the int. Library callers wanting a number must read ``views_int`` — never
+    re-parse the string.
     """
     from .htmltext import format_view_count
 
     video_id = e.get("id") or ""
     url = e.get("url") or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+    raw = e.get("view_count")
+    views_int = int(raw) if isinstance(raw, (int, float)) and raw > 0 else None
     return {
         "video_id": video_id,
         "title": e.get("title") or "",
-        "views": format_view_count(e.get("view_count")),
+        "views": format_view_count(views_int),
+        "views_int": views_int,
         "url": url,
     }
 
