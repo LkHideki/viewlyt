@@ -65,8 +65,8 @@ def _run_batch(targets, tmp_path, **overrides):
 def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_path):
     recs_a = [_c("@joao", "ola", likes="5", date_raw="2 days ago")]
     table = {
-        "idA": ("vidA", "Hello World", recs_a, [], []),
-        "idB": ("vidB", "Outro", [_c("@x", "hi")], [], []),
+        "idA": ("vidA", "Hello World", recs_a, [], [], ""),
+        "idB": ("vidB", "Outro", [_c("@x", "hi")], [], [], ""),
     }
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
@@ -82,9 +82,55 @@ def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_p
     assert sums[0]["error"] is None and sums[0]["segments"] == 0
 
 
+def test_run_batch_surfaces_views_in_summary(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "scrape_one",
+        lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], [], "1,234,567 views"),
+    )
+
+    sums = _run_batch([("vid", "id")], tmp_path)
+    assert sums[0]["views"] == "1,234,567 views"
+
+
+def test_run_batch_unify_passes_views_as_subtitle(monkeypatch, tmp_path):
+    recs = [_c("@a", "oi", likes="5")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], "42 views")
+    )
+
+    _run_batch([("vid", "id")], tmp_path, unify=True, with_comments=True)
+
+    uf = tmp_path / f"{slugify('T')}-vid.unified.md"
+    body = uf.read_text(encoding="utf-8")
+    expected = format_unified(
+        "T",
+        [("Comments", format_comment_lines(recs, progress=False, merge_comments=True))],
+        subtitle="42 views",
+    )
+    assert body == "\n".join(expected) + "\n"
+    assert "42 views" in body.splitlines()[2]  # right after the title + blank line
+
+
+def test_run_batch_no_views_omits_subtitle_line(monkeypatch, tmp_path):
+    recs = [_c("@a", "oi", likes="5")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], ""))
+
+    _run_batch([("vid", "id")], tmp_path, unify=True, with_comments=True)
+
+    uf = tmp_path / f"{slugify('T')}-vid.unified.md"
+    body = uf.read_text(encoding="utf-8")
+    assert body.splitlines()[0] == "# T"
+    assert body.splitlines()[1] == ""
+    assert body.splitlines()[2] == "## Comments"  # no blank subtitle line inserted
+
+
 def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path):
     ids = ["v1", "v2", "v3", "v4"]
-    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], [], []) for i, vid in enumerate(ids)}
+    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], [], [], "") for i, vid in enumerate(ids)}
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
 
@@ -96,7 +142,7 @@ def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path
 def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
     recs = [_c("@joao", "parte1", likes="7"), _r("@maria", "@joao", "resp"), _c("@joao", "parte2")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], ""))
 
     merged = _run_batch([("vid", "id")], tmp_path, merge_comments=True)
     body = (tmp_path / f"{slugify('T')}-vid.md").read_text(encoding="utf-8")
@@ -109,7 +155,7 @@ def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
 def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
 
     sums = _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True)
 
@@ -125,7 +171,7 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
 def test_run_batch_ts_keeps_timestamps(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha"), ("0:04", "terceira")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
 
     _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, with_ts=True)
 
@@ -139,7 +185,7 @@ def test_run_batch_ts_keeps_timestamps(monkeypatch, tmp_path):
 def test_run_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
     grabbed = {}
     monkeypatch.setattr(
         cli, "_copy_to_clipboard", lambda text: grabbed.setdefault("t", text) or True
@@ -169,7 +215,7 @@ def test_run_batch_related_writes_file(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(
-        cli, "scrape_one", lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], related)
+        cli, "scrape_one", lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], related, "")
     )
 
     sums = _run_batch([("vid", "id")], tmp_path, with_related=True, related_limit=5)
@@ -192,7 +238,7 @@ def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
         }
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", [], [], related))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", [], [], related, ""))
 
     sums = _run_batch(
         [("vid", "id")], tmp_path, with_comments=False, with_related=True, related_limit=3
@@ -216,7 +262,7 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
         }
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, segs, rel))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, segs, rel, ""))
 
     sums = _run_batch(
         [("vid", "id")],
@@ -250,8 +296,8 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
 
 def test_run_batch_unify_all_global(monkeypatch, tmp_path):
     table = {
-        "idA": ("vidA", "TA", [_c("@a", "xa")], [], []),
-        "idB": ("vidB", "TB", [_c("@b", "xb")], [], []),
+        "idA": ("vidA", "TA", [_c("@a", "xa")], [], [], ""),
+        "idB": ("vidB", "TB", [_c("@b", "xb")], [], [], ""),
     }
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
@@ -273,8 +319,8 @@ def test_run_batch_unify_all_global(monkeypatch, tmp_path):
 
 def test_run_batch_per_video_error_isolation(monkeypatch, tmp_path):
     good = {
-        "idA": ("vidA", "A", [_c("@a", "x")], [], []),
-        "idC": ("vidC", "C", [_c("@c", "z")], [], []),
+        "idA": ("vidA", "A", [_c("@a", "x")], [], [], ""),
+        "idC": ("vidC", "C", [_c("@c", "z")], [], [], ""),
     }
 
     def scrape_one(driver, url, **kw):
@@ -307,7 +353,7 @@ def test_run_batch_blocked_retries_headed_when_fallback_true(monkeypatch, tmp_pa
         state["n"] += 1
         if state["n"] == 1:
             raise BlockedError("consent")
-        return ("vid", "T", [_c("@a", "x")], [], [])
+        return ("vid", "T", [_c("@a", "x")], [], [], "")
 
     monkeypatch.setattr(cli, "build_primed_driver", build)
     monkeypatch.setattr(cli, "scrape_one", scrape_one)
@@ -346,7 +392,7 @@ def test_run_batch_retries_failed_video_once(monkeypatch, tmp_path):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient")
-        return ("vid", "T", [_c("@a", "oi")], [], [])
+        return ("vid", "T", [_c("@a", "oi")], [], [], "")
 
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", flaky)
@@ -609,13 +655,14 @@ def test_main_unreadable_from_file_returns_two(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # scrape_video (library API)
 # --------------------------------------------------------------------------- #
-def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title"):
+def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title", views=""):
     """Patch the api-bound Selenium boundary to canned no-ops; return nothing."""
     monkeypatch.setattr(api, "build_driver", lambda **k: drv)
     for name in ("prime_consent_cookies", "safe_get", "dismiss_consent_dialog"):
         monkeypatch.setattr(api, name, lambda *a, **k: None)
     monkeypatch.setattr(api, "detect_block", lambda d: block)
     monkeypatch.setattr(api, "get_video_title", lambda d: title)
+    monkeypatch.setattr(api, "get_video_views", lambda d: views)
 
 
 def test_scrape_video_returns_structured_result(monkeypatch):
@@ -652,6 +699,24 @@ def test_scrape_video_returns_structured_result(monkeypatch):
     assert r.transcript_lines() == ["ola mundo"]
     assert r.transcript_lines(timestamps=True, pair=False) == format_transcript(segs)
     assert drv.quit_calls == 1
+
+
+def test_scrape_video_surfaces_views(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T", views="1,234,567 views")
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True)
+    assert r.views == "1,234,567 views"
+
+
+def test_scrape_video_views_default_empty(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T")  # views="" default
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True)
+    assert r.views == ""
 
 
 def test_scrape_video_quits_driver_on_error(monkeypatch):
@@ -805,10 +870,10 @@ def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
     assert list(tmp_path.glob("*.md")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.md"]
 
 
-def _scrape_all_three(monkeypatch, *, title="T"):
+def _scrape_all_three(monkeypatch, *, title="T", views=""):
     """scrape_video mocked to return comments + transcript + related."""
     drv = FakeDriver()
-    _patch_api_boundary(monkeypatch, drv, title=title)
+    _patch_api_boundary(monkeypatch, drv, title=title, views=views)
     recs = [
         {
             "kind": "comment",
@@ -860,6 +925,22 @@ def test_scrape_result_unified_lines_matches_standalone(monkeypatch):
     assert "## Comments" in r.unified_lines() and "## Related videos" in r.unified_lines()
 
 
+def test_scrape_result_unified_lines_passes_views_as_subtitle(monkeypatch):
+    r = _scrape_all_three(monkeypatch, title="T", views="1,234,567 views")
+    assert r.views == "1,234,567 views"
+    expected = format_unified(
+        "T",
+        [
+            ("Comments", r.comment_lines()),
+            ("Transcript", r.transcript_lines()),
+            ("Related videos", r.related_lines()),
+        ],
+        subtitle="1,234,567 views",
+    )
+    assert r.unified_lines() == expected
+    assert r.unified_lines()[2] == "1,234,567 views"
+
+
 def test_scrape_result_write_unify_replaces_separate_files(monkeypatch, tmp_path):
     r = _scrape_all_three(monkeypatch, title="T")
     written = r.write(str(tmp_path), unify=True)
@@ -885,6 +966,7 @@ def _patch_session_boundary(monkeypatch, *, on_safe_get=None, on_detect=None):
     monkeypatch.setattr(api, "safe_get", on_safe_get or (lambda *a, **k: None))
     monkeypatch.setattr(api, "detect_block", on_detect or (lambda d: ""))
     monkeypatch.setattr(api, "get_video_title", lambda d: "T")
+    monkeypatch.setattr(api, "get_video_views", lambda d: "")
     monkeypatch.setattr(
         api,
         "collect_comments",

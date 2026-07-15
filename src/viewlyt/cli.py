@@ -56,6 +56,7 @@ from .scraper import (
     extract_video_id,
     fetch_transcript,
     get_video_title,
+    get_video_views,
     prime_consent_cookies,
     safe_get,
 )
@@ -175,10 +176,10 @@ def scrape_one(
     with_transcript: bool = False,
     with_related: bool = False,
     related_limit: int = 0,
-) -> tuple[str, str, list[dict], list[tuple[str, str]], list[dict]]:
+) -> tuple[str, str, list[dict], list[tuple[str, str]], list[dict], str]:
     """Scrape a single video with an already-primed driver. Raises
     ``BlockedError`` on a consent/bot wall. Returns
-    ``(video_id, title, records, transcript, related)``."""
+    ``(video_id, title, records, transcript, related, views)``."""
     video_id = extract_video_id(url)
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
     log.info("video id: %s", video_id)
@@ -190,6 +191,7 @@ def scrape_one(
         raise BlockedError(block)
 
     title = get_video_title(driver)
+    views = get_video_views(driver)
     records = (
         collect_comments(
             driver,
@@ -211,7 +213,7 @@ def scrape_one(
     # Transcript is the LAST page action so its panel/scroll can't perturb the
     # comment lazy-load; fetch_transcript never raises (returns [] on any issue).
     transcript = fetch_transcript(driver, progress=progress) if with_transcript else []
-    return video_id, title, records, transcript, related
+    return video_id, title, records, transcript, related, views
 
 
 # --------------------------------------------------------------------------- #
@@ -413,7 +415,7 @@ def run_batch(
                     if driver is None:
                         driver = build_primed_driver(local_headless, user_data_dir)
                     try:
-                        vid, title, records, transcript, related = scrape_one(
+                        vid, title, records, transcript, related, views = scrape_one(
                             driver, url, **scrape_kw
                         )
                     except BlockedError as exc:
@@ -427,7 +429,7 @@ def run_batch(
                             _safe_quit(driver)
                             local_headless = False
                             driver = build_primed_driver(local_headless, user_data_dir)
-                            vid, title, records, transcript, related = scrape_one(
+                            vid, title, records, transcript, related, views = scrape_one(
                                 driver, url, **scrape_kw
                             )
                         else:
@@ -466,6 +468,7 @@ def run_batch(
                                 ("Transcript", tlines),
                                 ("Related videos", rlines),
                             ],
+                            subtitle=views,
                         )
                         copy_doc = block  # --copy: the unified document
                         if unify_all:
@@ -495,6 +498,7 @@ def run_batch(
                             "url": url,
                             "video_id": vid,
                             "title": title,
+                            "views": views,
                             "error": None,
                             "with_comments": with_comments,
                             "file": comment_file,
@@ -510,6 +514,8 @@ def run_batch(
                         }
                     )
                     done = []
+                    if views:
+                        done.append(views)
                     if with_comments:
                         done.append(f"{n_top} comments")
                     if with_transcript:
@@ -840,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     for s in ok:
         parts = []
+        if s.get("views"):
+            parts.append(s["views"])
         if args.unify or args.unify_all:
             counts = []
             if s.get("with_comments"):

@@ -45,6 +45,7 @@ from .scraper import (
     extract_video_id,
     fetch_transcript,
     get_video_title,
+    get_video_views,
     prime_consent_cookies,
     safe_get,
 )
@@ -81,6 +82,7 @@ class ScrapeResult:
 
     video_id: str
     title: str
+    views: str = ""  # e.g. "1,234,567 views"; "" when unavailable
     comments: list[Comment] = field(default_factory=list)
     transcript: list[tuple[str, str]] = field(default_factory=list)
     related: list[RelatedVideo] = field(default_factory=list)
@@ -136,6 +138,7 @@ class ScrapeResult:
         return format_unified(
             self.title,
             [(header, lines) for _kind, header, _suffix, lines in self._sections(merge=merge)],
+            subtitle=self.views,
         )
 
     def write(self, out_dir: str, *, merge: bool = True, unify: bool = False) -> dict[str, Path]:
@@ -221,6 +224,7 @@ def _scrape_url(
     if block:
         raise BlockedError(block)
     title = get_video_title(driver)
+    views = get_video_views(driver)
     records = (
         collect_comments(
             driver,
@@ -240,6 +244,7 @@ def _scrape_url(
     return ScrapeResult(
         video_id=video_id,
         title=title,
+        views=views,
         comments=_to_comments(records),
         transcript=tx,
         related=_to_related(rel),
