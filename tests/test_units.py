@@ -40,6 +40,11 @@ from viewlyt.htmltext import (  # noqa: E402
     strip_timestamps,
 )
 from viewlyt.scraper import extract_video_id  # noqa: E402
+from viewlyt.snap import (  # noqa: E402
+    detect_target,
+    format_channel_snapshot,
+    format_video_snapshot,
+)
 from viewlyt.ytdl import _entry_to_item  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
@@ -1010,6 +1015,154 @@ def test_ytdl_lazy_import_no_yt_dlp() -> None:
     print("ok: ytdl_lazy_import_no_yt_dlp")
 
 
+def test_snap_detect_target() -> None:
+    # channel wins over video-id extraction (tried first)
+    assert detect_target("@veritasium") == ("channel", "@veritasium")
+    assert detect_target("https://www.youtube.com/@veritasium") == ("channel", "@veritasium")
+    cid = "UC" + "a" * 22
+    assert detect_target(f"https://www.youtube.com/channel/{cid}") == ("channel", f"channel/{cid}")
+    # video forms
+    assert detect_target("https://youtu.be/dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    assert detect_target("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == (
+        "video",
+        "dQw4w9WgXcQ",
+    )
+    assert detect_target("dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    # neither -> ValueError
+    for bad in ("", "   ", "just some prose"):
+        try:
+            detect_target(bad)
+            raise AssertionError(f"expected ValueError for {bad!r}")
+        except ValueError:
+            pass
+    print("ok: snap_detect_target")
+
+
+def test_snap_format_video_snapshot() -> None:
+    info = {
+        "title": "Why Machines Learn",
+        "channel": "Veritasium",
+        "channel_url": "https://www.youtube.com/@veritasium",
+        "upload_date": "20260503",
+        "duration": 1447,
+        "view_count": 4321987,
+        "like_count": 187654,
+        "comment_count": 9812,
+        "description": "A deep dive into ML.",
+        "chapters": [
+            {"start_time": 0, "title": "Intro"},
+            {"start_time": 90, "title": "The math"},
+        ],
+        "tags": ["machine learning", "ai"],
+    }
+    out = format_video_snapshot(info)
+    assert out == [
+        "# Why Machines Learn",
+        "",
+        "- Channel: Veritasium (https://www.youtube.com/@veritasium)",
+        "- Published: 2026-05-03",
+        "- Duration: 24:07",
+        "- Views: 4,321,987",
+        "- Likes: 187,654",
+        "- Comments: 9,812",
+        "",
+        "## Description",
+        "A deep dive into ML.",
+        "",
+        "## Chapters",
+        "1. [0:00] Intro",
+        "2. [1:30] The math",
+        "",
+        "## Tags",
+        "machine learning, ai",
+    ], out
+    print("ok: snap_format_video_snapshot")
+
+
+def test_snap_format_video_snapshot_missing_fields() -> None:
+    # sparse dict: no crash, absent sections/metrics simply omitted
+    out = format_video_snapshot({"title": "Bare Video"})
+    assert out == ["# Bare Video"], out
+    # completely empty dict never raises
+    assert format_video_snapshot({}) == []
+    # falsy metrics (0/None) are omitted, not rendered as "0"/"None"
+    out2 = format_video_snapshot(
+        {
+            "title": "T",
+            "view_count": 0,
+            "like_count": None,
+            "comment_count": None,
+            "chapters": None,
+            "tags": None,
+        }
+    )
+    assert out2 == ["# T"], out2
+    print("ok: snap_format_video_snapshot_missing_fields")
+
+
+def test_snap_format_channel_snapshot() -> None:
+    info = {
+        "channel": "Veritasium",
+        "uploader_id": "@veritasium",
+        "channel_url": "https://www.youtube.com/@veritasium",
+        "channel_follower_count": 15000000,
+        "channel_id": "UC" + "a" * 22,
+        "description": "Science videos.",
+        "entries": [
+            {
+                "id": "abc123def45",
+                "title": "Video A",
+                "url": "https://www.youtube.com/watch?v=abc123def45",
+                "view_count": 100,
+            },
+        ],
+    }
+    out = format_channel_snapshot(info)
+    assert out == [
+        "# Veritasium",
+        "",
+        "- Handle: @veritasium (https://www.youtube.com/@veritasium)",
+        "- Subscribers: 15,000,000",
+        f"- Channel id: UC{'a' * 22}",
+        "",
+        "## Description",
+        "Science videos.",
+        "",
+        "## Latest videos",
+        "1. [100 views. Video A](https://www.youtube.com/watch?v=abc123def45)",
+    ], out
+    print("ok: snap_format_channel_snapshot")
+
+
+def test_snap_format_channel_snapshot_missing_fields() -> None:
+    assert format_channel_snapshot({}) == []
+    out = format_channel_snapshot({"channel": "Bare Channel"})
+    assert out == ["# Bare Channel"], out
+    print("ok: snap_format_channel_snapshot_missing_fields")
+
+
+def test_snap_lazy_import_no_yt_dlp() -> None:
+    """`import viewlyt.snap` (and its pure helpers) must NOT import yt_dlp/selenium."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    code = (
+        "import sys\n"
+        "from viewlyt import snap\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by `from viewlyt import snap`'\n"
+        "assert 'selenium' not in sys.modules, 'selenium imported by `from viewlyt import snap`'\n"
+        "snap.detect_target('@veritasium')\n"
+        "snap.format_video_snapshot({})\n"
+        "snap.format_channel_snapshot({})\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by a pure helper'\n"
+    )
+    result = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    print("ok: snap_lazy_import_no_yt_dlp")
+
+
 def test_join_unified() -> None:
     a = format_unified("V1", [("Comments", ["c1"])])
     b = format_unified("V2", [("Related videos", ["r1"])])
@@ -1323,6 +1476,12 @@ if __name__ == "__main__":
     test_ytdl_channel_entries_unknown_order()
     test_ytdl_video_info_and_channel_info()
     test_ytdl_lazy_import_no_yt_dlp()
+    test_snap_detect_target()
+    test_snap_format_video_snapshot()
+    test_snap_format_video_snapshot_missing_fields()
+    test_snap_format_channel_snapshot()
+    test_snap_format_channel_snapshot_missing_fields()
+    test_snap_lazy_import_no_yt_dlp()
     test_join_unified()
     test_format_transcript()
     test_strip_timestamps()

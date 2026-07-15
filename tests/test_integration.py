@@ -19,6 +19,7 @@ from conftest import make_reply as _r
 
 import viewlyt.api as api
 import viewlyt.cli as cli
+import viewlyt.snap as snap
 import viewlyt.watch as watch
 from viewlyt.cli import format_comment_lines
 from viewlyt.htmltext import (
@@ -1184,3 +1185,104 @@ def test_watch_empty_queue_never_dispatches(monkeypatch, tmp_path):
 
     rc = watch.main(["--queue-file", str(qf), "--timeout", "1", "--yes"])
     assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# vl snap (viewlyt.snap.main), patched at snap.ytdl.* / snap.copy_to_clipboard
+# --------------------------------------------------------------------------- #
+def test_snap_video_writes_file_and_prints(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        snap.ytdl,
+        "video_info",
+        lambda vid: {"title": "Why Machines Learn", "channel": "Veritasium", "view_count": 100},
+    )
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path)])
+    assert rc == 0
+
+    out_file = tmp_path / "why-machines-learn-dQw4w9WgXcQ.snapshot.md"
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "# Why Machines Learn" in content
+    assert "- Channel: Veritasium" in content
+
+    captured = capsys.readouterr()
+    assert "Why Machines Learn" in captured.out
+
+
+def test_snap_channel_writes_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        snap.ytdl,
+        "channel_info",
+        lambda ref, latest=5: {
+            "channel": "Veritasium",
+            "uploader_id": "@veritasium",
+            "entries": [],
+        },
+    )
+
+    rc = snap.main(["@veritasium", "-o", str(tmp_path)])
+    assert rc == 0
+
+    out_file = tmp_path / "veritasium.snapshot.md"
+    assert out_file.exists()
+    assert "# Veritasium" in out_file.read_text(encoding="utf-8")
+
+
+def test_snap_channel_ref_tried_before_video_id(monkeypatch, tmp_path):
+    """A channel URL must route to channel_info, never video_info."""
+    calls = []
+    monkeypatch.setattr(
+        snap.ytdl,
+        "channel_info",
+        lambda ref, latest=5: calls.append(("channel", ref)) or {"channel": "C", "entries": []},
+    )
+    monkeypatch.setattr(
+        snap.ytdl,
+        "video_info",
+        lambda vid: calls.append(("video", vid)) or {"title": "T"},
+    )
+
+    rc = snap.main(["https://www.youtube.com/@veritasium", "-o", str(tmp_path), "-q"])
+    assert rc == 0
+    assert calls == [("channel", "@veritasium")]
+
+
+def test_snap_invalid_target_exits_two(tmp_path, capsys):
+    rc = snap.main(["just some prose", "-o", str(tmp_path)])
+    assert rc == 2
+    assert "vl snap:" in capsys.readouterr().err
+
+
+def test_snap_download_error_exits_one(monkeypatch, tmp_path, capsys):
+    def boom(vid):
+        raise RuntimeError("Video unavailable")
+
+    monkeypatch.setattr(snap.ytdl, "video_info", boom)
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "vl snap:" in err
+    assert "Video unavailable" in err
+    assert not (tmp_path / "dQw4w9WgXcQ.snapshot.md").exists()
+
+
+def test_snap_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
+    monkeypatch.setattr(snap.ytdl, "video_info", lambda vid: {"title": "T", "view_count": 5})
+    copied = {}
+    monkeypatch.setattr(
+        snap, "copy_to_clipboard", lambda text: copied.setdefault("text", text) or True
+    )
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path), "--copy"])
+    assert rc == 0
+    assert "# T" in copied["text"]
+
+
+def test_snap_quiet_suppresses_stdout(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(snap.ytdl, "video_info", lambda vid: {"title": "T"})
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path), "-q"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""

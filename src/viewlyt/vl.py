@@ -8,12 +8,13 @@ URL/id, a flag, no args — falls through to the default scraper CLI.
     vl '<url>'              -> viewlyt.cli:main   (scrape; the default)
     vl ask out/*.md '<q>'   -> viewlyt.rag:main
     vl live '<live-url>'    -> viewlyt.live.cli:main
+    vl snap '<url>'         -> viewlyt.snap:main
     vl split out/*.md       -> viewlyt.split:main
     vl watch                -> viewlyt.watch:main
 
 Kept free of ``viewlyt.cli`` at import time (which pulls in Selenium via
-``.driver``/``.scraper``), so ``vl ask``/``vl live``/``vl split``/``vl watch``
-don't pay that cost until they actually dispatch a scrape.
+``.driver``/``.scraper``), so ``vl ask``/``vl live``/``vl snap``/``vl split``/
+``vl watch`` don't pay that cost until they actually dispatch a scrape.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import os
 import sys
 from pathlib import Path
 
-_SUBCOMMANDS = ("ask", "live", "split", "watch")
+_SUBCOMMANDS = ("ask", "live", "snap", "split", "watch")
 
 
 def _find_dotenv() -> Path | None:
@@ -75,6 +76,8 @@ def _subcommand_main(name: str):
     """Lazily import the entry point for a reserved subcommand (deps only touched here)."""
     if name == "ask":
         from .rag import main as sub_main
+    elif name == "snap":
+        from .snap import main as sub_main
     elif name == "split":
         from .split import main as sub_main
     elif name == "watch":

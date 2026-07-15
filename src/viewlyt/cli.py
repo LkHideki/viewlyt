@@ -84,6 +84,7 @@ examples:
 other modes (use `vl <mode> --help` for each one's options):
   vl ask out/*.md '<question>'                     # chat about the .md already collected
   vl live '<live-url>'                             # real-time live chat analysis
+  vl snap '<url-or-@handle>'                       # quick metadata snapshot (yt-dlp)
   vl split out/*.md                                # count tokens; copy budget-sized parts
   vl watch                                         # queue clipboard URLs, then scrape them
 """

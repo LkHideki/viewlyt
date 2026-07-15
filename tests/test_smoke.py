@@ -123,6 +123,15 @@ def test_vl_live_subcommand_routes(monkeypatch):
     assert seen["argv"] == ["https://youtu.be/live"]
 
 
+def test_vl_snap_subcommand_routes(monkeypatch):
+    """`vl snap ARGS` dispatches to viewlyt.snap:main with the `snap` token stripped."""
+    from viewlyt import vl
+
+    seen = _spy(monkeypatch, "viewlyt.snap", 7)
+    assert vl.main(["snap", "@veritasium"]) == 7
+    assert seen["argv"] == ["@veritasium"]
+
+
 def test_vl_split_subcommand_routes(monkeypatch):
     """`vl split ARGS` dispatches to viewlyt.split:main with the `split` token stripped."""
     from viewlyt import vl
@@ -184,6 +193,7 @@ def test_vl_help_alias_routes_to_scraper_help(monkeypatch):
     [
         ("viewlyt.rag", "ask"),
         ("viewlyt.live.cli", "live"),
+        ("viewlyt.snap", "snap"),
         ("viewlyt.split", "split"),
         ("viewlyt.watch", "watch"),
     ],
@@ -215,6 +225,7 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
     # subcommands are discoverable
     assert "vl ask" in r.stdout
     assert "vl live" in r.stdout
+    assert "vl snap" in r.stdout
     assert "vl split" in r.stdout
     assert "vl watch" in r.stdout
     # examples use the real command, not the retired `viewlyt` prefix
@@ -227,10 +238,12 @@ def test_vl_help_advertises_subcommands_and_uses_new_prefix():
     [
         (["ask", "--help"], "usage: vl ask"),
         (["live", "--help"], "usage: vl live"),
+        (["snap", "--help"], "usage: vl snap"),
         (["split", "--help"], "usage: vl split"),
         (["watch", "--help"], "usage: vl watch"),
         (["help", "ask"], "usage: vl ask"),
         (["help", "live"], "usage: vl live"),
+        (["help", "snap"], "usage: vl snap"),
         (["help", "split"], "usage: vl split"),
         (["help", "watch"], "usage: vl watch"),
     ],
@@ -241,7 +254,7 @@ def test_vl_subcommand_help_prog_name(argv, prefix):
     assert prefix in r.stdout, r.stdout
 
 
-@pytest.mark.parametrize("sub", ["ask", "live", "watch"])
+@pytest.mark.parametrize("sub", ["ask", "live", "snap", "watch"])
 def test_vl_subcommand_version_parity(sub):
     """Every mode answers --version with its own prog name (vl / vl ask / vl live / ...).
 
@@ -252,7 +265,7 @@ def test_vl_subcommand_version_parity(sub):
     assert r.stdout.startswith(f"vl {sub} "), r.stdout
 
 
-@pytest.mark.parametrize("sub", ["ask", "live", "split", "watch"])
+@pytest.mark.parametrize("sub", ["ask", "live", "snap", "split", "watch"])
 def test_vl_subcommand_help_never_imports_selenium_or_scraper(sub):
     """DX/perf guarantee: no Selenium-free subcommand may drag in the scraper/Selenium."""
     code = (
@@ -265,6 +278,24 @@ def test_vl_subcommand_help_never_imports_selenium_or_scraper(sub):
         f"assert 'selenium' not in sys.modules, 'selenium imported on vl {sub}'\n"
         f"assert 'viewlyt.cli' not in sys.modules, 'scraper CLI imported on vl {sub}'\n"
         f"assert 'viewlyt.scraper' not in sys.modules, 'scraper imported on vl {sub}'\n"
+        "print('OK')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": SRC}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
+def test_vl_snap_help_never_imports_yt_dlp():
+    """``vl snap --help`` must not pay yt-dlp's ~1s import cost (Etapa 6's lazy-import contract)."""
+    code = (
+        "import sys\n"
+        "from viewlyt.vl import main\n"
+        "try:\n"
+        "    main(['snap', '--help'])\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported on vl snap --help'\n"
         "print('OK')\n"
     )
     env = {**os.environ, "PYTHONPATH": SRC}
