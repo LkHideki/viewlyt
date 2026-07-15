@@ -45,6 +45,9 @@ classifiers = [
 dependencies = [
     "selenium>=4.21",
     "tqdm>=4.66.3",  # >=4.66.3 clears CVE-2024-34062 (we use only the progress API)
+    # Floor is a dated release close to today's; yt-dlp's YouTube extractor churns
+    # constantly with YouTube's own layout/API changes, so an old pin bit-rots fast.
+    "yt-dlp>=2026.7.4",
 ]
 
 [project.optional-dependencies]

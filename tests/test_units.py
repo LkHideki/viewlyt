@@ -40,6 +40,7 @@ from viewlyt.htmltext import (  # noqa: E402
     strip_timestamps,
 )
 from viewlyt.scraper import extract_video_id  # noqa: E402
+from viewlyt.ytdl import _entry_to_item  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
 TODAY = date(2026, 6, 6)
@@ -803,6 +804,212 @@ def test_format_duration() -> None:
     print("ok: format_duration")
 
 
+def test_ytdl_entry_to_item() -> None:
+    # normal flat entry (shape yt-dlp returns from extract_flat="in_playlist")
+    e = {
+        "id": "abc123def45",
+        "title": "Some Title",
+        "url": "https://www.youtube.com/watch?v=abc123def45",
+        "view_count": 1234567,
+        "duration": 754,
+    }
+    assert _entry_to_item(e) == {
+        "video_id": "abc123def45",
+        "title": "Some Title",
+        "views": "1,234,567 views",
+        "url": "https://www.youtube.com/watch?v=abc123def45",
+    }
+    # view_count None (common on the "old" uploads-playlist entries) -> "" not "None views"
+    e2 = {
+        "id": "xyz",
+        "title": "T",
+        "url": "https://www.youtube.com/watch?v=xyz",
+        "view_count": None,
+    }
+    got = _entry_to_item(e2)
+    assert got["views"] == "", got
+    # missing url falls back to a constructed watch URL from the id
+    e3 = {"id": "qqq", "title": "T"}
+    got3 = _entry_to_item(e3)
+    assert got3["url"] == "https://www.youtube.com/watch?v=qqq", got3
+    # completely empty entry never raises
+    assert _entry_to_item({}) == {"video_id": "", "title": "", "views": "", "url": ""}
+    print("ok: ytdl_entry_to_item")
+
+
+def _patch_ytdl_extract(fake):
+    """Manual monkeypatch of ytdl._extract (no pytest fixture: this file also runs
+    standalone via `python tests/test_units.py`). Returns a restore callable."""
+    from viewlyt import ytdl
+
+    original = ytdl._extract
+    ytdl._extract = fake
+    return ytdl, original
+
+
+def test_ytdl_channel_entries_recent_uses_extract() -> None:
+    """channel_entries(order='recent') calls _extract once and shapes the result."""
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        return {
+            "channel": "Some Channel",
+            "entries": [
+                {
+                    "id": "a",
+                    "title": "A",
+                    "url": "https://www.youtube.com/watch?v=a",
+                    "view_count": 10,
+                },
+                {
+                    "id": "b",
+                    "title": "B",
+                    "url": "https://www.youtube.com/watch?v=b",
+                    "view_count": 20,
+                },
+            ],
+        }
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 2, order="recent")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert [it["video_id"] for it in items] == ["a", "b"]
+    assert len(calls) == 1
+    url, opts = calls[0]
+    assert url == "https://www.youtube.com/@someone/videos"
+    assert opts["extract_flat"] == "in_playlist"
+    assert opts["playlistend"] == 2
+    print("ok: ytdl_channel_entries_recent_uses_extract")
+
+
+def test_ytdl_channel_entries_popular_not_implemented() -> None:
+    """order='popular' always raises, without even calling _extract (YouTube rejects PU...)."""
+
+    def boom(url, opts):
+        raise AssertionError("popular must not call _extract at all")
+
+    ytdl, original = _patch_ytdl_extract(boom)
+    try:
+        try:
+            ytdl.channel_entries("@someone", 5, order="popular")
+            raise AssertionError("expected NotImplementedError")
+        except NotImplementedError:
+            pass
+    finally:
+        ytdl._extract = original
+    print("ok: ytdl_channel_entries_popular_not_implemented")
+
+
+def test_ytdl_channel_entries_old_reverses_tail_slice() -> None:
+    """order='old' fetches the tail via playlist_items=-n: and reverses it (oldest first)."""
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        if "playlist?list=" in url:
+            # yt-dlp returns the tail slice in ascending-index order (least-old first,
+            # absolute-oldest last) -- channel_entries must reverse this.
+            return {
+                "entries": [
+                    {"id": "less_old", "title": "Less old", "url": "u1", "view_count": None},
+                    {"id": "oldest", "title": "Oldest", "url": "u2", "view_count": None},
+                ]
+            }
+        return {"channel": "Some Channel", "channel_id": "UCabcdefghijklmnopqrstuv"}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 2, order="old")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert [it["video_id"] for it in items] == ["oldest", "less_old"], items
+    # two calls: one to resolve channel_id, one to fetch the playlist tail
+    assert len(calls) == 2
+    playlist_call = calls[1]
+    assert "playlist?list=UULFabcdefghijklmnopqrstuv" in playlist_call[0]
+    assert playlist_call[1]["playlist_items"] == "-2:"
+    print("ok: ytdl_channel_entries_old_reverses_tail_slice")
+
+
+def test_ytdl_channel_entries_old_empty_channel_id() -> None:
+    """order='old' returns an empty list (not a crash) when channel_id can't be resolved."""
+
+    def fake_extract(url, opts):
+        return {"channel": "Some Channel", "channel_id": ""}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 5, order="old")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert items == []
+    print("ok: ytdl_channel_entries_old_empty_channel_id")
+
+
+def test_ytdl_channel_entries_unknown_order() -> None:
+    from viewlyt import ytdl
+
+    try:
+        ytdl.channel_entries("@someone", 5, order="bogus")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    print("ok: ytdl_channel_entries_unknown_order")
+
+
+def test_ytdl_video_info_and_channel_info() -> None:
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        return {"title": "T", "id": "vid123"}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        info = ytdl.video_info("vid123")
+        assert info == {"title": "T", "id": "vid123"}
+        assert calls[-1][0] == "https://www.youtube.com/watch?v=vid123"
+        assert calls[-1][1] == {}
+
+        def fake_extract_channel(url, opts):
+            calls.append((url, opts))
+            return {"channel": "C", "entries": []}
+
+        ytdl._extract = fake_extract_channel
+        cinfo = ytdl.channel_info("@someone", latest=3)
+        assert cinfo["channel"] == "C"
+        assert calls[-1][0] == "https://www.youtube.com/@someone/videos"
+        assert calls[-1][1]["playlistend"] == 3
+    finally:
+        ytdl._extract = original
+    print("ok: ytdl_video_info_and_channel_info")
+
+
+def test_ytdl_lazy_import_no_yt_dlp() -> None:
+    """`import viewlyt.ytdl` (and the module's pure helper) must NOT import yt_dlp."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    code = (
+        "import sys\n"
+        "from viewlyt import ytdl\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by `from viewlyt import ytdl`'\n"
+        "ytdl._entry_to_item({})\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by a pure helper'\n"
+    )
+    result = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    print("ok: ytdl_lazy_import_no_yt_dlp")
+
+
 def test_join_unified() -> None:
     a = format_unified("V1", [("Comments", ["c1"])])
     b = format_unified("V2", [("Related videos", ["r1"])])
@@ -1108,6 +1315,14 @@ if __name__ == "__main__":
     test_extract_channel_ref()
     test_format_view_count()
     test_format_duration()
+    test_ytdl_entry_to_item()
+    test_ytdl_channel_entries_recent_uses_extract()
+    test_ytdl_channel_entries_popular_not_implemented()
+    test_ytdl_channel_entries_old_reverses_tail_slice()
+    test_ytdl_channel_entries_old_empty_channel_id()
+    test_ytdl_channel_entries_unknown_order()
+    test_ytdl_video_info_and_channel_info()
+    test_ytdl_lazy_import_no_yt_dlp()
     test_join_unified()
     test_format_transcript()
     test_strip_timestamps()
