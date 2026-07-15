@@ -33,11 +33,12 @@ from queue import Empty, Queue
 
 from tqdm import tqdm
 
-from . import tokens
+from . import tokens, ytdl
 from .driver import build_driver
 from .htmltext import (
     REPLY_INDENT,
     convert_batch,
+    extract_channel_ref,
     format_related,
     format_transcript,
     format_unified,
@@ -49,6 +50,7 @@ from .htmltext import (
 from .htmltext import format_comment_lines as _format_comment_lines
 from .scraper import (
     BlockedError,
+    collect_channel_videos,
     collect_comments,
     collect_related,
     detect_block,
@@ -76,6 +78,8 @@ examples:
   vl -c -t '<url>'                                 # comments + transcript
   vl -t --ts '<url>'                               # transcript WITH the timestamps [m:ss]
   vl -r 17 '<url>'                                 # 17 related videos -> *.related.md
+  vl -C 30 '@veritasium'                           # 30 channel videos -> *.channel.md
+  vl -C 30 --order old '@veritasium'               # oldest videos first
   vl -u '<url>'                                    # all products in one file (--unify)
   vl -u --copy '<url>'                             # unify and copy to the clipboard
   vl --unify-all '<url1>' '<url2>'                 # all videos in a single file
@@ -150,6 +154,39 @@ def gather_urls(inputs: list[str], from_files: list[str]) -> list[tuple[str, str
             continue
         seen.add(vid)
         result.append((vid, raw))
+    return result
+
+
+def gather_channel_refs(inputs: list[str], from_files: list[str]) -> list[str]:
+    """Expand CLI inputs + ``--from-file`` into a de-duplicated, order-preserving
+    list of canonical channel refs (``extract_channel_ref``).
+
+    Mirrors :func:`gather_urls`: positional items that are existing files are
+    read as one candidate per line/cell; everything else is treated as a bare
+    ``@handle`` or channel URL directly. Items that don't parse are skipped
+    with a warning.
+    """
+    candidates: list[str] = []
+    for item in inputs or []:
+        if Path(item).is_file():
+            candidates.extend(read_urls_from_file(item))
+        else:
+            candidates.append(item)
+    for f in from_files or []:
+        candidates.extend(read_urls_from_file(f))
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in candidates:
+        try:
+            ref = extract_channel_ref(raw)
+        except ValueError:
+            log.warning("ignoring (not a channel handle/URL): %r", raw)
+            continue
+        if ref in seen:
+            continue
+        seen.add(ref)
+        result.append(ref)
     return result
 
 
@@ -304,6 +341,15 @@ def format_comment_lines(
 
 def _write(slug: str, video_id: str, lines: list[str], out_dir: str, suffix: str = "") -> Path:
     out_path = Path(out_dir) / f"{slug or 'video'}-{video_id}{suffix}.md"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return out_path
+
+
+def _write_channel(slug: str, lines: list[str], out_dir: str) -> Path:
+    """Like :func:`_write` but without a video id in the filename (channel
+    listings aren't a single video) -> ``out/<channel-slug>.channel.md``."""
+    out_path = Path(out_dir) / f"{slug or 'channel'}.channel.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return out_path
@@ -583,6 +629,123 @@ def run_batch(
     return summaries
 
 
+# --------------------------------------------------------------------------- #
+# Channel listing (-C/--channel): yt-dlp primary, Selenium fallback
+# --------------------------------------------------------------------------- #
+def run_channel_batch(
+    refs: list[str],
+    *,
+    n: int,
+    order: str,
+    out_dir: str,
+    headless: bool,
+    fallback: bool,
+    user_data_dir: str | None,
+    copy: bool = False,
+    quiet: bool = False,
+) -> list[dict]:
+    """List up to ``n`` videos for each channel ``ref``, sorted by ``order``.
+
+    Sequential over ``refs`` (yt-dlp is fast enough that a worker pool isn't
+    worth the complexity here, unlike the per-video ``run_batch``). For each
+    ref: try :func:`viewlyt.ytdl.channel_entries` first; on any exception (bad
+    ref, network failure, or the ``NotImplementedError`` ``channel_entries``
+    always raises for ``order="popular"`` — see ``ytdl.py``) OR an empty
+    result, fall back to :func:`viewlyt.scraper.collect_channel_videos`. The
+    Selenium driver is built lazily (only on the FIRST fallback) and shared
+    across every subsequent channel in this call, then quit at the end.
+
+    Writes ``out/<channel-slug>.channel.md`` (via :func:`_write_channel`,
+    content = ``format_related(items)``) for each channel that yields at
+    least one item; a channel that fails both engines gets an ``error`` in
+    its summary and no file. Returns one summary dict per ref, in input
+    order: ``{"ref", "channel", "count", "order", "engine", "channel_file",
+    "error"}``.
+    """
+    summaries: list[dict] = []
+    copy_docs: list[list[str]] = []
+    driver = None
+    announce = len(refs) > 1 and not quiet
+    bar = tqdm(total=len(refs), desc="channels", unit="channel", disable=(len(refs) <= 1 or quiet))
+
+    try:
+        for ref in refs:
+            name = ""
+            items: list[dict] = []
+            engine = "yt-dlp"
+            error: str | None = None
+            try:
+                name, items = ytdl.channel_entries(ref, n, order=order)
+            except Exception as exc:
+                log.info(
+                    "yt-dlp channel listing failed for %s (%s) — falling back to Selenium", ref, exc
+                )
+                items = []
+            if not items:
+                engine = "selenium"
+                if not fallback:
+                    error = "yt-dlp returned no videos and the Selenium fallback is disabled"
+                else:
+                    try:
+                        if driver is None:
+                            driver = build_primed_driver(headless, user_data_dir)
+                        items = collect_channel_videos(
+                            driver, ref, limit=n, order=order, progress=not quiet
+                        )
+                    except Exception as exc:
+                        # Isolate this channel; recycle the shared session so one
+                        # dead driver doesn't poison every remaining ref.
+                        error = str(exc) or type(exc).__name__
+                        log.warning("selenium channel listing failed for %s (%s)", ref, error)
+                        _safe_quit(driver)
+                        driver = None
+                        items = []
+                    else:
+                        if not items:
+                            error = f"could not list videos for {ref!r} (yt-dlp and Selenium both failed)"
+
+            channel_file = None
+            if items and not error:
+                slug = slugify(name or ref.lstrip("@"))
+                lines = format_related(items)
+                channel_file = str(_write_channel(slug, lines, out_dir))
+                if copy:
+                    copy_docs.append(lines)
+
+            summary = {
+                "ref": ref,
+                "channel": name,
+                "count": len(items),
+                "order": order,
+                "engine": engine,
+                "channel_file": channel_file,
+                "error": error,
+            }
+            summaries.append(summary)
+            bar.update(1)
+            if announce:
+                if error:
+                    bar.write(f"{_color('✗', '31')} {ref}  {error}")
+                else:
+                    label = name or ref
+                    bar.write(
+                        f"{_color('✓', '32')} {label}  {len(items)} videos "
+                        f"({order}, {engine}) -> {channel_file}"
+                    )
+    finally:
+        bar.close()
+        _safe_quit(driver)
+
+    if copy and copy_docs:
+        text = "\n".join(join_unified(copy_docs))
+        if text and _copy_to_clipboard(text):
+            log.info("copied %d chars to the clipboard", len(text))
+        elif text:
+            log.warning("could not copy to the clipboard (no pbcopy/xclip/xsel/clip found)")
+
+    return summaries
+
+
 def _copy_to_clipboard(text: str) -> bool:
     """Put ``text`` on the system clipboard (thin wrapper over the shared shim).
 
@@ -700,6 +863,22 @@ def build_parser() -> argparse.ArgumentParser:
         "(0 = off). Selects related; combine with -c/-t. "
         "Lists 'N. [<views> views. <title>](<url>)' — the sidebar exposes views, not likes.",
     )
+    p.add_argument(
+        "-C",
+        "--channel",
+        type=int,
+        default=0,
+        metavar="N",
+        help="treat the inputs as CHANNELS and list the first N videos each -> "
+        "out/<channel-slug>.channel.md (0 = off). Incompatible with -c/-t/-r/-u/"
+        "--unify-all. yt-dlp is tried first, falling back to Selenium.",
+    )
+    p.add_argument(
+        "--order",
+        choices=("recent", "popular", "old"),
+        default="recent",
+        help="channel video order for -C (default: recent). No-op without -C.",
+    )
     unify_group = p.add_mutually_exclusive_group()
     unify_group.add_argument(
         "-u",
@@ -773,6 +952,54 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _run_channel_mode(args: argparse.Namespace) -> int:
+    """``-C/--channel N``: list N videos per channel ref instead of scraping
+    videos. Split out of :func:`main` so the early branch there stays short."""
+    try:
+        refs = gather_channel_refs(args.inputs, args.from_file)
+    except OSError as exc:
+        log.error("could not read input file: %s", exc)
+        return 2
+    if not refs:
+        log.error("no valid channel handles/URLs given (pass @handle/URLs and/or --from-file)")
+        return 2
+
+    log.info("%d channel(s) to list (order=%s, n=%d)", len(refs), args.order, args.channel)
+    summaries = run_channel_batch(
+        refs,
+        n=args.channel,
+        order=args.order,
+        out_dir=args.out_dir,
+        headless=not args.headed,
+        fallback=not args.no_fallback,
+        user_data_dir=args.user_data_dir,
+        copy=args.copy,
+        quiet=args.quiet,
+    )
+
+    ok = [s for s in summaries if not s["error"]]
+    failed = [s for s in summaries if s["error"]]
+    print(
+        f"\nDone: {len(ok)}/{len(summaries)} channel(s) listed"
+        + (f", {len(failed)} failed" if failed else "")
+    )
+    for s in ok:
+        label = s["channel"] or s["ref"]
+        print(
+            f"  {_color('✓', '32')} {label}  {s['count']} videos "
+            f"({s['order']}, {s['engine']}) -> {s['channel_file']}"
+        )
+    for s in failed:
+        print(f"  {_color('✗', '31')} {s['ref']}  {s['error']}", file=sys.stderr)
+
+    if args.show_tokens and ok:
+        _print_token_report(ok, budget_tokens=int(args.budget * 1000))
+
+    if failed and not ok:
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(
@@ -785,6 +1012,21 @@ def main(argv: list[str] | None = None) -> int:
             "--no-ts is deprecated and a no-op: timestamps are stripped by default "
             "(use --ts to keep them)"
         )
+
+    if args.channel > 0:
+        if (
+            args.comments
+            or args.transcript
+            or args.transcript_only
+            or args.related
+            or args.unify
+            or args.unify_all
+        ):
+            log.error("-C/--channel is incompatible with -c/-t/-r/-u/--unify-all")
+            return 2
+        return _run_channel_mode(args)
+    if args.order != "recent":
+        log.warning("--order has no effect without -C/--channel")
 
     try:
         targets = gather_urls(args.inputs, args.from_file)
@@ -903,7 +1145,7 @@ def _print_token_report(ok_summaries: list[dict], budget_tokens: int) -> None:
     # Distinct output files, in first-seen order (unify-all shares one path).
     seen: dict[str, None] = {}
     for s in ok_summaries:
-        for key in ("file", "transcript_file", "related_file", "unified_file"):
+        for key in ("file", "transcript_file", "related_file", "unified_file", "channel_file"):
             path = s.get(key)
             if path:
                 seen.setdefault(path, None)
