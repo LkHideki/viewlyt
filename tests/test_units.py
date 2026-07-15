@@ -24,10 +24,13 @@ from viewlyt.cli import (  # noqa: E402
 )
 from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
+    extract_channel_ref,
     flatten_inline,
+    format_duration,
     format_related,
     format_transcript,
     format_unified,
+    format_view_count,
     group_consecutive_comments,
     html_to_text,
     join_unified,
@@ -719,6 +722,87 @@ def test_format_unified() -> None:
     print("ok: format_unified")
 
 
+def test_format_unified_subtitle() -> None:
+    out = format_unified(
+        "Meu Vídeo",
+        [("Comments", ["c1"])],
+        subtitle="1,234,567 views",
+    )
+    assert out == [
+        "# Meu Vídeo",
+        "",
+        "1,234,567 views",
+        "",
+        "## Comments",
+        "",
+        "c1",
+    ], out
+    # empty subtitle (the default) -> unchanged regression vs. no-subtitle form
+    assert format_unified("T", [("Comments", ["c1"])], subtitle="") == format_unified(
+        "T", [("Comments", ["c1"])]
+    )
+    # subtitle alone, no sections
+    assert format_unified("T", [], subtitle="42 views") == ["# T", "", "42 views"]
+    # subtitle with no title still emits (no leading blank line since out is empty)
+    assert format_unified("", [], subtitle="42 views") == ["42 views"]
+    print("ok: format_unified_subtitle")
+
+
+def test_extract_channel_ref() -> None:
+    # bare handles
+    assert extract_channel_ref("@veritasium") == "@veritasium"
+    assert extract_channel_ref("  @a.b-c_9  ") == "@a.b-c_9"
+    # handle URLs, with/without trailing segments
+    assert extract_channel_ref("https://www.youtube.com/@veritasium") == "@veritasium"
+    assert extract_channel_ref("https://www.youtube.com/@veritasium/videos") == "@veritasium"
+    assert extract_channel_ref("youtube.com/@veritasium") == "@veritasium"
+    # /channel/UC...
+    cid = "UC" + "a" * 22
+    assert extract_channel_ref(f"https://www.youtube.com/channel/{cid}") == f"channel/{cid}"
+    assert extract_channel_ref(f"https://www.youtube.com/channel/{cid}/videos") == f"channel/{cid}"
+    # /c/<name> and /user/<name>
+    assert extract_channel_ref("https://www.youtube.com/c/SomeName") == "c/SomeName"
+    assert extract_channel_ref("https://www.youtube.com/user/SomeUser") == "user/SomeUser"
+
+    # rejections: watch URLs, youtu.be, bare video ids, prose
+    for bad in (
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ",
+        "dQw4w9WgXcQ",  # 11-char video id: must NOT be swallowed as a channel
+        "just some prose about a channel",
+        "",
+        "   ",
+        "@ab",  # too short (min 3)
+        "https://example.com/@veritasium",  # not a youtube host
+    ):
+        try:
+            extract_channel_ref(bad)
+            raise AssertionError(f"expected ValueError for {bad!r}")
+        except ValueError:
+            pass
+
+    print("ok: extract_channel_ref")
+
+
+def test_format_view_count() -> None:
+    assert format_view_count(1234567) == "1,234,567 views"
+    assert format_view_count(1) == "1 views"
+    assert format_view_count(0) == ""
+    assert format_view_count(None) == ""
+    print("ok: format_view_count")
+
+
+def test_format_duration() -> None:
+    assert format_duration(754) == "12:34"
+    assert format_duration(3723) == "1:02:03"
+    assert format_duration(0) == "0:00"
+    assert format_duration(None) == ""
+    assert format_duration(-1) == ""
+    assert format_duration(59) == "0:59"
+    assert format_duration(3600) == "1:00:00"
+    print("ok: format_duration")
+
+
 def test_join_unified() -> None:
     a = format_unified("V1", [("Comments", ["c1"])])
     b = format_unified("V2", [("Related videos", ["r1"])])
@@ -1020,6 +1104,10 @@ if __name__ == "__main__":
     test_transcript_timestamp_exact_token()
     test_format_related()
     test_format_unified()
+    test_format_unified_subtitle()
+    test_extract_channel_ref()
+    test_format_view_count()
+    test_format_duration()
     test_join_unified()
     test_format_transcript()
     test_strip_timestamps()

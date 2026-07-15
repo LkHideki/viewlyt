@@ -140,6 +140,78 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
 
 
+_HANDLE_RE = re.compile(r"^@[\w.-]{3,30}$")
+_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+
+
+def extract_channel_ref(text: str) -> str:
+    """Extract a canonical channel reference (path) from a handle or URL.
+
+    Accepts a bare handle (``@name``, 3-30 chars of ``[\\w.-]``), or a
+    ``youtube.com`` URL of the form ``/@handle[/videos]``,
+    ``/channel/UC...`` (a 24-char channel id starting with ``UC``), ``/c/<name>``,
+    or ``/user/<name>``. Returns the canonical path (e.g. ``"@veritasium"``,
+    ``"channel/UC..."``, ``"c/name"``, ``"user/name"``) with no leading slash and
+    no trailing segments (``/videos`` etc. are stripped).
+
+    Rejects watch URLs, youtu.be links, and ordinary prose by raising
+    ``ValueError`` — this NEVER delegates to :func:`extract_video_id`, whose
+    last-resort "any 11-char run" fallback would otherwise misidentify a
+    24-char channel id (e.g. ``UCHnyfMqiRRG1u-2MsSQLbXA``) or handle as a video.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    if _HANDLE_RE.match(raw):
+        return raw
+
+    parsed = urlparse(raw if "//" in raw else "https://" + raw)
+    host = (parsed.hostname or "").lower()
+    if "youtube" not in host or host.endswith("youtu.be"):
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts:
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    head = parts[0]
+    if head.startswith("@") and _HANDLE_RE.match(head):
+        return head
+    if head == "channel" and len(parts) > 1 and _CHANNEL_ID_RE.match(parts[1]):
+        return f"channel/{parts[1]}"
+    if head in ("c", "user") and len(parts) > 1 and parts[1]:
+        return f"{head}/{parts[1]}"
+
+    raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+
+def format_view_count(n: int | None) -> str:
+    """Format an integer view count as YouTube-style text, e.g. ``1234567 ->
+    "1,234,567 views"``. Returns ``""`` for ``None`` or ``0`` (matches the
+    convention elsewhere: no count -> no line prefix, see :func:`format_related`).
+    """
+    if not n:
+        return ""
+    return f"{n:,} views"
+
+
+def format_duration(seconds: int | float | None) -> str:
+    """Format a duration in seconds as ``m:ss`` (or ``h:mm:ss`` past an hour).
+
+    ``754 -> "12:34"``, ``3723 -> "1:02:03"``. Returns ``""`` for ``None`` or a
+    negative value.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 _YOUTUBE_HOST_RE = re.compile(r"youtube\.com|youtu\.be", re.I)
 
 
@@ -454,16 +526,23 @@ def format_comment_lines(
     return out
 
 
-def format_unified(title: str, sections: list[tuple[str, list[str]]]) -> list[str]:
+def format_unified(
+    title: str, sections: list[tuple[str, list[str]]], *, subtitle: str = ""
+) -> list[str]:
     """Combine a video's product sections into one document under a title and
     per-section Markdown headers.
 
     PRODUCT-AGNOSTIC: pass ``[(header, lines), ...]`` in the desired order; an
     empty section is skipped entirely (no header), consistent with the "no 0-byte
     files" rule. A future product type flows in by just adding a ``(header, lines)``
-    pair — no other change. Layout::
+    pair — no other change. ``subtitle`` (keyword-only, default ``""``) is an
+    optional line right after the title (e.g. the main video's view count) —
+    when non-empty it's separated from the title by a blank line; existing
+    callers that don't pass it are unaffected. Layout::
 
         # <title>
+
+        <subtitle>
 
         ## Comments
         <comment lines>
@@ -474,6 +553,10 @@ def format_unified(title: str, sections: list[tuple[str, list[str]]]) -> list[st
     out: list[str] = []
     if title:
         out.append(f"# {title}")
+    if subtitle:
+        if out:
+            out.append("")
+        out.append(subtitle)
     for header, lines in sections:
         if not lines:
             continue
