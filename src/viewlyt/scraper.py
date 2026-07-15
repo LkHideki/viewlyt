@@ -37,6 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
 from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
+from .htmltext import format_view_count
 
 log = logging.getLogger("viewlyt")
 
@@ -303,6 +304,37 @@ def get_video_title(driver) -> str:
     title = re.sub(r"\s*-\s*YouTube\s*$", "", title)
     title = re.sub(r"^\(\d+\)\s*", "", title)
     return title.strip()
+
+
+_VIEW_COUNT_JS = """
+var m = document.querySelector('meta[itemprop="interactionCount"]');
+if (m && m.content) { return m.content; }
+try {
+    var vc = window.ytInitialPlayerResponse.videoDetails.viewCount;
+    if (vc) { return vc; }
+} catch (e) {}
+return '';
+"""
+
+
+def get_video_views(driver) -> str:
+    """Return the main video's formatted view count, e.g. ``"1,234,567 views"``.
+
+    A single ``execute_script`` with an internal fallback: (1) the
+    ``meta[itemprop="interactionCount"]`` microdata tag (present in <head>, an
+    exact attribute-value selector, never a class-substring match), then
+    (2) ``window.ytInitialPlayerResponse.videoDetails.viewCount``. The raw
+    digits are normalized through :func:`viewlyt.htmltext.format_view_count`.
+    Never raises; returns ``""`` on any failure or when no count is found.
+    """
+    try:
+        raw = driver.execute_script(_VIEW_COUNT_JS) or ""
+    except WebDriverException:
+        return ""
+    digits = re.sub(r"\D", "", str(raw))
+    if not digits:
+        return ""
+    return format_view_count(int(digits))
 
 
 def detect_block(driver) -> str | None:
