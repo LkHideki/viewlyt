@@ -336,10 +336,12 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
 
 Every scrape now also reads the **view count of the main video itself** (not
 just its related sidebar), via `scraper.get_video_views` — a cheap read of the
-same page already open for comments/transcript, no extra request. It's
-formatted like everywhere else in the project, YouTube-style with thousands
-separators: `"12,345,678 views"` (empty when the count can't be read, which
-never fails the scrape).
+same page already open for comments/transcript, no extra request.
+
+It is the **exact integer**, not the rounded label the page shows you: the
+count comes from the watch page's `interactionCount` microdata, which carries
+the full number (`12345678`, never `12M`). The integer is the source of truth
+everywhere; the `"12,345,678 views"` text is only rendered when writing.
 
 The count surfaces in three places:
 
@@ -347,7 +349,10 @@ The count surfaces in three places:
   part when present: `✓ dQw4w9WgXcQ  12,345,678 views | 84 comments, 512 lines -> out/...md`
 - The **`--unify`/`--unify-all` output**, as a subtitle line right under the
   title heading (see [Unified output](#unified-output) below).
-- The **library**, as `ScrapeResult.views: str`.
+- The **library**, as `ScrapeResult.views_int: int | None` (`None` when the
+  count can't be read, which never fails the scrape). `ScrapeResult.views: str`
+  is still there as the rendered form — read `views_int` when you want to
+  sort, sum or compare, and never parse the string back into a number.
 
 ## Channel listing (`-C`)
 
@@ -382,10 +387,17 @@ and lists that channel's first N videos into
   `--from-file`); each gets its own `.channel.md`, processed sequentially
   (unlike per-video batches, `yt-dlp` is fast enough that a worker pool isn't
   worth it here). `--copy` puts all of them, joined, on the clipboard.
-- **Shorts and views:** like [related videos](#related-videos), the metric is
-  **views**; the `old` order in particular may leave `views` empty for some
-  entries (YouTube's playlist payload doesn't always carry a view count that
-  far back) — verbatim, never recomputed.
+- **Views:** the metric is **views** (like [related videos](#related-videos)),
+  and the precision depends on the engine, because the two sources differ:
+  - **`yt-dlp`** exposes the **exact** count, so you get `1,234,567 views`.
+  - **Selenium** can only read the label YouTube renders in the grid, which is
+    already **rounded** (`1.2M views`). It is kept **verbatim** — a rounded
+    label is never expanded into a fake `1200000`.
+  - The `old` order may leave views empty for some entries (YouTube's playlist
+    payload doesn't always carry a count that far back).
+
+  In the library, items carry `views_int: int | None` (the exact number, `None`
+  when only a rounded label was available) alongside the rendered `views: str`.
 
 ## Unified output
 
@@ -689,6 +701,8 @@ from viewlyt import scrape_video
 
 r = scrape_video("https://youtu.be/dQw4w9WgXcQ", transcript=True, related=5)
 print(r.title)
+print(r.views_int)                    # 12345678 — the exact int (None if unread)
+print(r.views)                        # "12,345,678 views" — the rendered form
 for c in r.top_level:                 # or r.comments / r.replies
     print(c.author, c.likes, c.date, c.text)
 for v in r.related:                   # RelatedVideo(video_id, title, views, url)
