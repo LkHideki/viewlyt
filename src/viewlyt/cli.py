@@ -682,14 +682,14 @@ def run_channel_batch(
                 )
                 items = []
             if not items:
-                engine = "selenium"
                 if not fallback:
                     error = "yt-dlp returned no videos and the Selenium fallback is disabled"
                 else:
+                    engine = "selenium"
                     try:
                         if driver is None:
                             driver = build_primed_driver(headless, user_data_dir)
-                        items = collect_channel_videos(
+                        name, items = collect_channel_videos(
                             driver, ref, limit=n, order=order, progress=not quiet
                         )
                     except Exception as exc:

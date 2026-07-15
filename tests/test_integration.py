@@ -709,7 +709,11 @@ def test_run_channel_batch_falls_back_to_selenium_when_ytdl_raises(monkeypatch, 
 
     monkeypatch.setattr(cli.ytdl, "channel_entries", raise_ytdl)
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "collect_channel_videos", lambda d, ref, limit, order, progress: items)
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
 
     sums = cli.run_channel_batch(
         ["@someone"],
@@ -731,7 +735,11 @@ def test_run_channel_batch_falls_back_when_ytdl_returns_empty(monkeypatch, tmp_p
     items = _channel_items(1, prefix="e")
     monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "collect_channel_videos", lambda d, ref, limit, order, progress: items)
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
 
     sums = cli.run_channel_batch(
         ["@someone"],
@@ -759,7 +767,11 @@ def test_run_channel_batch_popular_always_routes_to_selenium(monkeypatch, tmp_pa
 
     monkeypatch.setattr(cli.ytdl, "channel_entries", raise_not_implemented)
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "collect_channel_videos", lambda d, ref, limit, order, progress: items)
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
 
     sums = cli.run_channel_batch(
         ["@someone"],
@@ -780,7 +792,9 @@ def test_run_channel_batch_popular_always_routes_to_selenium(monkeypatch, tmp_pa
 def test_run_channel_batch_both_engines_fail_sets_error_no_file(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "collect_channel_videos", lambda d, ref, limit, order, progress: [])
+    monkeypatch.setattr(
+        cli, "collect_channel_videos", lambda d, ref, limit, order, progress: ("", [])
+    )
 
     sums = cli.run_channel_batch(
         ["@nobody"],
@@ -842,7 +856,9 @@ def test_run_channel_batch_recovers_after_collect_failure_on_earlier_ref(monkeyp
     def fake_collect(d, ref, limit, order, progress):
         if ref == "@channel-a":
             raise RuntimeError("session died")
-        return _channel_items(1, prefix=ref)
+        # Empty name: this test is about session recovery, and the slug it
+        # asserts below is the ref-derived degrade.
+        return "", _channel_items(1, prefix=ref)
 
     monkeypatch.setattr(cli, "collect_channel_videos", fake_collect)
 
@@ -881,7 +897,7 @@ def test_run_channel_batch_shares_one_driver_across_channels(monkeypatch, tmp_pa
     monkeypatch.setattr(
         cli,
         "collect_channel_videos",
-        lambda d, ref, limit, order, progress: _channel_items(1, prefix=ref),
+        lambda d, ref, limit, order, progress: ("", _channel_items(1, prefix=ref)),
     )
 
     sums = cli.run_channel_batch(
@@ -922,6 +938,39 @@ def test_run_channel_batch_no_fallback_errors_without_building_driver(monkeypatc
     s = sums[0]
     assert s["error"] is not None
     assert s["channel_file"] is None
+    # The engine must report what actually ran. Selenium was disabled and never
+    # built a driver, so claiming "selenium" here would be a lie in the summary.
+    assert s["engine"] == "yt-dlp"
+
+
+def test_run_channel_batch_selenium_fallback_keeps_channel_name(monkeypatch, tmp_path):
+    # The yt-dlp path binds the display name; the Selenium fallback must too, or
+    # the ✓ line and the output slug silently degrade to the raw @handle. This
+    # hits EVERY --order popular run, which never reaches yt-dlp by design.
+    items = _channel_items(1, prefix="n")
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Veritasium", items),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@veritasium"],
+        n=1,
+        order="popular",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["engine"] == "selenium"
+    assert s["channel"] == "Veritasium"
+    # The name drives the filename slug, not the raw handle.
+    assert s["channel_file"].endswith("veritasium.channel.md")
 
 
 def test_run_channel_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):

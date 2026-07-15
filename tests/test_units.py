@@ -560,11 +560,13 @@ class _ChannelStubDriver:
         has_chip: bool = True,
         block: str | None = None,
         raise_exc: bool = False,
+        name: str = "Someone",
     ) -> None:
         self._items = items
         self._has_chip = has_chip
         self._block = block
         self._raise = raise_exc
+        self._name = name
         self.current_url = "https://www.youtube.com/@someone/videos"
         self.page_source = "" if block != "botwall" else "sign in to confirm"
         self.get_calls: list[str] = []
@@ -582,6 +584,8 @@ class _ChannelStubDriver:
             raise WebDriverException("boom")
         if "var LABELS=arguments[0];" in script:  # _CONSENT_SCAN_JS: no dialog
             return None
+        if 'meta[property="og:title"]' in script:  # _CHANNEL_NAME_JS
+            return self._name
         if "SELS[s]" in script:  # _CLICK_CHANNEL_CHIP_JS
             if self._has_chip:
                 self.chip_clicked = True
@@ -604,8 +608,8 @@ def test_collect_channel_videos_resilience() -> None:
     # navigation) returns [] rather than raising.
     from viewlyt.scraper import collect_channel_videos
 
-    assert collect_channel_videos(_StubDriver(), "@x", limit=0) == []
-    assert collect_channel_videos(_ChannelStubDriver([], raise_exc=True), "@x", limit=5) == []
+    assert collect_channel_videos(_StubDriver(), "@x", limit=0) == ("", [])
+    assert collect_channel_videos(_ChannelStubDriver([], raise_exc=True), "@x", limit=5) == ("", [])
     print("ok: collect_channel_videos_resilience")
 
 
@@ -616,9 +620,12 @@ def test_collect_channel_videos_happy_path() -> None:
         {"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"},
         {"video_id": "def12345678", "title": "B", "views": "2 views", "url": "u2"},
     ]
-    drv = _ChannelStubDriver(items)
-    out = collect_channel_videos(drv, "@someone", limit=2, order="recent", progress=False)
+    drv = _ChannelStubDriver(items, name="Someone Official")
+    name, out = collect_channel_videos(drv, "@someone", limit=2, order="recent", progress=False)
     assert out == items
+    # The display name reaches the caller: it drives the ✓ line and the output
+    # slug, which would silently degrade to the raw @handle if it were dropped.
+    assert name == "Someone Official"
     assert drv.get_calls == ["https://www.youtube.com/@someone/videos"]
     print("ok: collect_channel_videos_happy_path")
 
@@ -628,7 +635,7 @@ def test_collect_channel_videos_popular_clicks_chip() -> None:
 
     items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
     drv = _ChannelStubDriver(items, has_chip=True)
-    out = collect_channel_videos(drv, "@someone", limit=1, order="popular", progress=False)
+    _, out = collect_channel_videos(drv, "@someone", limit=1, order="popular", progress=False)
     assert out == items
     assert drv.chip_clicked is True
     print("ok: collect_channel_videos_popular_clicks_chip")
@@ -641,7 +648,7 @@ def test_collect_channel_videos_no_chip_degrades_gracefully() -> None:
 
     items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
     drv = _ChannelStubDriver(items, has_chip=False)
-    out = collect_channel_videos(drv, "@someone", limit=1, order="old", progress=False)
+    _, out = collect_channel_videos(drv, "@someone", limit=1, order="old", progress=False)
     assert out == items
     assert drv.chip_clicked is False
     print("ok: collect_channel_videos_no_chip_degrades_gracefully")
@@ -656,10 +663,10 @@ def test_collect_channel_videos_blocked() -> None:
 
     items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
     drv = _ChannelStubDriver(items, block="botwall")
-    assert collect_channel_videos(drv, "@someone", limit=5, progress=False) == []
+    assert collect_channel_videos(drv, "@someone", limit=5, progress=False) == ("", [])
 
     drv2 = _ChannelStubDriver(items, block="consent")
-    assert collect_channel_videos(drv2, "@someone", limit=5, progress=False) == []
+    assert collect_channel_videos(drv2, "@someone", limit=5, progress=False) == ("", [])
     print("ok: collect_channel_videos_blocked")
 
 

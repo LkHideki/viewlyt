@@ -318,6 +318,33 @@ def get_video_title(driver) -> str:
     return title.strip()
 
 
+_CHANNEL_NAME_JS = """
+var m = document.querySelector('meta[property="og:title"]');
+if (m && m.content) { return m.content; }
+var l = document.querySelector('link[itemprop="name"]');
+if (l && l.content) { return l.content; }
+return '';
+"""
+
+
+def get_channel_name(driver) -> str:
+    """Return the channel's display name from a loaded channel page.
+
+    Sibling of :func:`get_video_title`, used by the ``vl -C`` Selenium fallback
+    so the summary line and the output slug carry the channel title instead of
+    the raw ``@handle``. ``og:title`` on a channel page is the channel name;
+    ``link[itemprop="name"]`` is the microdata fallback. Attribute selectors
+    only (never a class substring). NEVER raises: ``""`` means "unknown", and
+    the caller degrades to the ref.
+    """
+    try:
+        name = driver.execute_script(_CHANNEL_NAME_JS) or ""
+    except WebDriverException:
+        name = ""
+    name = re.sub(r"\s*-\s*YouTube\s*$", "", name)
+    return name.strip()
+
+
 _VIEW_COUNT_JS = """
 var m = document.querySelector('meta[itemprop="interactionCount"]');
 if (m && m.content) { return m.content; }
@@ -953,14 +980,18 @@ def _first_channel_video_id(driver) -> str:
 
 def collect_channel_videos(
     driver, ref: str, limit: int, order: str = "recent", progress: bool = True
-) -> list[dict]:
+) -> tuple[str, list[dict]]:
     """Collect up to ``limit`` videos from a channel's ``/videos`` grid.
 
     Selenium fallback for ``vl -C`` — modeled on :func:`collect_related`. Returns
-    a list of ``{"video_id", "title", "views", "url"}`` dicts (same shape as
+    ``(channel_name, items)``, mirroring :func:`ytdl.channel_entries` so the CLI
+    caller handles both engines identically; ``items`` are
+    ``{"video_id", "title", "views", "url"}`` dicts (same shape as
     :func:`collect_related`, reused verbatim by ``htmltext.format_related``).
-    NEVER raises: any error, block, or ``limit<=0`` returns ``[]`` — the CLI
-    caller treats an empty result as "fallback also failed" and surfaces one
+    ``channel_name`` is ``""`` when the page never rendered — the caller then
+    degrades the slug to the ref.
+    NEVER raises: any error, block, or ``limit<=0`` returns ``("", [])`` — the
+    CLI caller treats an empty list as "fallback also failed" and surfaces one
     error per channel instead of crashing the whole batch.
 
     ``order`` is ``"recent"`` (default "Latest" tab, no clicks), ``"popular"``,
@@ -970,7 +1001,7 @@ def collect_channel_videos(
     than failing outright).
     """
     if limit <= 0:
-        return []
+        return "", []
     url = f"https://www.youtube.com/{ref}/videos"
     try:
         if progress:
@@ -980,14 +1011,15 @@ def collect_channel_videos(
         block = detect_block(driver)
         if block:
             log.warning("channel page blocked (%s) for %s", block, ref)
-            return []
+            return "", []
 
+        name = get_channel_name(driver)
         sel = ", ".join(CHANNEL_ITEM_SELECTORS)
         try:
             WebDriverWait(driver, 8, poll_frequency=_POLL).until(lambda d: _count(d, sel) > 0)
         except TimeoutException:
             log.warning("channel grid never rendered for %s", ref)
-            return []
+            return name, []
 
         if order in ("popular", "old"):
             before_id = _first_channel_video_id(driver)
@@ -1025,10 +1057,10 @@ def collect_channel_videos(
         items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
         if progress:
             log.info("collected %d channel videos", len(items))
-        return items[:limit]
+        return name, items[:limit]
     except WebDriverException as exc:
         log.warning("channel video collection failed for %s: %s", ref, exc)
-        return []
+        return "", []
 
 
 # --------------------------------------------------------------------------- #
