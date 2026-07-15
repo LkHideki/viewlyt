@@ -17,16 +17,17 @@
 (`from viewlyt import scrape_video`, ships `py.typed`). It is **not a framework** —
 there's nothing to wire up or extend, just a tool you run and an API you call.
 
-**One command, three modes** — the extra modes are opt-in dependencies:
+**One command, several modes** — the extra modes are opt-in dependencies:
 
 | Command | What you get | Install |
 |---|---|---|
-| `vl '<url>'` | **Scrape** a video → Markdown in `out/` (transcript by default; `-c` comments, `-r` related, `-u` all-in-one) | `uv sync` |
+| `vl '<url>'` | **Scrape** a video → Markdown in `out/` (transcript by default; `-c` comments, `-r` related, `-C` channel listing, `-u` all-in-one) | `uv sync` |
+| `vl snap '<url-or-@handle>'` | **Snap** — a quick metadata snapshot (views, likes, duration, description, ...) of a video or channel, via `yt-dlp` | `uv sync` |
 | `vl ask out/*.md '<question>'` | **Ask** — chat / RAG over what you already collected, no re-scraping | `uv sync --extra ask` |
 | `vl live '<live-url>'` | **Live** — real-time live-chat analysis on a local dashboard | `uv sync --extra live` |
 
-Discover everything from the CLI: `vl --help`, or `vl help ask` / `vl help live`
-for a specific mode.
+Discover everything from the CLI: `vl --help`, or `vl help ask` / `vl help live` /
+`vl help snap` for a specific mode.
 
 ## Quickstart
 
@@ -49,9 +50,10 @@ repo root run `uv tool install .`, then just `vl '<url>'`.
 - [How the scraper works](#how-the-scraper-works)
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Options](#options)
 - [Several videos (batch mode)](#several-videos-batch-mode) · [Watch mode](#watch-mode-queue-from-the-clipboard)
-- [Transcript](#transcript) · [Related videos](#related-videos) · [Unified output](#unified-output)
+- [Transcript](#transcript) · [Related videos](#related-videos) · [Main-video views](#main-video-views)
+- [Channel listing (`-C`)](#channel-listing--c) · [Unified output](#unified-output)
 - [Getting past YouTube/Google blocks](#getting-past-youtubegoogle-blocks) · [Output format](#output-format)
-- Optional modes: [`vl live`](#live-mode-real-time) · [`vl ask`](#chat-with-your-collected-data-vl-ask)
+- Optional modes: [`vl live`](#live-mode-real-time) · [`vl ask`](#chat-with-your-collected-data-vl-ask) · [`vl snap`](#quick-metadata-snapshots-vl-snap)
 - [Use as a library](#use-as-a-library) · [Layout](#layout) · [Development](#development)
 
 ## How the scraper works
@@ -102,7 +104,9 @@ uv tool install .       # then: vl 'https://youtu.be/dQw4w9WgXcQ'
 
 The optional modes pull heavier dependencies only when you ask for them:
 `uv sync --extra ask` (chat), `--extra rag` (persistent RAG), `--extra live`
-(real-time dashboard), `--extra tokens` (token counts + `vl split`).
+(real-time dashboard), `--extra tokens` (token counts + `vl split`). `vl snap`
+and channel listing (`-C`) need no extra — `yt-dlp` is a **base** dependency,
+imported lazily so `vl --help`/`vl snap --help` stay cheap.
 
 ## Usage
 
@@ -139,6 +143,12 @@ uv run vl -t --ts 'https://youtu.be/dQw4w9WgXcQ'
 
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
 uv run vl -r 17 'https://youtu.be/dQw4w9WgXcQ'
+
+# 30 most recent videos of a channel -> out/<channel-slug>.channel.md:
+uv run vl -C 30 '@veritasium'
+
+# Same, but oldest first (also accepts a channel URL, not just a bare @handle):
+uv run vl -C 30 --order old 'https://www.youtube.com/@veritasium'
 
 # Everything in ONE file out/<slug>-<id>.unified.md (comments + transcript + related):
 uv run vl -u 'https://youtu.be/dQw4w9WgXcQ'        # -u == --unify
@@ -178,6 +188,8 @@ uv run vl videos.csv -j 4          # 4 browsers in parallel
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
 | `--ts, --timestamps` | off | Keeps the `[m:ss]`/`[mm:ss]` timestamps on transcript lines (default: stripped; `h:mm:ss` on long videos is always kept). `--no-ts` is a deprecated no-op. |
 | `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Selects related; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
+| `-C, --channel N` | `0` | Treats every input as a **channel** (bare `@handle`, or a channel/`/c/`/`/user/` URL) and lists its first N videos → `out/<channel-slug>.channel.md` (`0` = off). **Incompatible** with `-c`/`-t`/`-r`/`-u`/`--unify-all` (exit code 2). `yt-dlp` is tried first, falling back to Selenium — see [Channel listing](#channel-listing--c). |
+| `--order {recent,popular,old}` | `recent` | Sort order for `-C`'s video listing. No-op (warns) without `-C`. |
 | `-u, --unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
 | `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
 | `--copy` | off | Also copies the full output (the unified doc, or the produced file's content) to the system clipboard (needs `pbcopy`/`clip`/`xclip`/`xsel`) |
@@ -320,6 +332,61 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
   `[4K Remaster]`) breaks the Markdown link syntactically — it's kept as-is by
   design (the text stays readable). Treat the file as plain text.
 
+## Main-video views
+
+Every scrape now also reads the **view count of the main video itself** (not
+just its related sidebar), via `scraper.get_video_views` — a cheap read of the
+same page already open for comments/transcript, no extra request. It's
+formatted like everywhere else in the project, YouTube-style with thousands
+separators: `"12,345,678 views"` (empty when the count can't be read, which
+never fails the scrape).
+
+The count surfaces in three places:
+
+- The **CLI summary line** for each finished video, as the first `|`-separated
+  part when present: `✓ dQw4w9WgXcQ  12,345,678 views | 84 comments, 512 lines -> out/...md`
+- The **`--unify`/`--unify-all` output**, as a subtitle line right under the
+  title heading (see [Unified output](#unified-output) below).
+- The **library**, as `ScrapeResult.views: str`.
+
+## Channel listing (`-C`)
+
+With `-C`/`--channel N`, `vl` stops treating its inputs as video URLs and
+instead treats each one as a **channel** — a bare `@handle`, or a
+`youtube.com/@handle`, `/channel/UC...`, `/c/<name>`, or `/user/<name>` URL —
+and lists that channel's first N videos into
+`out/<channel-slug>.channel.md`, in the same numbered format as
+[related videos](#related-videos) (reusing the same formatter verbatim):
+
+```
+1. [4,321,987 views. Why Machines Learn](https://www.youtube.com/watch?v=abc123def45)
+2. [2,105,332 views. The Bug That Broke...](https://www.youtube.com/watch?v=xyz789ghi01)
+```
+
+- `--order {recent,popular,old}` (default `recent`) picks the sort:
+  - **`recent`** — the channel's `/videos` tab, newest first.
+  - **`old`** — the channel's oldest uploads, via `yt-dlp` (fetches only the
+    tail of the uploads playlist, not the whole channel history).
+  - **`popular`** — YouTube doesn't expose a working "most viewed" playlist to
+    `yt-dlp`, so this order **always** runs through the Selenium fallback
+    below (chip-clicking the channel's own "Popular" filter).
+- **Engine:** `yt-dlp` is tried first (fast, no browser) for `recent`/`old`;
+  if it fails, returns nothing, or the order is `popular`, `vl` automatically
+  falls back to a headless-Chrome pass that clicks the channel's own
+  sort chips. The engine actually used (`yt-dlp` or `selenium`) is reported in
+  the summary line: `✓ Veritasium  30 videos (recent, yt-dlp) -> out/veritasium.channel.md`.
+- **Incompatible** with `-c`/`-t`/`-r`/`-u`/`--unify-all` (mixing product
+  selectors with `-C` is a usage error, exit code 2) — a channel listing is
+  its own product, not a per-video one.
+- Several channel refs can be passed at once (positionally, and/or via
+  `--from-file`); each gets its own `.channel.md`, processed sequentially
+  (unlike per-video batches, `yt-dlp` is fast enough that a worker pool isn't
+  worth it here). `--copy` puts all of them, joined, on the clipboard.
+- **Shorts and views:** like [related videos](#related-videos), the metric is
+  **views**; the `old` order in particular may leave `views` empty for some
+  entries (YouTube's playlist payload doesn't always carry a view count that
+  far back) — verbatim, never recomputed.
+
 ## Unified output
 
 By default each product goes to its own file. To get **everything in one file**:
@@ -331,6 +398,8 @@ By default each product goes to its own file. To get **everything in one file**:
   ```
   # <video title>
 
+  12,345,678 views
+
   ## Comments
   @user [842 likes, 2026-06-04]: ...
 
@@ -340,6 +409,10 @@ By default each product goes to its own file. To get **everything in one file**:
   ## Related videos
   1. [1.2B views. ...](https://www.youtube.com/watch?v=...)
   ```
+
+  The view-count line is the main video's own **subtitle** (see
+  [Main-video views](#main-video-views)) — omitted when the count couldn't be
+  read.
 
 - **`--unify-all`** combines **all** the videos of a run into a single
   `out/unified-all.md` (one `# title` block per video, in input order; no
@@ -495,6 +568,68 @@ uv run vl ask --persist 'summarize the recurring complaints'   # reuses the inde
 or `analyze(paths, "question", ttl_days=15)` (persistent). The pure
 `prepare_documents` / `build_document` need no extra.
 
+## Quick metadata snapshots (`vl snap`)
+
+> Command: **`vl snap`**. Uses `yt-dlp`, a **base** dependency — no extra
+> `uv sync` flag needed, just `uv sync`.
+
+Sometimes you don't want a full scrape (comments, transcript, minutes of
+Selenium) — you just want the numbers: how many views, likes, comments does
+this video have right now? Or: what's this channel's subscriber count and
+its latest few uploads? `vl snap` answers that in a couple of seconds, via
+`yt-dlp` instead of a browser — **Selenium-free**, like `vl ask`/`vl split`/`vl watch`.
+
+```bash
+# A video: title, channel, views, likes, comments, date, duration, description,
+# chapters, tags -> printed to stdout AND out/<title-slug>-<video_id>.snapshot.md
+uv run vl snap 'https://youtu.be/dQw4w9WgXcQ'
+
+# A channel (bare @handle or a channel URL): name, handle, subscriber count,
+# description, latest 5 uploads -> out/<channel-slug>.snapshot.md
+uv run vl snap '@veritasium'
+
+# Also copy the snapshot to the clipboard; -q suppresses the stdout preview:
+uv run vl snap --copy -q 'https://youtu.be/dQw4w9WgXcQ'
+```
+
+Video snapshot, e.g.:
+
+```
+# Why Machines Learn
+
+- Channel: Veritasium (https://www.youtube.com/@veritasium)
+- Published: 2026-05-03
+- Duration: 24:07
+- Views: 4,321,987
+- Likes: 187,654
+- Comments: 9,812
+
+## Description
+...
+## Chapters
+1. [0:00] Intro
+## Tags
+machine learning, ai, ...
+```
+
+Channel snapshot: `# <name>` + Handle/Subscribers/Channel id + Description +
+a `## Latest videos` list (the same numbered format as
+[related videos](#related-videos)).
+
+- **Fields are omitted, not blanked**: whatever a video/channel doesn't expose
+  (comments disabled, no chapters, no tags, ...) simply doesn't get a line —
+  never a `None` or an empty heading.
+- Not a replacement for the full scrape: no comment text, no transcript, no
+  reply threads — just the metadata, in roughly the time a single HTTP
+  request takes. No `--budget`/token report either (a snapshot is a couple kt at most).
+- `-o, --out-dir DIR` (default `out`), `--copy`, `-q/--quiet` (suppresses the
+  stdout preview, keeps the file write), `-V/--version`.
+
+**Library use:** `from viewlyt.ytdl import video_info, channel_info` (raw
+`yt-dlp` dicts) and `from viewlyt.snap import format_video_snapshot,
+format_channel_snapshot` (the pure dict→Markdown formatters `vl snap` itself
+uses).
+
 ## Token budget & splitting (`vl split`)
 
 > Opt-in: `uv sync --extra tokens` (adds `tiktoken`). Command: **`vl split`**.
@@ -603,11 +738,15 @@ doc = join_unified([r.unified_lines() for r in results if r])
 The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
 `group_consecutive_comments`, `format_transcript`, `format_related`,
 `format_unified`, `join_unified`, `parse_relative_date`, `flatten_inline`,
-`slugify`, `extract_video_id` — and the Selenium-backed building blocks
-(`build_driver`, `collect_comments`, `collect_related`, `fetch_transcript`)
-are all exposed. `import viewlyt` stays Selenium-free until you touch a
-Selenium-backed name; to use only the pure helpers, import them straight from the
-leaf module: `from viewlyt.htmltext import html_to_text`.
+`slugify`, `extract_video_id`, `extract_channel_ref`, `format_view_count`,
+`format_duration` — and the Selenium-backed building blocks (`build_driver`,
+`collect_comments`, `collect_related`, `collect_channel_videos`,
+`fetch_transcript`, `get_video_views`) are all exposed. `import viewlyt` stays
+Selenium-free until you touch a Selenium-backed name; to use only the pure
+helpers, import them straight from the leaf module:
+`from viewlyt.htmltext import html_to_text`. The `yt-dlp`-backed helpers
+(`vl snap`/`-C`'s primary engine) live in `viewlyt.ytdl` and stay
+Selenium-free too — see [`vl snap`](#quick-metadata-snapshots-vl-snap).
 
 ## Layout
 
@@ -619,12 +758,14 @@ src/viewlyt/
   api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
   cli.py                  argparse, URL/file collection, instance pool, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
-  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related
-  htmltext.py             HTML→text, relative date, slug, flatten, extract_video_id, format_transcript/related/unified (pure, tested)
+  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related, main-video views, channel listing (Selenium fallback)
+  htmltext.py             HTML→text, relative date, slug, flatten, extract_video_id, extract_channel_ref, format_transcript/related/unified/view_count/duration (pure, tested)
+  ytdl.py                 thin yt-dlp wrapper (base dep, import lazy inside functions): channel listing (recent/old) + video/channel metadata for `vl snap`
   tokens.py               token estimate (lazy tiktoken) + pure budget-splitter (opt-in extra 'tokens')
   split.py                `vl split`: token report + interactive clipboard chunker (Selenium-free)
   watch.py                `vl watch`: clipboard-queue + dispatch into cli.main's batch (Selenium-free until dispatch)
-  clipboard.py            stdlib clipboard shim, copy (pbcopy/clip/xclip/xsel) + read (pbpaste/...), shared by cli/split/watch
+  snap.py                 `vl snap`: quick video/channel metadata snapshot via ytdl.py (Selenium-free)
+  clipboard.py            stdlib clipboard shim, copy (pbcopy/clip/xclip/xsel) + read (pbpaste/...), shared by cli/split/watch/snap
   rag.py                  `vl ask`: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
   live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard; extra 'live')
 tests/test_units.py       browser-free tests for the pure functions
