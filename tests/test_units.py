@@ -547,6 +547,122 @@ def test_collect_related_resilience() -> None:
     print("ok: collect_related_resilience")
 
 
+class _ChannelStubDriver:
+    """Fake driver good enough to drive collect_channel_videos end to end:
+    consent scan, block detection, grid-count polling, a sort-chip click, and
+    the shared _RELATED_JS harvest — all via one execute_script dispatcher
+    keyed on a recognizable substring of the script text."""
+
+    def __init__(
+        self,
+        items: list[dict],
+        *,
+        has_chip: bool = True,
+        block: str | None = None,
+        raise_exc: bool = False,
+    ) -> None:
+        self._items = items
+        self._has_chip = has_chip
+        self._block = block
+        self._raise = raise_exc
+        self.current_url = "https://www.youtube.com/@someone/videos"
+        self.page_source = "" if block != "botwall" else "sign in to confirm"
+        self.get_calls: list[str] = []
+        self.chip_clicked = False
+
+    def get(self, url: str) -> None:
+        if self._raise:
+            raise WebDriverException("boom")
+        self.get_calls.append(url)
+        if self._block == "consent":
+            self.current_url = "https://consent.youtube.com/"
+
+    def execute_script(self, script: str, *args):
+        if self._raise:
+            raise WebDriverException("boom")
+        if "var LABELS=arguments[0];" in script:  # _CONSENT_SCAN_JS: no dialog
+            return None
+        if "SELS[s]" in script:  # _CLICK_CHANNEL_CHIP_JS
+            if self._has_chip:
+                self.chip_clicked = True
+                return True
+            return False
+        if "for(var i=0;i<items.length;i++)" in script:  # _FIRST_CHANNEL_VIDEO_ID_JS
+            return (
+                self._items[0]["video_id"] if (self.chip_clicked or not self._has_chip) else "OLDID"
+            )
+        if "document.querySelectorAll(arguments[0]).length" in script:  # _count
+            return len(self._items)
+        if "out.push({video_id:id" in script:  # _RELATED_JS harvest
+            return self._items
+        return None
+
+
+def test_collect_channel_videos_resilience() -> None:
+    # limit<=0 short-circuits before touching the driver at all (works with the
+    # bare _StubDriver, which has no .get); any WebDriver error (incl. on
+    # navigation) returns [] rather than raising.
+    from viewlyt.scraper import collect_channel_videos
+
+    assert collect_channel_videos(_StubDriver(), "@x", limit=0) == []
+    assert collect_channel_videos(_ChannelStubDriver([], raise_exc=True), "@x", limit=5) == []
+    print("ok: collect_channel_videos_resilience")
+
+
+def test_collect_channel_videos_happy_path() -> None:
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [
+        {"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"},
+        {"video_id": "def12345678", "title": "B", "views": "2 views", "url": "u2"},
+    ]
+    drv = _ChannelStubDriver(items)
+    out = collect_channel_videos(drv, "@someone", limit=2, order="recent", progress=False)
+    assert out == items
+    assert drv.get_calls == ["https://www.youtube.com/@someone/videos"]
+    print("ok: collect_channel_videos_happy_path")
+
+
+def test_collect_channel_videos_popular_clicks_chip() -> None:
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, has_chip=True)
+    out = collect_channel_videos(drv, "@someone", limit=1, order="popular", progress=False)
+    assert out == items
+    assert drv.chip_clicked is True
+    print("ok: collect_channel_videos_popular_clicks_chip")
+
+
+def test_collect_channel_videos_no_chip_degrades_gracefully() -> None:
+    # No matching sort chip found: falls through to harvesting whatever is
+    # loaded (best-effort degrade) instead of failing outright.
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, has_chip=False)
+    out = collect_channel_videos(drv, "@someone", limit=1, order="old", progress=False)
+    assert out == items
+    assert drv.chip_clicked is False
+    print("ok: collect_channel_videos_no_chip_degrades_gracefully")
+
+
+def test_collect_channel_videos_blocked() -> None:
+    # Non-empty items so the grid-count wait would succeed if the block check
+    # were skipped — [] must only be reachable via detect_block, not via the
+    # grid-render wait timing out on an empty stub (that made the assertion a
+    # tautology: it passed even with `if block:` disabled).
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, block="botwall")
+    assert collect_channel_videos(drv, "@someone", limit=5, progress=False) == []
+
+    drv2 = _ChannelStubDriver(items, block="consent")
+    assert collect_channel_videos(drv2, "@someone", limit=5, progress=False) == []
+    print("ok: collect_channel_videos_blocked")
+
+
 def test_fetch_transcript_never_raises() -> None:
     # fetch_transcript must swallow ANY WebDriver error (incl. during the
     # reload-and-retry path) and return [] — a transcript failure can't abort
@@ -1459,6 +1575,11 @@ if __name__ == "__main__":
     test_comments_disabled()
     test_harvest_thread_fallback()
     test_collect_related_resilience()
+    test_collect_channel_videos_resilience()
+    test_collect_channel_videos_happy_path()
+    test_collect_channel_videos_popular_clicks_chip()
+    test_collect_channel_videos_no_chip_degrades_gracefully()
+    test_collect_channel_videos_blocked()
     test_fetch_transcript_never_raises()
     test_pick_user_agent_coherent()
     test_transcript_timestamp_exact_token()
