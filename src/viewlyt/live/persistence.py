@@ -52,7 +52,10 @@ def _fernet() -> Fernet:
     cached = _FERNETS.get(KEY_FILE)
     if cached is not None:
         return cached
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # 0700: the key and the state file are already 0600, but a listable dir still
+    # leaks their presence/mtimes to other local users; tighten a legacy 0755 too.
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    STATE_DIR.chmod(0o700)
     if not KEY_FILE.exists():
         _write_private(KEY_FILE, Fernet.generate_key())
     f = Fernet(KEY_FILE.read_bytes())
