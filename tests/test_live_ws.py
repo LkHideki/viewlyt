@@ -31,9 +31,20 @@ def _isolated_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
 
 
+class _LoopbackClient(TestClient):
+    """TestClient whose requests AND websockets carry a loopback Host.
+
+    The live app pins ``Host`` to loopback (anti-DNS-rebinding), and
+    ``websocket_connect`` ignores ``base_url`` — it would send ``Host: testserver``.
+    """
+
+    def websocket_connect(self, url: str, *args, **kwargs):  # type: ignore[override]
+        return super().websocket_connect("ws://127.0.0.1:8000" + url, *args, **kwargs)
+
+
 def _client() -> tuple[TestClient, LiveServer]:
     server = LiveServer(LLMConfig(), WindowConfig())
-    return TestClient(create_app(server)), server
+    return _LoopbackClient(create_app(server), base_url="http://127.0.0.1:8000"), server
 
 
 def _drain_until(ws, wanted: str, limit: int = 60) -> dict:

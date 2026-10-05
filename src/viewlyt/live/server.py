@@ -108,6 +108,31 @@ def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: 
     return False
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_allowed(host_header: str | None, allowed: frozenset[str] | None) -> bool:
+    """Decide whether a request's ``Host`` header names this server (anti-DNS-rebinding).
+
+    The Origin allow-list alone can't stop DNS rebinding: a page on
+    ``http://evil.test:8000`` whose DNS flips to 127.0.0.1 is *same-origin* with
+    itself, so its Origin matches the (attacker-chosen) Host and both checks pass
+    — letting it read ``/export.*`` and drive ``/control`` (CWE-350). Pinning the
+    Host to the names the server is actually bound to closes that. ``allowed=None``
+    disables the check (only for an explicit ``--allow-insecure-bind`` on a
+    wildcard address, where the reachable names can't be known).
+    """
+    if allowed is None:
+        return True
+    if not host_header:
+        return False
+    try:
+        hostname = urlsplit("//" + host_header).hostname
+    except ValueError:
+        return False
+    return (hostname or "").lower() in allowed
+
+
 class ConnectionManager:
     """Tracks the open dashboard sockets and fans a message out to all of them."""
 
@@ -917,13 +942,21 @@ def _parse_ingest_batch(items: list) -> list:
     return out
 
 
-def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
+def create_app(
+    server: LiveServer,
+    capture: object | None = None,
+    *,
+    allowed_hosts: frozenset[str] | None = _LOOPBACK_HOSTS,
+) -> FastAPI:
     """Build the FastAPI app: lifespan-managed worker, routes, then the static mount.
 
     ``capture`` is an optional :class:`~viewlyt.live.capture.BrowserCapture`: the
     lifespan starts/stops it alongside the worker, making the user's browser
     optional — the only route that works with Safari (WebKit blocks insecure
     ws:// from https pages for every host, loopback included).
+
+    ``allowed_hosts`` are the ``Host`` header names accepted on every HTTP route
+    and WebSocket (see :func:`_host_allowed`); anything else gets a 421/1008.
     """
 
     @asynccontextmanager
@@ -948,6 +981,8 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
         # youtube Origin, echoing that exact origin. A blanket
         # `Access-Control-Allow-Origin: *` (the old behavior) let ANY website the
         # operator visits read /export.* off their loopback (CWE-942).
+        if not _host_allowed(request.headers.get("host"), allowed_hosts):
+            return Response("Misdirected Request", status_code=421)
         origin = request.headers.get("origin")
         yt = _is_youtube_origin(origin)
         if request.method == "OPTIONS":
@@ -961,6 +996,17 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
             resp.headers["Access-Control-Allow-Headers"] = "*"
             resp.headers["Vary"] = "Origin"
         return resp
+
+    def _ws_allowed(ws: WebSocket, *, allow_youtube: bool) -> bool:
+        # Host first (anti-DNS-rebinding), then Origin (anti-CSWSH): with the Host
+        # pinned, the same-origin branch of _origin_allowed can't be satisfied by
+        # an attacker-controlled hostname.
+        return _host_allowed(ws.headers.get("host"), allowed_hosts) and _origin_allowed(
+            ws.headers.get("origin"),
+            ws.url.hostname or "127.0.0.1",
+            ws.url.port or 8000,
+            allow_youtube=allow_youtube,
+        )
 
     @app.get("/snippet.js")
     async def snippet_js(request: Request) -> Response:
@@ -1009,12 +1055,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/ingest")
     async def ingest(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=True,
-        ):
+        if not _ws_allowed(ws, allow_youtube=True):
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -1040,12 +1081,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/dashboard")
     async def dashboard(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=False,
-        ):
+        if not _ws_allowed(ws, allow_youtube=False):
             await ws.close(code=1008)
             return
         await server.dash.connect(ws)
@@ -1064,12 +1100,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/control")
     async def control(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=False,
-        ):
+        if not _ws_allowed(ws, allow_youtube=False):
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -1084,9 +1115,6 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
         app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
     return app
-
-
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def run(
@@ -1159,7 +1187,13 @@ def run(
         from .capture import BrowserCapture, popout_url
 
         capture = BrowserCapture(popout_url(capture_url), render_snippet(host, port))
-    app = create_app(server, capture=capture)
+    if host in {"0.0.0.0", "::", ""}:
+        # Wildcard bind (only via --allow-insecure-bind): the names clients will
+        # use to reach us are unknowable, so the Host pin can't be enforced.
+        allowed_hosts: frozenset[str] | None = None
+    else:
+        allowed_hosts = _LOOPBACK_HOSTS | {host.lower()}
+    app = create_app(server, capture=capture, allowed_hosts=allowed_hosts)
     if host not in _LOOPBACK_HOSTS:
         # Reached only with allow_insecure_bind=True (else run() already refused).
         logger.warning(

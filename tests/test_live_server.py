@@ -435,7 +435,9 @@ def test_cors_headers_only_for_youtube_origin() -> None:
 
     from viewlyt.live.server import create_app
 
-    client = TestClient(create_app(LiveServer(LLMConfig(), WindowConfig())))
+    client = TestClient(
+        create_app(LiveServer(LLMConfig(), WindowConfig())), base_url="http://127.0.0.1:8000"
+    )
 
     # A foreign website must get NO cross-origin grant on the session export.
     r = client.get("/export.json", headers={"origin": "https://evil.example"})
