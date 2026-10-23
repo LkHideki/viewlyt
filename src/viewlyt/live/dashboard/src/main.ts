@@ -63,7 +63,7 @@ interface StateMsg {
     merge_authors?: boolean;
     capacity?: number;
   };
-  model: { base_url: string; model: string; budget?: number; language?: string };
+  model: { base_url: string; model: string; decider_model?: string; budget?: number; language?: string };
   paused: boolean;
   processing?: boolean;
   budget_blocked?: boolean;
@@ -2898,6 +2898,7 @@ function handleState(msg: StateMsg): void {
   // Model inputs
   setInputVal("base_url", msg.model.base_url);
   setInputVal("model", msg.model.model);
+  setInputVal("decider_model", typeof msg.model.decider_model === "string" ? msg.model.decider_model : "");
   // api_key is intentionally not filled (write-only)
 
   // Spending budget (B8): remember it, mirror it onto the #budget field (when
@@ -3261,6 +3262,7 @@ function wireButtons(): void {
       base_url: inputVal("base_url"),
       model: inputVal("model"),
     };
+    op["decider_model"] = inputVal("decider_model").trim();
     if (apiKey !== "") {
       op["api_key"] = apiKey;
     }
