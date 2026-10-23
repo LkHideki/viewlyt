@@ -35,9 +35,9 @@ from fastapi.staticfiles import StaticFiles
 from . import persistence
 from .llm import (
     PROVIDERS,
-    LLMClient,
     LLMConfig,
     LLMRunner,
+    build_runner,
     decompose_probe,
     rewrite_probe_spec,
     run_probes,
@@ -215,7 +215,7 @@ class LiveServer:
     def client(self) -> LLMRunner:
         """Lazily build (and cache) the LLM client for the current config."""
         if self._client is None:
-            self._client = LLMClient(self.llm_cfg)
+            self._client = build_runner(self.llm_cfg)
         return self._client
 
     def state_message(self) -> dict:
@@ -272,6 +272,7 @@ async def persist(server: LiveServer) -> None:
             "api_key": server.llm_cfg.api_key,
             "budget": server.llm_cfg.budget_usd,
             "language": server.llm_cfg.language,
+            "decider_model": server.llm_cfg.decider_model,
         },
         [p.to_dict() for p in server.probes.values()],
     )
@@ -340,6 +341,12 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 model=data.get("model") or server.llm_cfg.model,
                 budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
                 language=str(data.get("language") or server.llm_cfg.language),
+                # Present key (even "") is explicit: "" clears the decider.
+                decider_model=(
+                    str(data["decider_model"])
+                    if "decider_model" in data
+                    else server.llm_cfg.decider_model
+                ),
             )
             server._client = None
         elif op == "pause":
@@ -1161,6 +1168,7 @@ def run(
             model=m["model"],
             budget_usd=float(m.get("budget", 0.0)),
             language=str(m.get("language") or "Portuguese (Brazil)"),
+            decider_model=str(m.get("decider_model") or ""),
         )
         server._client = None
         for pd in st.get("probes", []):
@@ -1179,6 +1187,7 @@ def run(
                 "api_key": server.llm_cfg.api_key,
                 "budget": server.llm_cfg.budget_usd,
                 "language": server.llm_cfg.language,
+                "decider_model": server.llm_cfg.decider_model,
             },
             [p.to_dict() for p in server.probes.values()],
         )

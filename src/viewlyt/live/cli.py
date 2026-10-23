@@ -11,6 +11,7 @@ import argparse
 import os
 from importlib.metadata import PackageNotFoundError, version
 
+from .decisions import DEFAULT_DECIDER_MODEL
 from .llm import LLMConfig, provider_base_url
 from .window import WindowConfig
 
@@ -65,6 +66,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=os.environ.get("LLM_NAME") or "google/gemini-3.1-flash-lite",
         help="LLM model name (default: $LLM_NAME, else google/gemini-3.1-flash-lite)",
+    )
+    parser.add_argument(
+        "--decider",
+        nargs="?",
+        const=DEFAULT_DECIDER_MODEL,
+        default=os.environ.get("LLM_DECIDER") or "",
+        metavar="MODEL",
+        help="Decision model that classifies messages instead of the chat model "
+        "(cheaper/faster; OpenRouter or Perplexity only). `--decider` alone = "
+        f"{DEFAULT_DECIDER_MODEL}; default: $LLM_DECIDER, else off",
     )
     parser.add_argument(
         "-n",
@@ -129,6 +140,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _looks_like_live_url(value: str) -> bool:
+    """True when a ``--decider`` value is really the positional live URL.
+
+    ``--decider`` takes an OPTIONAL model (``nargs="?"``), so argparse greedily eats a
+    following positional: ``vl live --decider 'https://youtube.com/...'`` would make the
+    URL the model name and leave ``url`` empty. A model id never has a scheme or a
+    YouTube host, so such a value is unambiguously the URL.
+    """
+    v = value.lower()
+    return "://" in v or "youtube.com" in v or "youtu.be" in v
+
+
+def untangle_decider(args: argparse.Namespace) -> argparse.Namespace:
+    """Move a URL swallowed by ``--decider`` back into ``url`` (decider = default model)."""
+    if args.decider and args.url is None and _looks_like_live_url(args.decider):
+        args.url = args.decider
+        args.decider = DEFAULT_DECIDER_MODEL
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse arguments, configure LLM/window, and run the server.
 
@@ -139,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         Exit code (0 on success or KeyboardInterrupt, non-zero on error).
     """
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = untangle_decider(parser.parse_args(argv))
 
     # Server-side capture needs a target — fail fast instead of booting a
     # dashboard that will never see messages. (Chrome itself is checked at
@@ -158,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         base_url=resolved_base_url,
         api_key=args.api_key,
         model=args.model,
+        decider_model=args.decider,
     )
     window = WindowConfig(
         n=args.n,

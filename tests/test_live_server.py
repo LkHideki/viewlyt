@@ -414,6 +414,35 @@ def test_set_model_keeps_key_for_same_or_known_provider(tmp_path, monkeypatch) -
     assert srv.llm_cfg.api_key == "sk-secret"
 
 
+def test_set_model_decider_model_sets_clears_and_keeps(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    srv = LiveServer(LLMConfig(api_key="sk"), WindowConfig())
+    assert srv.llm_cfg.decider_model == ""
+
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": "perplexity/d"}))
+    assert srv.llm_cfg.decider_model == "perplexity/d"
+    assert srv.llm_cfg.to_public_dict()["decider_model"] == "perplexity/d"
+    assert srv.state_message()["model"]["decider_model"] == "perplexity/d"
+
+    # Absent key (e.g. a plain model swap) keeps it...
+    asyncio.run(apply_control(srv, {"op": "set_model", "model": "other"}))
+    assert srv.llm_cfg.decider_model == "perplexity/d"
+
+    # ...and an explicit empty string clears it.
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": ""}))
+    assert srv.llm_cfg.decider_model == ""
+
+
+def test_set_model_decider_model_is_persisted(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    from viewlyt.live import persistence
+
+    srv = LiveServer(LLMConfig(api_key="sk"), WindowConfig())
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": "perplexity/d"}))
+    st = persistence.load_state()
+    assert st is not None and st["model"]["decider_model"] == "perplexity/d"
+
+
 def test_set_model_uses_explicit_key_for_unknown_host(tmp_path, monkeypatch) -> None:
     _persist_to_tmp(tmp_path, monkeypatch)
     srv = LiveServer(LLMConfig(api_key="sk-old"), WindowConfig())

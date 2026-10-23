@@ -64,3 +64,30 @@ def test_key_and_state_files_are_created_0600(tmp_path, monkeypatch) -> None:
     persistence.save_state({"n": 1}, {"base_url": "x", "model": "m", "api_key": "sk"}, [])
     assert stat.S_IMODE((tmp_path / "key").stat().st_mode) == 0o600
     assert stat.S_IMODE((tmp_path / "live-state.json").stat().st_mode) == 0o600
+
+
+def test_decider_model_roundtrips_and_legacy_file_defaults_to_empty(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(persistence, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "live-state.json")
+    monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
+    persistence._FERNETS.clear()
+
+    base = {"base_url": "https://openrouter.ai/api/v1", "model": "g/m", "api_key": "sk"}
+    persistence.save_state({"n": 1}, {**base, "decider_model": "perplexity/d"}, [])
+    st = persistence.load_state()
+    assert st is not None and st["model"]["decider_model"] == "perplexity/d"
+
+    # A caller (or legacy state) that never passes the key saves/loads as "".
+    persistence.save_state({"n": 1}, base, [])
+    st = persistence.load_state()
+    assert st is not None and st["model"]["decider_model"] == ""
+
+    # A file written before the field existed (key physically absent) loads as "".
+    import json
+
+    path = tmp_path / "live-state.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["model"]["decider_model"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    st = persistence.load_state()
+    assert st is not None and st["model"]["decider_model"] == ""

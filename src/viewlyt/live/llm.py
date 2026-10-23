@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from .decisions import DecisionClient, decisions_url
 from .messages import ChatMessage
 from .probes import Probe, ProbeResult, _fold_label, _numbered, _parse_pair
 
@@ -45,6 +46,9 @@ class LLMConfig:
     timeout: float = 60.0
     budget_usd: float = 0.0  # spending cap in USD; 0 = off (no cap)
     language: str = "Portuguese (Brazil)"  # language the LLM writes its analyses in
+    # Decision model for classification probes (OpenRouter/Perplexity only); empty =
+    # classification stays on the chat model.
+    decider_model: str = ""
 
     def to_public_dict(self) -> dict:
         # Never leak the api_key to the dashboard.
@@ -53,6 +57,7 @@ class LLMConfig:
             "model": self.model,
             "budget": self.budget_usd,
             "language": self.language,
+            "decider_model": self.decider_model,
         }
 
 
@@ -228,6 +233,71 @@ class LLMClient:
             {"role": "user", "content": user},
         ]
         return await self._complete(msgs, schema)
+
+
+class HybridRunner:
+    """Routes classification to a decision model and everything else to the chat model.
+
+    Decision models only answer closed-choice questions, so open summaries and
+    ``complete_json`` (rewrite / suggest / decompose) stay on ``chat``. A decider
+    failure (endpoint down, bad key, quota) degrades to the chat model for that call
+    instead of losing the probe — classification is still produced, just at chat cost.
+    """
+
+    def __init__(self, chat: LLMClient, decider: DecisionClient) -> None:
+        self.chat = chat
+        self.decider = decider
+        self.model = chat.model
+
+    @property
+    def total_tokens(self) -> int:
+        return self.chat.total_tokens + self.decider.total_tokens
+
+    @property
+    def total_cost(self) -> float:
+        return self.chat.total_cost + self.decider.total_cost
+
+    @property
+    def avg_latency_ms(self) -> int | None:
+        """Mean round-trip weighted by each client's call count; ``None`` with no calls."""
+        count = self.chat._latency_count + self.decider._latency_count
+        if not count:
+            return None
+        total = self.chat._latency_sum_ms + self.decider._latency_sum_ms
+        return round(total / count)
+
+    async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
+        if probe.kind == "classification" and getattr(probe, "categories", None):
+            try:
+                return await self.decider.classify(probe, messages)  # type: ignore[arg-type]
+            except Exception as exc:
+                logger.warning(
+                    "decider %r failed (%s); falling back to the chat model for probe %r",
+                    self.decider.model,
+                    exc,
+                    probe.id,
+                )
+        return await self.chat.run(probe, messages)
+
+    async def complete_json(self, system: str, user: str, schema: dict) -> dict:
+        return await self.chat.complete_json(system, user, schema)
+
+
+def build_runner(cfg: LLMConfig) -> LLMRunner:
+    """Build the client for ``cfg``: chat-only, or hybrid when a decider is configured."""
+    chat = LLMClient(cfg)
+    if not cfg.decider_model:
+        return chat
+    if decisions_url(cfg.base_url) is None:
+        logger.warning(
+            "decider model %r ignored: base_url %r has no decisions endpoint "
+            "(use OpenRouter or Perplexity)",
+            cfg.decider_model,
+            cfg.base_url,
+        )
+        return chat
+    decider = DecisionClient(cfg.base_url, cfg.api_key, cfg.decider_model, cfg.timeout)
+    return HybridRunner(chat, decider)
 
 
 # Max probes whose LLM calls run at once. Probes are independent and I/O-bound, so
