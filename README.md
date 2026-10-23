@@ -513,7 +513,34 @@ uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
 
 # Prefer running the snippet/extension in your own browser? opt back into it:
 uv run vl live --capture browser 'https://www.youtube.com/watch?v=LIVE_ID'
+
+# Classify messages with a DECISION model instead of the chat LLM (cheaper, faster):
+uv run vl live --decider 'https://www.youtube.com/watch?v=LIVE_ID'
+uv run vl live --decider perplexity/pplx-decider-v1.2 '<live-url>'   # the 27B sibling
 ```
+
+### Decision models for classification (`--decider`)
+
+Classification probes ("how is the crowd feeling? happy / angry / neutral") don't
+need prose — they need one label per message. A **decision model** such as
+[Perplexity's `pplx-decider-flash-v1.2`](https://openrouter.ai/perplexity/pplx-decider-flash-v1.2)
+(the same class of model as TypeSafe's Jev) is built for exactly that: it takes a
+*state* plus typed *questions* and returns **probabilities per option** instead of
+generated text. `--decider [MODEL]` routes every classification probe through it
+(`--decider` alone = `perplexity/pplx-decider-flash-v1.2`; `$LLM_DECIDER` sets the
+default; the dashboard's Model panel has the same field, blank = off). Why bother:
+
+- **Cost:** ~$0.01 per million *input* tokens and output is free — the chat path
+  pays for every generated label. A 230-message window is a fraction of a cent.
+- **Speed and robustness:** no JSON to parse and no free-text labels to match —
+  the answer *is* one of your category names, verbatim.
+- **Scope:** only *classification* probes move. Open summaries, probe rewriting
+  and suggestions still use the chat model (a decision model cannot write text),
+  so you still need a chat `--model`. If the decider call fails, that probe falls
+  back to the chat model for that window (logged as a warning).
+- **Providers:** the Decisions endpoint exists on **OpenRouter** (alpha) and on
+  **Perplexity**'s own API; with any other `--provider`/`--base-url` the flag is
+  ignored with a warning. Uses the same API key as the chat model.
 
 ## Chat with your collected data (`vl ask`)
 
