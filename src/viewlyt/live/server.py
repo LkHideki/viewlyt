@@ -806,8 +806,12 @@ async def worker(server: LiveServer) -> None:
     last_analyzed = -1
     while True:
         try:
+            # asyncio.timeout, not wait_for: on Python 3.11 wait_for can swallow a
+            # cancellation that lands while queue.get() completes (fixed in 3.12), so a
+            # cancelled worker would keep looping forever instead of stopping.
             try:
-                msg = await asyncio.wait_for(server.queue.get(), timeout=0.25)
+                async with asyncio.timeout(0.25):
+                    msg = await server.queue.get()
                 got = True
             except TimeoutError:
                 got = False
