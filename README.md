@@ -496,16 +496,18 @@ already logged in to YouTube — it's the most reliable bypass.
 
 ## Live mode (real-time)
 
-> Opt-in: `uv sync --extra live`. Command: **`vl live`**.
+> Opt-in: `uv sync --extra live`. Command: **`vl live`**. Needs Google Chrome
+> (same requirement as the scraper) for the default server-side capture.
 
 `vl live` taps a YouTube **live chat** in real time, batches the messages to an
 LLM, and streams the results — live percentages, rolling summaries, and charts —
-to a local dashboard you drive in a second window (create probes by typing a
-question, set a spending budget, pick the output language, and more). Run
-`vl help live` for every flag.
+to a local dashboard you drive in a second window. Run `vl help live` for every
+flag; the dashboard ships prebuilt, nothing to compile.
 
 ```bash
 uv sync --extra live
+export OPENROUTER_API_KEY=sk-or-...        # or --api-key; any OpenAI-compatible endpoint works
+
 # Default capture is server-side: this process drives its own headless Chrome
 # on the chat popout — nothing to paste into any browser, and the only route
 # that works with Safari (WebKit blocks insecure ws:// from https pages):
@@ -514,10 +516,74 @@ uv run vl live 'https://www.youtube.com/watch?v=LIVE_ID'
 # Prefer running the snippet/extension in your own browser? opt back into it:
 uv run vl live --capture browser 'https://www.youtube.com/watch?v=LIVE_ID'
 
+# Another provider/model (LM Studio, Ollama, OpenAI, Groq, or any base URL):
+uv run vl live --provider openai --api-key sk-... --model gpt-4o-mini '<live-url>'
+
 # Classify messages with a DECISION model instead of the chat LLM (cheaper, faster):
 uv run vl live --decider 'https://www.youtube.com/watch?v=LIVE_ID'
 uv run vl live --decider perplexity/pplx-decider-v1.2 '<live-url>'   # the 27B sibling
 ```
+
+The process prints the dashboard URL (default `http://127.0.0.1:8000/`) and opens
+it. The server **starts paused** — press ▶ in the dashboard once the chat is
+flowing, so no LLM spend happens before you look.
+
+### Capturing the chat
+
+- **`--capture server` (default)** — a managed headless Chrome opens the chat
+  popout and streams it in. Nothing to install in your browser.
+- **`--capture browser`** — you open the popout
+  (`https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID`) yourself and start
+  the capture there with one of the options on the dashboard's **Capture** panel:
+  the **browser extension** (`viewlyt-extension.zip`, load unpacked; auto-runs on
+  every popout), a **bookmarklet**, or the **console snippet** (type `allow pasting`
+  first if Chrome refuses the paste). A `viewlyt: connected | captured N` badge
+  appears in the popout. Always use the **popout** URL — the embedded chat frame
+  can't reach the server — and accept Chrome's one-time "local network" prompt.
+
+### The dashboard
+
+- **Ask bar** — type a question (`how is the crowd feeling?`, `liste os 3
+  jogadores mais elogiados`). **Auto** rewrites it into a probe and picks the
+  kind, chart and categories; **Open**/**Classify** force a kind; **Suggest**
+  proposes two probes from the live chat; **Split** decomposes a broad theme into
+  elementary probes offered as chips. A new probe is analyzed right away.
+- **Live Results** — one card per probe: editable label and prompt, **Edit**
+  (per-probe refresh/sample overrides; reorder/recolor categories), **Remove**,
+  collapse. Classification cards pick among a dozen visualizations (bars,
+  columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin,
+  and a 2-D *descartes* grid) with per-category `%`, delta vs the previous
+  snapshot and a sparkline; open probes render Markdown (sanitized). A **time
+  slider** scrubs the last 120 snapshots per probe (kept server-side, so a reload
+  replays the session); **Export JSON / CSV** downloads them all.
+- **Live Chat** — the raw captured feed, with a "↓ N new" pill when you scroll up.
+- **Configs → Window** — sample size, refresh interval, buffer, mode
+  (count / time / hybrid) and the spam toggles (near-duplicate drop, same-author
+  merge). Applies live.
+- **Configs → Model** — provider / base URL / API key / chat model / **decider
+  model** / **budget USD** (`0` = off; analyses pause once the cumulative cost is
+  reached). Applies live, no restart. The header's language selector sets the
+  language the analyses are written in (default Português (BR)).
+- Everything is persisted to `~/.viewlyt/live-state.json` (API key
+  Fernet-encrypted, files `0600`), so a restart resumes where you left off;
+  **Reset / forget saved** clears it. A key given at launch (`--api-key` /
+  `$OPENROUTER_API_KEY`) always wins over the saved one.
+- The server binds to loopback only and has **no authentication**; a
+  non-loopback `--host` is refused unless you pass `--allow-insecure-bind`.
+
+### Troubleshooting
+
+- **Badge says `CANNOT REACH SERVER` / `captured 0`:** accept Chrome's local
+  network prompt; use the popout, not the embedded chat; keep the server on
+  `127.0.0.1`. uBlock Origin's *"Block outsider intrusion into LAN"* blocks
+  exactly this — disable it or allowlist the page.
+- **Safari:** the browser capture can never work there (WebKit blocks `ws://`
+  from `https` for every host); use the default `--capture server`.
+- **`ad_break … ERR_BLOCKED_BY_CLIENT` in the console:** your ad blocker blocking
+  YouTube telemetry — unrelated, harmless.
+- **A probe shows no results:** the LLM must be reachable (Model panel + server
+  log); classification needs at least two categories. **Analyze now** retries
+  without waiting for the refresh.
 
 ### Decision models for classification (`--decider`)
 

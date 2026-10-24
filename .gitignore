@@ -75,9 +75,11 @@ src/viewlyt/live/dashboard/dist/
 # ---- Local-only docs (kept in the working tree, out of the published repo) ----
 # Comments must be on their own line (.gitignore has no inline comments).
 xray.md
-how-to.md
 CLAUDE.md
 AGENTS.md
+audit-backlog.md
+channel-view.md
 
-# hd-secperf audit reports (do not commit)
+# hd-secperf / performance audit reports (do not commit)
 secperf-*.md
+perf-review-*.md
