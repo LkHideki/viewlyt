@@ -126,11 +126,18 @@ def _server(**window) -> tuple[LiveServer, RecWS, RecRunner]:
     return srv, ws, runner
 
 
-async def _settle() -> None:
-    """Await every other live task (the fire-and-forget rewrite/suggest/decompose ones)."""
+async def _settle(*skip: asyncio.Task | None) -> None:
+    """Await every other live task (the fire-and-forget rewrite/suggest/decompose ones).
+
+    ``skip`` lists extra tasks to leave alone. It matters under ``asyncio.wait_for`` on
+    Python 3.11, which runs this coroutine in a NEW task: the caller is then just
+    "another task", and gathering it would deadlock on itself and leak the cancellation
+    into it when the timeout fires (3.12+ no longer wraps the coroutine in a task).
+    """
     cur = asyncio.current_task()
+    ignore = {cur, *skip}
     while True:
-        others = [t for t in asyncio.all_tasks() if t is not cur and not t.done()]
+        others = [t for t in asyncio.all_tasks() if t not in ignore and not t.done()]
         if not others:
             return
         await asyncio.gather(*others, return_exceptions=True)
@@ -230,7 +237,7 @@ class Env:
             if self.runner.gate is not None:
                 self.runner.gate.set()
             try:
-                await asyncio.wait_for(_settle(), timeout=2.0)
+                await asyncio.wait_for(_settle(asyncio.current_task()), timeout=2.0)
             except TimeoutError:
                 cur = asyncio.current_task()
                 leftovers = [t for t in asyncio.all_tasks() if t is not cur and not t.done()]
