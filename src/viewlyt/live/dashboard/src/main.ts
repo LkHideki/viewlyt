@@ -5,6 +5,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 
 // Phosphor (MIT) regular-weight icons, imported raw so only these ship.
+import iconTranslate from "@phosphor-icons/core/assets/regular/translate.svg?raw";
 import iconGear from "@phosphor-icons/core/assets/regular/gear.svg?raw";
 import iconSun from "@phosphor-icons/core/assets/regular/sun.svg?raw";
 import iconMoon from "@phosphor-icons/core/assets/regular/moon.svg?raw";
@@ -39,6 +40,7 @@ import iconOutV from "@phosphor-icons/core/assets/regular/arrows-out-line-vertic
 import iconInV from "@phosphor-icons/core/assets/regular/arrows-in-line-vertical.svg?raw";
 
 const ICONS: Record<string, string> = {
+  translate: iconTranslate,
   gear: iconGear,
   sun: iconSun,
   moon: iconMoon,
@@ -132,6 +134,12 @@ const PROVIDERS: Record<string, ProviderInfo> = {
     model: "llama-3.3-70b-versatile",
     keyHint: "gsk_...",
   },
+  // Chat is OpenAI-compatible; the same host serves the decisions API (decider).
+  perplexity: {
+    base_url: "https://api.perplexity.ai",
+    model: "sonar",
+    keyHint: "pplx-...",
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,8 @@ const wsBase =
 // Message interfaces
 // ---------------------------------------------------------------------------
 
+type DeciderState = "off" | "inactive" | "ok" | "degraded" | "open";
+
 interface StateMsg {
   type: "state";
   window: {
@@ -155,7 +165,17 @@ interface StateMsg {
     merge_authors?: boolean;
     capacity?: number;
   };
-  model: { base_url: string; model: string; decider_model?: string; budget?: number; language?: string };
+  model: {
+    base_url: string;
+    model: string;
+    decider_model?: string;
+    /** Decider configured AND the provider has a decisions endpoint (older servers omit it). */
+    decider_active?: boolean;
+    budget?: number;
+    language?: string;
+  };
+  /** Health of the decision model (older servers omit it). */
+  decider_state?: DeciderState;
   paused: boolean;
   processing?: boolean;
   budget_blocked?: boolean;
@@ -348,10 +368,13 @@ const MD_ALLOWED_TAGS = [
 
 function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false }) as string;
-  return DOMPurify.sanitize(html, {
+  const clean = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: MD_ALLOWED_TAGS,
     ALLOWED_ATTR: ["href", "title", "start", "target", "rel"],
   });
+  // Keep the page outline logical: model output must never add an h1/h2 next to the
+  // page's own headings (card titles are h3), so its headings sit below them (h4-h6).
+  return clean.replace(/<(\/?)h([1-6])(?=[\s>])/g, (_m, slash: string, n: string) => `<${slash}h${Math.min(6, Number(n) + 3)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -883,10 +906,12 @@ function renderBars(ctx: ChartCtx, views: CatView[]): HTMLElement {
 
 /**
  * The legend, reused under EVERY non-bars chart: one row per category with a
- * swatch, name, pct, delta and sparkline (the 5-child grid contract).
+ * swatch, name, pct, delta and sparkline (the 5-child grid contract). The delta
+ * chart passes withDelta=false: its rows already carry the change, so the legend
+ * drops that column (a 4-child "lean" variant) instead of repeating it.
  */
-function buildStats(ctx: ChartCtx, views: CatView[]): HTMLElement {
-  const stats = mk("div", "cat-stats");
+function buildStats(ctx: ChartCtx, views: CatView[], withDelta = true): HTMLElement {
+  const stats = mk("div", withDelta ? "cat-stats" : "cat-stats cat-stats-lean");
   for (const v of views) {
     const color = colorFor(ctx.probeId, v.cat, v.i);
     const row = mk("div", "cat-stat-row");
@@ -897,7 +922,7 @@ function buildStats(ctx: ChartCtx, views: CatView[]): HTMLElement {
     row.appendChild(swatch);
     row.appendChild(name);
     row.appendChild(mk("span", "cat-pct", `${v.pct.toFixed(1)}%`));
-    row.appendChild(buildDeltaBadge(v.delta));
+    if (withDelta) row.appendChild(buildDeltaBadge(v.delta));
     row.appendChild(sparkCell("cat-spark", v, color));
     stats.appendChild(row);
   }
@@ -1120,10 +1145,15 @@ function renderArea(ctx: ChartCtx, views: CatView[]): Element {
     });
     setTip(band, ctx, v);
     root.appendChild(band);
-    lines.push(svg("polyline", { class: "chart-line", stroke: color, points: top.join(" ") }));
+    // The last band's upper edge IS the 100% boundary: a series-coloured line there
+    // would just outline the chart frame, so only the interior boundaries get a stroke.
+    if (i < views.length - 1) {
+      lines.push(svg("polyline", { class: "chart-line", stroke: color, points: top.join(" ") }));
+    }
   });
   for (const l of lines) root.appendChild(l);
   views.forEach((v, i) => {
+    if (i === views.length - 1) return;
     lastDot(root, xFor(steps - 1), f.yFor(uppers[i]![steps - 1]!), colorFor(ctx.probeId, v.cat, v.i));
   });
   return root;
@@ -1558,10 +1588,10 @@ function descartesAddAxis(probeId: string, axis: "x" | "y", side: "before" | "af
   const { xs, ys } = deriveAxes(probeState.get(probeId)?.categories ?? []);
   const target = axis === "x" ? xs : ys;
   if (target.length >= MAX_AXIS) {
-    showToast(`Máximo de ${MAX_AXIS} ${axis === "x" ? "colunas" : "linhas"}.`, "info");
+    showToast(`At most ${MAX_AXIS} ${axis === "x" ? "columns" : "rows"}.`, "info");
     return;
   }
-  const base = nextAxisLabel(target, side) || (axis === "x" ? "nova coluna" : "nova linha");
+  const base = nextAxisLabel(target, side) || (axis === "x" ? "new column" : "new row");
   const label = uniqueLabel(base, target);
   if (side === "before") target.unshift(label);
   else target.push(label);
@@ -1597,7 +1627,7 @@ function descartesRenameAxis(
   const collides = list.some((l, j) => j !== i && foldAxisLabel(l) === foldAxisLabel(trimmed));
   if (collides) {
     showToast(
-      `Já existe ${axis === "x" ? "uma coluna" : "uma linha"} "${trimmed}" — escolha outro nome.`,
+      `There is already a ${axis === "x" ? "column" : "row"} named "${trimmed}". Pick another name.`,
       "info",
     );
     return false;
@@ -1616,7 +1646,7 @@ function descartesRemoveAxis(probeId: string, axis: "x" | "y", label: string): v
   // the whole grid; the empty-state's own (confirmed) reseed is the way to start over.
   if (list.length <= 1) {
     showToast(
-      `Não é possível remover ${axis === "x" ? "a última coluna" : "a última linha"} — a grade ficaria vazia.`,
+      `The last ${axis === "x" ? "column" : "row"} cannot be removed: the grid would be empty.`,
       "info",
     );
     return;
@@ -1645,6 +1675,8 @@ function descartesToggleValueMode(probeId: string): void {
   }
 }
 
+const TICK_ARM_MS = 3000;
+
 /** One axis tick: a click-to-rename label + a hover-reveal "✕" to remove the
  *  whole column/row. Used for both the X (bottom) and Y (left) gutters. */
 function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClass: string): HTMLElement {
@@ -1669,11 +1701,47 @@ function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClas
     del.dataset["fk"] = `del:${axis}:${label}`;
     del.innerHTML = iconSvg("x");
     del.title = axis === "x" ? "Remove column" : "Remove row";
-    del.setAttribute("aria-label", `${del.title} ${label}`);
+    const delName = `${del.title} ${label}`;
+    del.setAttribute("aria-label", delName);
+    // Two-step remove: the first activation only ARMS the button (the removal
+    // goes straight to the server with no undo, so a stray tap must never
+    // delete a whole row/column). The second activation within TICK_ARM_MS
+    // removes it. Esc, a tap elsewhere, or the timeout disarm it.
+    let armTimer = 0;
+    const disarm = (): void => {
+      window.clearTimeout(armTimer);
+      document.removeEventListener("pointerdown", onOutside, true);
+      if (!del.classList.contains("is-armed")) return;
+      del.classList.remove("is-armed");
+      del.setAttribute("aria-label", delName);
+      del.title = axis === "x" ? "Remove column" : "Remove row";
+    };
+    const onOutside = (ev: Event): void => {
+      if (ev.target instanceof Node && del.contains(ev.target)) return;
+      disarm();
+    };
     del.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (!del.classList.contains("is-armed")) {
+        del.classList.add("is-armed");
+        const what = axis === "x" ? "column" : "row";
+        del.setAttribute("aria-label", `Confirm remove ${what} ${label}`);
+        del.title = `Confirm remove ${what}`;
+        showToast(`Press again to remove the ${what} "${label}".`, "info", TICK_ARM_MS);
+        document.addEventListener("pointerdown", onOutside, true);
+        armTimer = window.setTimeout(disarm, TICK_ARM_MS);
+        return;
+      }
+      disarm();
       descartesRemoveAxis(probeId, axis, label);
     });
+    del.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && del.classList.contains("is-armed")) {
+        e.stopPropagation();
+        disarm();
+      }
+    });
+    del.addEventListener("blur", disarm);
     wrap.replaceChildren(text, del);
   };
 
@@ -1795,7 +1863,7 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
       }
       const seeded = deriveAxes(seedGridCategories());
       applyDescartesAxes(probeId, seeded.xs, seeded.ys);
-      showToast("Grade 3×3 gerada.", "success");
+      showToast("3×3 grid generated.", "success");
     });
     empty.appendChild(hint);
     empty.appendChild(gen);
@@ -1873,14 +1941,15 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
   corner.className = "descartes-corner";
   plot.appendChild(corner);
   for (const x of xs) plot.appendChild(buildAxisTick(probeId, "x", x, "descartes-xlabel"));
-  main.appendChild(plot);
-
   // Hover-reveal "+" on all 4 edges: left/right add a column before/after,
   // bottom/top add a row before(origin)/after — mirrors the axis-derivation order.
+  // DOM (= Tab) order follows the screen positions around the plot: top, left,
+  // plot, right, bottom. The buttons are absolutely positioned, so this is free.
+  main.appendChild(buildAxisAddButton(probeId, "y", "after"));
   main.appendChild(buildAxisAddButton(probeId, "x", "before"));
+  main.appendChild(plot);
   main.appendChild(buildAxisAddButton(probeId, "x", "after"));
   main.appendChild(buildAxisAddButton(probeId, "y", "before"));
-  main.appendChild(buildAxisAddButton(probeId, "y", "after"));
 
   // Axis titles — what x/y represent, set in the Edit panel — placed right
   // next to their axis: Y rotated alongside the row ticks, X under the column
@@ -2033,7 +2102,7 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
   // "bars" carries its own per-row stats; "descartes" IS a grid of every
   // category (a stats table would just duplicate all 16+ scorelines).
   if (type !== "bars" && type !== "descartes") {
-    body.appendChild(buildStats(ctx, views));
+    body.appendChild(buildStats(ctx, views, type !== "delta"));
   }
   return body;
 }
@@ -2155,7 +2224,7 @@ function renderDisplay(card: HTMLDivElement, probeId: string, kind: string, inde
   // e.g. because a periodic snapshot/result frame landed while the user was
   // typing) — the next render, once the user commits/cancels, picks up the
   // latest data anyway.
-  if (existing?.querySelector(".descartes-tick-input:focus")) return;
+  if (existing?.querySelector(".descartes-tick-input:focus, .descartes-tick-del.is-armed")) return;
   const next =
     kind === "classification"
       ? buildClassificationBody(probeId, index)
@@ -2420,7 +2489,7 @@ function ensureCard(probeId: string): HTMLDivElement {
   // Title column: label + kind tag on one line, the prompt as a 2-line subtitle.
   const titles = mk("div", "result-titles");
   const titleRow = mk("div", "result-title-row");
-  const labelEl = mk("span", "result-label");
+  const labelEl = mk("h3", "result-label");
   const badge = mk("span", "result-kind-badge");
   badge.appendChild(iconNode(cardKind(probeId) === "classification" ? "chart-bar-horizontal" : "chat-text"));
   badge.appendChild(mk("span", "kind-text", kindName(cardKind(probeId))));
@@ -2713,8 +2782,8 @@ function ensureCard(probeId: string): HTMLDivElement {
     const resultsWidth = document.getElementById("results")?.clientWidth ?? Infinity;
     if (next && resultsWidth < TWO_COL_MIN_WIDTH) {
       showToast(
-        "Janela estreita demais para 2 colunas agora — a preferência foi salva " +
-          "e vale quando você alargar a janela.",
+        "The window is too narrow for 2 columns right now. Your choice is saved " +
+          "and applies once you widen the window.",
         "info",
       );
     }
@@ -2762,7 +2831,7 @@ function updateCardChrome(probeId: string): void {
     }
   }
 
-  const labelEl = card.querySelector<HTMLSpanElement>(".result-label");
+  const labelEl = card.querySelector<HTMLElement>(".result-label");
   if (labelEl) labelEl.textContent = probe?.label ?? "";
 
   const promptEl = card.querySelector<HTMLSpanElement>(".result-prompt");
@@ -2974,7 +3043,12 @@ function wireChartTips(): void {
   });
   root.addEventListener("focusout", (e: FocusEvent) => {
     const viz = e.target;
-    if (viz instanceof HTMLElement && viz.classList.contains("chart-viz")) clearActive(viz);
+    if (viz instanceof HTMLElement && viz.classList.contains("chart-viz")) {
+      // A tap on another chart moves focus here after it opened its own tip: only
+      // dismiss the tip when it belongs to the chart that is losing focus.
+      if (tipTarget && viz.contains(tipTarget)) clearActive(viz);
+      else viz.querySelector(".is-active")?.classList.remove("is-active");
+    }
   });
   root.addEventListener("keydown", (e: KeyboardEvent) => {
     const viz = e.target;
@@ -3507,13 +3581,33 @@ function showToast(message: string, kind: ToastKind = "info", ttlMs = 6000): voi
   close.innerHTML = '<span class="icon">' + iconSvg("x") + "</span>";
   close.setAttribute("aria-label", "Dismiss notification");
   close.title = "Dismiss";
-  close.addEventListener("click", () => toast.remove());
+  close.addEventListener("click", () => removeToast(toast));
   toast.appendChild(close);
   container.appendChild(toast);
   while (container.childElementCount > TOAST_MAX && container.firstChild) {
     container.removeChild(container.firstChild);
   }
-  window.setTimeout(() => toast.remove(), ttlMs);
+  window.setTimeout(() => removeToast(toast), ttlMs);
+}
+
+// The control that had focus before a toast took it: where focus returns when
+// the toast (and its Dismiss button) goes away instead of dropping to <body>.
+let focusBeforeToast: HTMLElement | null = null;
+document.addEventListener("focusin", (e) => {
+  const t = e.target;
+  if (t instanceof HTMLElement && !t.closest("#toasts")) focusBeforeToast = t;
+});
+
+function removeToast(toast: HTMLElement): void {
+  const had = toast.contains(document.activeElement);
+  const sibling = (toast.nextElementSibling ?? toast.previousElementSibling) as HTMLElement | null;
+  toast.remove();
+  if (!had) return;
+  const back =
+    sibling?.querySelector<HTMLElement>(".toast-close") ??
+    (focusBeforeToast?.isConnected ? focusBeforeToast : null) ??
+    document.getElementById("ask-text");
+  back?.focus({ preventScroll: true });
 }
 
 function showError(message: string): void {
@@ -3554,7 +3648,11 @@ function jumpFeedToEdge(): void {
   if (!feed) return;
   feed.scrollTop = feedNewestFirst ? 0 : feed.scrollHeight;
   feedUnread = 0;
+  const jump = document.getElementById("feed-jump");
+  const hadFocus = !!jump && document.activeElement === jump;
   updateFeedJump();
+  // The pill hides itself on activation: keep keyboard focus in the feed.
+  if (hadFocus) feed.focus({ preventScroll: true });
 }
 
 function makeFeedLine(author: string, text: string): HTMLDivElement {
@@ -3679,7 +3777,13 @@ function setProc(active: boolean, latencyMs?: number | null, avgLatencyMs?: numb
   const spinner = document.getElementById("spinner");
   if (spinner) spinner.classList.toggle("hidden", !active);
   const stopBtn = document.getElementById("stop-batch") as HTMLButtonElement | null;
-  if (stopBtn) stopBtn.disabled = !active;
+  if (stopBtn) {
+    // A disabled button cannot keep focus: hand it to the neighbouring "Analyze
+    // now" control instead of stranding it on <body>.
+    const hadFocus = document.activeElement === stopBtn;
+    stopBtn.disabled = !active;
+    if (hadFocus && !active) document.getElementById("force-run")?.focus({ preventScroll: true });
+  }
   if (active) {
     e.textContent = "analyzing…";
     e.classList.add("is-busy");
@@ -3790,6 +3894,63 @@ function setIngested(n: number): void {
   if (chat) chat.textContent = `${n} ${n === 1 ? "msg" : "msgs"}`;
 }
 
+// ---------------------------------------------------------------------------
+// Decider status (Model tab line + top-bar chip). Icon AND text carry the state,
+// never colour alone. Both server fields are optional (older servers omit them);
+// nothing renders when neither is present.
+// ---------------------------------------------------------------------------
+
+const DECIDER_ICON: Record<DeciderState, string> = {
+  off: "info",
+  inactive: "info",
+  ok: "check-circle",
+  degraded: "warning-circle",
+  open: "warning-circle",
+};
+
+function setStateIcon(host: HTMLElement | null, name: string): void {
+  if (host && host.dataset["icon"] !== name) {
+    host.dataset["icon"] = name;
+    host.innerHTML = iconSvg(name);
+  }
+}
+
+function renderDecider(msg: StateMsg): void {
+  const line = document.getElementById("decider-status");
+  const lineText = document.getElementById("decider-status-text");
+  const chip = document.getElementById("decider-chip");
+  const chipText = document.getElementById("decider-chip-text");
+  const known = msg.decider_state !== undefined || msg.model.decider_active !== undefined;
+  let state: DeciderState = msg.decider_state ?? (msg.model.decider_active ? "ok" : "off");
+  const active =
+    msg.model.decider_active ?? (state === "ok" || state === "degraded" || state === "open");
+  if (active && (state === "off" || state === "inactive")) state = "ok";
+  const model = (msg.model.decider_model ?? "").trim();
+
+  const text: Record<DeciderState, string> = {
+    off: "Decider off. Classification uses the chat model.",
+    inactive:
+      "Decider inactive: this provider has no decisions endpoint, classification uses the chat model.",
+    ok: model ? `Decider active. Classification runs on ${model}.` : "Decider active.",
+    degraded: "Decider degraded. Some classifications fall back to the chat model.",
+    open: "Decider failing, falling back to the chat model.",
+  };
+  if (line && lineText) {
+    line.classList.toggle("hidden", !known);
+    line.dataset["state"] = state;
+    lineText.textContent = text[state];
+    setStateIcon(line.querySelector<HTMLElement>(".icon"), DECIDER_ICON[state]);
+  }
+  if (chip && chipText) {
+    chip.classList.toggle("hidden", !(known && active));
+    chip.dataset["state"] = state;
+    chip.title = text[state];
+    chipText.textContent =
+      state === "degraded" ? "Decider degraded" : state === "open" ? "Decider failing" : "Decider on";
+    setStateIcon(chip.querySelector<HTMLElement>(".icon"), DECIDER_ICON[state]);
+  }
+}
+
 function handleState(msg: StateMsg): void {
   // Window inputs
   setInputVal("n", msg.window.n);
@@ -3806,6 +3967,7 @@ function handleState(msg: StateMsg): void {
   setInputVal("base_url", msg.model.base_url);
   setInputVal("model", msg.model.model);
   setInputVal("decider_model", typeof msg.model.decider_model === "string" ? msg.model.decider_model : "");
+  renderDecider(msg);
   // api_key is intentionally not filled (write-only)
 
   // Spending budget (B8): remember it, mirror it onto the #budget field (when
@@ -3993,11 +4155,19 @@ let askKind: AskKind = "auto";
 let askPending = false;
 let askRestoreTimer: number | undefined;
 
+/** Pending buttons stay focusable (aria-disabled, not `disabled`): a disabled
+ *  button that holds focus drops it to <body>. The click handlers already
+ *  ignore activation while their pending flag is set. */
+function setPendingAttr(btn: HTMLButtonElement, pending: boolean): void {
+  if (pending) btn.setAttribute("aria-disabled", "true");
+  else btn.removeAttribute("aria-disabled");
+}
+
 function setAskPending(pending: boolean): void {
   askPending = pending;
   const btn = document.getElementById("ask-send") as HTMLButtonElement | null;
   if (btn) {
-    btn.disabled = pending;
+    setPendingAttr(btn, pending);
     setBtnLabel(btn, pending ? "Rewriting…" : "Add");
   }
   if (!pending && askRestoreTimer !== undefined) {
@@ -4016,7 +4186,7 @@ function setSuggestPending(pending: boolean): void {
   suggestPending = pending;
   const btn = document.getElementById("ask-suggest") as HTMLButtonElement | null;
   if (btn) {
-    btn.disabled = pending;
+    setPendingAttr(btn, pending);
     setBtnLabel(btn, pending ? "Thinking…" : "Suggest");
   }
   if (!pending && suggestRestoreTimer !== undefined) {
@@ -4034,7 +4204,7 @@ function setSplitPending(pending: boolean): void {
   splitPending = pending;
   const btn = document.getElementById("ask-split") as HTMLButtonElement | null;
   if (btn) {
-    btn.disabled = pending;
+    setPendingAttr(btn, pending);
     setBtnLabel(btn, pending ? "Splitting…" : "Split");
   }
   if (!pending && splitRestoreTimer !== undefined) {
@@ -4088,8 +4258,13 @@ function renderSuggestions(probes: ProbeDescriptor[]): void {
       }
       // Remove only this chip — a Split proposes several probes and the user
       // may want to add more than one. Clear the tray when the last chip goes.
+      const hadFocus = document.activeElement === chip;
+      const nextFocus = (chip.nextElementSibling ?? chip.previousElementSibling) as HTMLElement | null;
       chip.remove();
       if (!container.querySelector(".suggest-chip")) container.innerHTML = "";
+      // The chip held focus and is gone: move to the next chip/Dismiss, or
+      // back to the ask field once the tray is cleared.
+      if (hadFocus) (nextFocus?.isConnected ? nextFocus : document.getElementById("ask-text"))?.focus();
     });
 
     container.appendChild(chip);
@@ -4102,6 +4277,7 @@ function renderSuggestions(probes: ProbeDescriptor[]): void {
     dismiss.textContent = "Dismiss";
     dismiss.addEventListener("click", () => {
       container.innerHTML = "";
+      document.getElementById("ask-text")?.focus();
     });
     container.appendChild(dismiss);
   }
@@ -4156,7 +4332,7 @@ function wireButtons(): void {
   el("stop-batch").addEventListener("click", () => {
     send({ op: "stop_batch" });
     batchCancelled = true;
-    showToast("Análise interrompida.", "info");
+    showToast("Analysis stopped.", "info");
   });
 
   // Analysis language (header selector): applies immediately; set_model keeps the
@@ -4232,9 +4408,14 @@ function wireButtons(): void {
 
   el("import-json").addEventListener("click", () => {
     const statusEl = el<HTMLSpanElement>("import-json-status");
+    // Inline text stays for sighted context; the toast is the one live-region announcement.
+    const report = (msg: string, kind: ToastKind): void => {
+      statusEl.textContent = msg;
+      showToast(msg, kind);
+    };
     const raw = el<HTMLTextAreaElement>("probe-json").value.trim();
     if (!raw) {
-      statusEl.textContent = "Paste some JSON first.";
+      report("Paste some JSON first.", "info");
       return;
     }
 
@@ -4242,8 +4423,7 @@ function wireButtons(): void {
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
-      statusEl.textContent =
-        "Invalid JSON: " + (err instanceof Error ? err.message : "parse error");
+      report("Invalid JSON: " + (err instanceof Error ? err.message : "parse error"), "error");
       return;
     }
 
@@ -4265,7 +4445,8 @@ function wireButtons(): void {
 
     syncCardsFromState();
     el<HTMLTextAreaElement>("probe-json").value = "";
-    statusEl.textContent = added > 0 ? `Imported ${added} probe(s).` : "No probes found.";
+    if (added > 0) report(`Imported ${added} probe(s).`, "success");
+    else report("No probes found.", "info");
   });
 
   // ---- Ask-bar ----
@@ -4431,10 +4612,10 @@ function wireButtons(): void {
     const toggleBtn = el<HTMLButtonElement>("toggle-key");
     if (apiKeyEl.type === "password") {
       apiKeyEl.type = "text";
-      setBtnLabel(toggleBtn, "hide");
+      setBtnLabel(toggleBtn, "Hide");
     } else {
       apiKeyEl.type = "password";
-      setBtnLabel(toggleBtn, "show");
+      setBtnLabel(toggleBtn, "Show");
     }
   });
 
@@ -4682,9 +4863,49 @@ function wireSettingsDrawer(): void {
 
 const CHAT_OPEN_KEY = "viewlyt.chatOpen";
 
+/**
+ * DOM order = visual order = Tab order at every width. At >= 1200px the rail is the
+ * right column, so it comes after the probes; below that it is the collapsible panel
+ * between the composer and the probes, so it moves in front of them. Moving a node
+ * resets its scroll offset, so the feed's scrollTop is carried across.
+ */
+let railFeedStuck = true;
+
+function placeChatRail(rail: HTMLElement, wide: boolean): void {
+  const results = document.querySelector<HTMLElement>(".results-panel");
+  if (!results) return;
+  const inPlace = wide ? results.nextElementSibling === rail : rail.nextElementSibling === results;
+  if (inPlace) return;
+  const feed = document.getElementById("feed");
+  const top = feed ? feed.scrollTop : 0;
+  // The breakpoint has already re-laid the feed out by now, so "was it following the
+  // newest line" comes from the last scroll event, not from the current geometry.
+  const stuck = feed ? railFeedStuck : false;
+  // Moving a node drops focus to <body>: put it back on the same control.
+  const focused = rail.contains(document.activeElement) ? (document.activeElement as HTMLElement) : null;
+  if (wide) results.after(rail);
+  else results.before(rail);
+  if (feed) feed.scrollTop = top;
+  if (stuck && feed) {
+    // Layout changed height while detached: keep following the newest line.
+    feed.scrollTop = feedNewestFirst ? 0 : feed.scrollHeight;
+  }
+  focused?.focus({ preventScroll: true });
+}
+
 function wireChatRail(): void {
   const rail = el<HTMLElement>("chat-rail");
   const toggle = el<HTMLButtonElement>("chat-toggle");
+  const wideQuery = window.matchMedia("(min-width: 1200px)");
+  placeChatRail(rail, wideQuery.matches);
+  const feedEl = document.getElementById("feed");
+  feedEl?.addEventListener(
+    "scroll",
+    () => {
+      railFeedStuck = feedAtStickEdge(feedEl);
+    },
+    { passive: true },
+  );
   const stored = lsGet(CHAT_OPEN_KEY);
   let open = stored === null ? window.innerWidth >= 1000 : stored === "1";
 
@@ -4703,7 +4924,8 @@ function wireChatRail(): void {
     if (open) jumpFeedToEdge();
   });
 
-  window.matchMedia("(min-width: 1200px)").addEventListener("change", (e) => {
+  wideQuery.addEventListener("change", (e) => {
+    placeChatRail(rail, e.matches);
     if (e.matches) jumpFeedToEdge();
   });
 }
@@ -4719,9 +4941,20 @@ function wireMenu(btn: HTMLButtonElement, menu: HTMLElement, beforeOpen?: () => 
       (item) => !item.classList.contains("hidden"),
     );
   const isOpen = (): boolean => !menu.classList.contains("hidden");
+  /** Flip upward / shift sideways when the menu would leave the viewport. */
+  const place = (): void => {
+    menu.classList.remove("menu-up", "menu-left");
+    const b = btn.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    const below = window.innerHeight - b.bottom - 8;
+    const above = b.top - 8;
+    if (m.height + 6 > below && above > below) menu.classList.add("menu-up");
+    if (m.left < 8) menu.classList.add("menu-left");
+  };
   const open = (focusIndex: number): void => {
     beforeOpen?.();
     menu.classList.remove("hidden");
+    place();
     btn.setAttribute("aria-expanded", "true");
     const list = items();
     list[(focusIndex + list.length) % list.length]?.focus();
@@ -4773,6 +5006,12 @@ function wireMenu(btn: HTMLButtonElement, menu: HTMLElement, beforeOpen?: () => 
     const a = document.activeElement;
     close(!a || a === document.body || menu.contains(a));
   });
+  // A resize can strand an open menu off-screen: re-measure while it is open.
+  const onResize = (): void => {
+    if (!btn.isConnected) window.removeEventListener("resize", onResize);
+    else if (isOpen()) place();
+  };
+  window.addEventListener("resize", onResize);
   const outside = (e: MouseEvent): void => {
     // A removed card takes its menu with it: drop the listener too.
     if (!btn.isConnected) {
@@ -4800,20 +5039,69 @@ function wireCopyButtons(): void {
   });
 }
 
-/** The KPI strip is a keyboard stop only while it actually scrolls (WCAG 2.1.1 for scrollers). */
+/**
+ * The KPI strip never hides a metric behind an invisible sideways scroll on
+ * desktop: when its content does not fit next to the brand and the controls, the
+ * top bar wraps to two rows (`.is-wrapped`, with hysteresis so it cannot flap).
+ * Where the strip still scrolls (phones) it gets an edge fade and is a keyboard
+ * stop (WCAG 2.1.1 for scrollers).
+ */
 function wireKpiStrip(): void {
   const strip = document.querySelector<HTMLElement>(".kpi-strip");
-  if (!strip) return;
+  const inner = strip?.closest<HTMLElement>(".topbar-inner") ?? null;
+  if (!strip || !inner) return;
+  const shown = (e: Element): boolean => e instanceof HTMLElement && e.offsetWidth > 0;
   const sync = (): void => {
-    if (strip.scrollWidth > strip.clientWidth + 1) strip.setAttribute("tabindex", "0");
+    const wrapped = inner.classList.contains("is-wrapped");
+    if (!wrapped) {
+      if (strip.scrollWidth > strip.clientWidth + 1) inner.classList.add("is-wrapped");
+    } else {
+      const icss = getComputedStyle(inner);
+      const gap = parseFloat(icss.columnGap) || 0;
+      const others = Array.from(inner.children).filter((c) => c !== strip && shown(c));
+      const othersW = others.reduce((n, c) => n + (c as HTMLElement).offsetWidth, 0) + gap * others.length;
+      const avail = inner.clientWidth - parseFloat(icss.paddingLeft) - parseFloat(icss.paddingRight) - othersW;
+      const kids = Array.from(strip.children).filter(shown);
+      const sgap = parseFloat(getComputedStyle(strip).columnGap) || 0;
+      const need = kids.reduce((n, c) => n + (c as HTMLElement).offsetWidth, 0) + sgap * Math.max(0, kids.length - 1) + 8;
+      if (need + 24 <= avail) inner.classList.remove("is-wrapped");
+    }
+    const scrolls = strip.scrollWidth > strip.clientWidth + 1;
+    strip.classList.toggle("is-scrollable", scrolls);
+    if (scrolls) strip.setAttribute("tabindex", "0");
     else strip.removeAttribute("tabindex");
   };
-  new ResizeObserver(sync).observe(strip);
-  Array.from(strip.children).forEach((c) => new ResizeObserver(sync).observe(c));
+  const bar = inner.closest<HTMLElement>(".topbar");
+  const syncBar = (): void => {
+    if (bar) document.documentElement.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+  };
+  const ro = new ResizeObserver(() => {
+    sync();
+    syncBar();
+  });
+  if (bar) ro.observe(bar);
+  ro.observe(strip);
+  ro.observe(inner);
+  Array.from(strip.children).forEach((c) => ro.observe(c));
   sync();
+  syncBar();
+}
+
+/** Shorter composer placeholder where the long one would be cut mid-word. */
+function wireComposerPlaceholder(): void {
+  const input = document.getElementById("ask-text") as HTMLInputElement | null;
+  if (!input) return;
+  const long = input.placeholder;
+  const q = window.matchMedia("(max-width: 520px)");
+  const apply = (): void => {
+    input.placeholder = q.matches ? "Ask the chat anything" : long;
+  };
+  q.addEventListener("change", apply);
+  apply();
 }
 
 function wireShell(): void {
+  wireComposerPlaceholder();
   wireKpiStrip();
   wireSettingsDrawer();
   wireChatRail();

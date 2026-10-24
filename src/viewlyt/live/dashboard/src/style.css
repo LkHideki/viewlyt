@@ -469,11 +469,12 @@ button {
     color 120ms var(--ease), transform 120ms var(--ease);
 }
 
-button:active:not(:disabled) {
+button:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
 
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -489,7 +490,7 @@ button:disabled {
   color: var(--on-accent);
 }
 
-.btn-primary:hover:not(:disabled) {
+.btn-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   filter: brightness(1.08);
 }
 
@@ -499,7 +500,7 @@ button:disabled {
   border-color: var(--border-strong);
 }
 
-.btn-secondary:hover:not(:disabled) {
+.btn-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-hover);
   border-color: var(--control-border);
 }
@@ -510,13 +511,20 @@ button:disabled {
   border-color: var(--critical-text);
 }
 
-.btn-danger:hover:not(:disabled) {
+.btn-danger:disabled,
+.btn-danger[aria-disabled="true"] {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+
+.btn-danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--critical-text);
   color: var(--surface-1);
 }
 
 .btn-small {
-  min-height: 28px;
+  min-height: 32px;
   font-size: 12px;
   padding: 0 10px;
 }
@@ -595,6 +603,37 @@ button:disabled {
 .input-group button {
   height: var(--field-h);
   flex-shrink: 0;
+}
+
+/* Status line under the Decider field: icon + text, never colour alone. */
+.decider-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.decider-status .icon {
+  margin-top: 1px;
+}
+
+.decider-status[data-state="ok"] {
+  border-color: var(--good-text);
+  background: var(--good-soft);
+  color: var(--good-text);
+}
+
+.decider-status[data-state="degraded"],
+.decider-status[data-state="open"] {
+  border-color: var(--warning-text);
+  background: var(--warning-soft);
+  color: var(--warning-text);
 }
 
 .reset-row {
@@ -762,14 +801,17 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
 .kpi-strip {
   flex: 1 1 0;
   min-width: 0;
+  order: 1;
   display: flex;
   align-items: center;
   gap: 20px;
   overflow-x: auto;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
-  padding: 4px;
-  margin: -4px;
+  /* Extra bottom room hosts the budget meter, which hangs below the Cost value
+     without adding height to that KPI (all KPIs share one baseline). */
+  padding: 4px 4px 9px;
+  margin: -4px -4px -9px;
   scroll-padding-inline: 4px;
 }
 
@@ -819,8 +861,21 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
 
 #cost-delta {
   font-size: 12px;
+  line-height: 1.25;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
+
+.stat-cost {
+  position: relative;
+}
+
+.stat-cost .meter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  width: auto;
 }
 
 .meter {
@@ -852,6 +907,37 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
   background: var(--critical);
 }
 
+/* Decider indicator (shown while a decision model is configured and usable). Icon
+   plus text always; the tint only reinforces it. */
+.decider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 4px 12px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--good-text);
+  background: var(--good-soft);
+  color: var(--good-text);
+  cursor: help;
+  white-space: nowrap;
+}
+
+.decider-chip .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.decider-chip[data-state="degraded"],
+.decider-chip[data-state="open"] {
+  border-color: var(--warning-text);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
 /* Sticky "budget cap reached" chip: analyses are paused by the spending cap. */
 .budget-flag {
   font-size: 12px;
@@ -863,6 +949,21 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
   border: 1px solid var(--warning-text);
   cursor: help;
   white-space: nowrap;
+}
+
+.lang-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.lang-icon {
+  display: none;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  color: var(--text-2);
+  pointer-events: none;
 }
 
 #language {
@@ -880,16 +981,30 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  /* The actions precede the KPI strip in the DOM (phone Tab order); on one row the
+     strip sits between Live and the actions. */
+  order: 2;
 }
 
 /* -------------------------------------------------------------------------
    App frame
    ------------------------------------------------------------------------- */
 
+/* One column everywhere; DOM order = visual order = Tab order. From 1200px the
+   grid below turns the chat rail into the right-hand column. */
+/* The skip link lands on <main> (tabindex -1): focus it without drawing a ring
+   around the whole page. */
+.app:focus {
+  outline: none;
+}
+
 .app {
   max-width: 1680px;
   margin: 0 auto;
-  padding: 24px 24px 64px;
+  padding: 16px 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
 }
 
 /* -------------------------------------------------------------------------
@@ -901,7 +1016,9 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
   padding: 12px;
-  margin-bottom: var(--gap);
+  /* The one-row layout depends on the composer's own width (it shares a column with
+     the chat rail on wide screens), not on the viewport. */
+  container: composer / inline-size;
 }
 
 .composer-row {
@@ -1051,13 +1168,6 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
    Workspace: chat rail + results
    ------------------------------------------------------------------------- */
 
-.workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--gap);
-  align-items: start;
-}
-
 .results-panel {
   min-width: 0;
 }
@@ -1115,6 +1225,23 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   box-shadow: var(--shadow-overlay);
+}
+
+/* No room below the trigger: open upward. Narrow screen edge: open rightward. */
+.menu.menu-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.menu.menu-left {
+  right: auto;
+  left: 0;
+}
+
+/* A card whose menu is open must paint above the cards after it (a collapsed
+   card is short, so its menu overlaps the next one). */
+.result-card:has(.menu:not(.hidden)) {
+  z-index: 15; /* above sibling cards, below the sticky .topbar (20) */
 }
 
 .menu > a,
@@ -1262,7 +1389,7 @@ body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
 #feed > .feed-line {
   padding: 3px 0;
   overflow-wrap: anywhere;
-  animation: feed-in 240ms var(--ease);
+  animation: feed-in 120ms var(--ease);
 }
 
 /* New lines settle in from a soft wash. Background only: animating opacity
@@ -1703,23 +1830,38 @@ dialog > .toasts {
    Responsive shell
    ------------------------------------------------------------------------- */
 
-/* Wide desktops: the chat rail becomes a sticky right column. */
+/* Wide desktops: the chat rail becomes a sticky right column that spans the
+   composer and the probes, so it starts right under the top bar and fills the
+   viewport (top 72 = bar 56 + gutter 16; bottom gutter 16). The page's own bottom
+   padding is that same 16px: more would let the rail slide up under the bar when the
+   page is scrolled to the end. */
 @media (min-width: 1200px) {
-  .workspace {
+  .app {
+    display: grid;
     grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-rows: auto 1fr;
+    align-items: start;
+    padding-bottom: 16px;
   }
 
-  .chat-rail {
-    grid-column: 2;
+  .composer {
+    grid-column: 1;
     grid-row: 1;
-    position: sticky;
-    top: 72px;
-    height: calc(100dvh - 88px);
   }
 
   .results-panel {
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 2;
+  }
+
+  .chat-rail {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    position: sticky;
+    /* --topbar-h is kept in sync by main.ts (the bar is 1 or 2 rows tall). */
+    top: calc(var(--topbar-h, 57px) + 15px);
+    height: calc(100dvh - var(--topbar-h, 57px) - 33px);
+    min-height: 360px;
   }
 
   .chat-toggle {
@@ -1736,41 +1878,64 @@ dialog > .toasts {
   }
 }
 
-/* Below 1200: the rail is a collapsible panel between composer and results. */
+/* Below 1200 the rail is a collapsible panel between the composer and the probes
+   (main.ts moves it there, so no CSS order is needed). */
 @media (max-width: 1199px) {
-  /* The rail comes after the probes in the DOM; it still sits above them here. */
-  .chat-rail {
-    order: -1;
-  }
-
   .chat-toggle {
     display: inline-flex;
   }
-
-  .app {
-    padding-left: 24px;
-    padding-right: 24px;
-  }
 }
 
-/* Composer: the input drops to its own full-width row when the one-row layout
-   would squeeze it. */
-@media (max-width: 999px) {
+/* Composer: when the composer is too narrow for one row, the input shares row 1 with
+   the mode control and the actions drop to their own row (same order as the DOM). */
+@container composer (max-width: 899px) {
   .composer-row {
     flex-wrap: wrap;
   }
 
   .composer-field {
-    order: 3;
-    flex: 1 1 100%;
+    flex: 1 1 260px;
   }
 
   .composer-actions {
-    margin-left: auto;
+    flex: 1 1 100%;
+    justify-content: flex-end;
   }
 }
 
-/* Top bar wraps to two rows: controls on top, metrics strip below. */
+/* Top bar wraps to two rows: controls on top, metrics strip below. Below 1100px
+   always; above it, when main.ts finds the strip would otherwise clip (.is-wrapped). */
+.topbar-inner.is-wrapped {
+  flex-wrap: wrap;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  row-gap: 8px;
+}
+
+.topbar-inner.is-wrapped .kpi-strip {
+  order: 10;
+  flex: 1 1 100%;
+}
+
+.topbar-inner.is-wrapped .topbar-actions {
+  margin-left: auto;
+}
+
+/* Tablets and up: when even a full-width second row is too narrow, the metrics
+   wrap onto more rows instead of scrolling out of sight. Phones keep the scroll. */
+@media (min-width: 768px) {
+  .topbar-inner.is-wrapped .kpi-strip {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+}
+
+/* Edge fade whenever the strip scrolls sideways. */
+.kpi-strip.is-scrollable {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+}
+
 @media (max-width: 1099px) {
   .topbar-inner {
     flex-wrap: wrap;
@@ -1809,10 +1974,33 @@ dialog > .toasts {
     padding: 16px 16px 48px;
   }
 
+  /* Phones: the language select collapses to a globe button (the native picker
+     lists the languages); everything in the top bar is 44px. */
+  .lang-icon {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+  }
+
+  #language {
+    width: var(--control-h);
+    min-width: 0;
+    padding: 0;
+    color: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    text-indent: -999px;
+  }
+
+  #language option {
+    color: var(--text);
+    text-indent: 0;
+  }
+
   .kpi-strip {
     gap: 24px;
-    margin: 0 -16px;
-    padding: 6px 16px;
+    margin: 0 -16px -3px;
+    padding: 6px 16px 9px;
     scroll-padding-inline: 16px;
   }
 
@@ -1901,16 +2089,18 @@ dialog > .toasts {
   }
 }
 
+/* Reduced motion: nothing animates or transitions at all (state changes are instant),
+   so document.getAnimations() stays empty. Meaning is carried by static cues: the
+   spinner becomes a still ring, the "Live" dot a still dot, the in-flight bar a still
+   accent line, skeletons stay at full opacity. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
     scroll-behavior: auto !important;
   }
 
   .spinner {
-    animation: none;
     border-top-color: var(--accent);
   }
 }
@@ -2145,6 +2335,7 @@ dialog > .toasts {
 
 /* Editable via the Edit panel: the title wraps in FULL, never clipped. */
 .result-label {
+  margin: 0;
   font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -2679,6 +2870,11 @@ input.scrub-range:focus-visible {
 
 .cat-stat-row {
   display: contents;
+}
+
+/* Delta chart legend: swatch | name | pct | sparkline (no repeated delta column). */
+.cat-stats.cat-stats-lean {
+  grid-template-columns: 12px minmax(0, 1fr) 44px 48px;
 }
 
 .cat-swatch {
@@ -3493,6 +3689,15 @@ input.edit-color::-webkit-color-swatch {
   color: var(--critical-text);
 }
 
+/* Armed: the first activation of the remove button. A second one removes the
+   row/column; the button is kept fully visible and tinted until it disarms. */
+.descartes-tick-del.is-armed {
+  opacity: 1;
+  color: var(--critical-text);
+  background: var(--critical-soft);
+  box-shadow: inset 0 0 0 1.5px var(--critical);
+}
+
 .descartes-tick.is-editing > :not(input) {
   visibility: hidden;
 }
@@ -3585,10 +3790,14 @@ input.edit-color::-webkit-color-swatch {
 }
 
 /* Coarse-pointer / touch devices have no hover: keep affordances reachable. */
-@media (hover: none) {
+@media (hover: none), (pointer: coarse), (max-width: 767px) {
   .descartes-addbtn,
   .descartes-tick-del {
     opacity: 0.7;
+  }
+
+  .descartes-tick-del.is-armed {
+    opacity: 1;
   }
 }
 
@@ -3654,6 +3863,9 @@ input.edit-color::-webkit-color-swatch {
   .cat-stats {
     grid-template-columns: 12px minmax(0, 1fr) 44px 56px;
   }
+  .cat-stats.cat-stats-lean {
+    grid-template-columns: 12px minmax(0, 1fr) 44px;
+  }
   .cat-spark {
     display: none;
   }
@@ -3683,9 +3895,11 @@ input.edit-color::-webkit-color-swatch {
     width: 36px;
     padding: 0;
     color: transparent;
+    text-indent: -999px;
   }
   .chart-select option {
     color: var(--text);
+    text-indent: 0;
   }
   .chart-select-caret {
     display: none;
@@ -3728,5 +3942,480 @@ input.edit-color::-webkit-color-swatch {
   #ask-suggest .icon,
   #ask-split .icon {
     display: none;
+  }
+}
+
+/* =========================================================================
+   Touch targets (WCAG 2.5.5): every control is at least 44x44 CSS px on touch
+   devices and below 768px. Desktop pointer layouts keep the denser sizes.
+   ========================================================================= */
+
+@media (pointer: coarse), (max-width: 767px) {
+  .skip-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .ask-chip,
+  .suggest-chip {
+    min-height: 44px;
+  }
+
+  .menu > a,
+  .menu > button {
+    min-height: 44px;
+  }
+
+  /* Card footer: the timeline thumb and the Live toggle. */
+  input.scrub-range {
+    height: 44px;
+    margin: -10px 0;
+  }
+
+  .scrub-live,
+  .descartes-valuemode {
+    min-height: 44px;
+  }
+
+  .btn-small,
+  .feed-order-btn,
+  .chat-toggle,
+  .prompt-chip,
+  .link-btn,
+  .card-editor .ask-chip,
+  .edit-valuemode-row .ask-chip,
+  .cat-add {
+    min-height: 44px;
+  }
+
+  .edit-valuemode-row .ask-chip,
+  .descartes-valuemode {
+    min-width: 44px;
+  }
+
+  .feed-jump {
+    min-height: 44px;
+    padding: 0 18px;
+  }
+
+  .toast-close {
+    width: 44px;
+    height: 44px;
+    margin: -10px -4px -10px 0;
+  }
+
+  .card-editor input[type="text"],
+  .card-editor input[type="number"],
+  input[type="file"] {
+    height: 44px;
+  }
+
+  input[type="file"] {
+    padding-block: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  input[type="file"]::file-selector-button {
+    min-height: 32px;
+  }
+
+  .cat-up,
+  .cat-down,
+  .cat-del {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .edit-cat-row {
+    grid-template-columns: 44px minmax(0, 1fr) auto auto auto;
+  }
+
+  input.edit-color {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Checkboxes: the whole labelled row is the target. */
+  .check {
+    min-height: 44px;
+    margin-bottom: 0;
+    position: relative;
+  }
+
+  .check input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+
+  .check label {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* The chart-type select keeps a 44px square even when it shrinks to an icon. */
+  .chart-select,
+  .card-menu-btn {
+    min-height: 44px;
+  }
+
+  .card-menu-btn {
+    width: 44px;
+  }
+
+  /* Descartes board: tick labels, remove buttons and the four add buttons are real
+     44px targets; the add buttons drop into a 44px halo around the plot. */
+  .descartes-main {
+    padding: 44px;
+    max-width: none;
+    align-self: flex-start;
+    width: fit-content;
+  }
+
+  /* Every column keeps a 44px target. On a card too narrow for that the board
+     scrolls sideways inside its own region instead of stacking the targets. */
+  .descartes-body {
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .descartes-plot {
+    /* The row-label gutter never shrinks below one 44px target, so the corner
+       always has room for the "add column before" button. */
+    grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 84px));
+    grid-template-rows: repeat(var(--rows), minmax(44px, 46px)) auto;
+    min-width: calc(44px * (var(--cols) + 1) + 2px * var(--cols));
+  }
+
+  /* Widened cards keep the same 44px floors (rows, gutter) for the same reason. */
+  .result-card.span-2 .descartes-plot {
+    grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 160px));
+    grid-template-rows: repeat(var(--rows), minmax(44px, 72px)) auto;
+  }
+
+  @container results (max-width: 775px) {
+    .result-card.span-2 .descartes-plot {
+      grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 84px));
+      grid-template-rows: repeat(var(--rows), minmax(44px, 46px)) auto;
+    }
+  }
+
+  .descartes-tick-label {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .descartes-tick-del {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  /* A row's remove button lives in the left halo (outside the plot), centred on
+     its row, so its 44px hit box can never overlap a cell or the row label. */
+  .descartes-ylabel.descartes-tick > .descartes-tick-del {
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+  }
+
+  .descartes-ylabel.descartes-tick > .descartes-tick-del:active {
+    transform: translateY(-50%);
+  }
+
+  .descartes-xlabel.descartes-tick {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* The inline rename field that replaces a tick label while editing. */
+  .descartes .descartes-tick-input[type="text"],
+  .descartes-tick-input[type="text"] {
+    height: 44px;
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .descartes-addbtn {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent;
+  }
+
+  .descartes-addbtn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid var(--control-border);
+    background: var(--surface-1);
+  }
+
+  .descartes-addbtn svg {
+    position: relative;
+  }
+
+  /* The left halo belongs to the row remove buttons, so "add column before"
+     moves to the empty corner of the plot, beside the first column tick. */
+  .descartes-add-x-before {
+    left: 44px;
+    top: auto;
+    bottom: 66px;
+    transform: none;
+  }
+
+  .descartes-add-x-before:active:not(:disabled) {
+    transform: none;
+  }
+
+  .descartes-add-x-after {
+    right: 0;
+  }
+
+  .descartes-add-y-after {
+    top: 0;
+  }
+
+  .descartes-add-y-before {
+    bottom: 0;
+  }
+
+  .descartes-add-y-after:active:not(:disabled),
+  .descartes-add-y-before:active:not(:disabled) {
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Narrow cards show the chart type as an icon: still a 44px square on touch. */
+@container hdr (max-width: 439px) {
+  @media (pointer: coarse), (max-width: 767px) {
+    .chart-select {
+      width: 44px;
+    }
+  }
+}
+
+/* A link that acts like a button (its own line, never inline in a sentence). */
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@media (pointer: coarse), (max-width: 767px) {
+  .link-action {
+    min-height: 44px;
+  }
+}
+
+/* Focus rings that sit flush against a clipping container are drawn inside it. */
+.tabpanel:focus-visible,
+.code-block textarea:focus-visible,
+.code-block pre:focus-visible,
+#feed:focus-visible {
+  outline-offset: -2px;
+}
+
+/* =========================================================================
+   Windows High Contrast / forced colors: the system palette replaces ours, so
+   controls keep a system-colour border, focus is a system-colour ring and chart
+   marks (whose colour IS the data) opt out of the override.
+   ========================================================================= */
+
+@media (forced-colors: active) {
+  /* Timeline scrubber: gradient track and thumb colours are dropped in forced
+     colours, so give both an explicit system-colour paint. */
+  input.scrub-range::-webkit-slider-runnable-track {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  input.scrub-range::-moz-range-track {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  input.scrub-range::-moz-range-progress {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  input.scrub-range::-webkit-slider-thumb {
+    forced-color-adjust: none;
+    background: Highlight;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+  }
+
+  input.scrub-range::-moz-range-thumb {
+    forced-color-adjust: none;
+    background: Highlight;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  button,
+  select,
+  input,
+  textarea,
+  .menu,
+  .toast,
+  .composer,
+  .chat-rail,
+  .result-card,
+  dialog.drawer,
+  .status,
+  .decider-chip,
+  .decider-status,
+  .count-pill,
+  .meter {
+    border: 1px solid CanvasText;
+  }
+
+  .btn-primary {
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .seg-thumb {
+    background: Highlight;
+    opacity: 0.35;
+    border-color: Highlight;
+  }
+
+  .ask-chip.ask-chip-active,
+  .tab[aria-selected="true"],
+  .scrub-live[aria-pressed="true"],
+  .run-toggle {
+    border: 2px solid Highlight;
+  }
+
+  .tab::after,
+  .meter-fill,
+  .live-dot,
+  .card-progress::before {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  .status::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .status.disconnected::before {
+    background: transparent;
+    border: 2px solid CanvasText;
+  }
+
+  /* Data marks keep their series colour, plus an outline so they read on any canvas. */
+  .bar-fill,
+  .cat-swatch,
+  .stacked-seg,
+  .delta-bar,
+  .descartes-cell,
+  .chart-area-band {
+    forced-color-adjust: none;
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .ramp-bar {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+
+  .chart-svg rect,
+  .chart-svg path,
+  .chart-svg circle,
+  .chart-svg polygon,
+  .chart-svg polyline,
+  .spark-line {
+    forced-color-adjust: none;
+  }
+
+  .chart-svg text {
+    fill: CanvasText;
+  }
+
+  .menu > a:hover,
+  .menu > button:hover,
+  .menu > a:focus-visible,
+  .menu > button:focus-visible {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .feed-jump,
+  .toast,
+  .menu,
+  dialog.drawer {
+    box-shadow: none;
+  }
+}
+
+/* Phones: the rail header stacks the count under the title so the two buttons fit. */
+@media (max-width: 479px) {
+  .chat-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "title order toggle"
+      "count order toggle";
+    column-gap: 8px;
+    row-gap: 0;
+    align-items: center;
+  }
+
+  .chat-head h2 {
+    grid-area: title;
+  }
+
+  .chat-count {
+    grid-area: count;
+  }
+
+  .feed-order-btn {
+    grid-area: order;
+  }
+
+  .chat-toggle {
+    grid-area: toggle;
+  }
+}
+
+/* Touch: tapping a thin mark shows its tooltip. The mark stays thin; an invisible
+   pseudo-element grows its hit area to 44px tall (the value is also printed as text). */
+@media (pointer: coarse) {
+  .bar-track::after,
+  .delta-track::after,
+  .stacked-seg::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -12px;
+    bottom: -12px;
+  }
+
+  .stacked-seg {
+    position: relative;
   }
 }

@@ -29,8 +29,34 @@
           <span id="paused-badge" class="paused-badge hidden"><span class="icon" data-icon="pause" aria-hidden="true"></span><span>Paused</span></span>
         </button>
 
+        <!-- DOM order = Tab order = phone visual order (row 1: brand, Live, actions; row 2: strip).
+             From 1100px, while the strip fits, CSS order places it before the actions; it is only a
+             tab stop when it scrolls, which is exactly when it wraps to the second row. -->
+        <div class="topbar-actions">
+          <div class="lang-field">
+            <span class="icon lang-icon" data-icon="translate" aria-hidden="true"></span>
+            <select id="language" aria-label="Analysis language" title="Language of the LLM analyses">
+              <option value="Portuguese (Brazil)">Português (BR)</option>
+              <option value="English">English</option>
+              <option value="Spanish">Español</option>
+              <option value="French">Français</option>
+              <option value="German">Deutsch</option>
+              <option value="Italian">Italiano</option>
+              <option value="Japanese">日本語</option>
+            </select>
+          </div>
+          <button type="button" id="theme-toggle" class="icon-btn" aria-label="Theme: System. Switch to Light" title="Theme: System. Click for Light">
+            <span class="icon" data-icon="desktop" aria-hidden="true"></span>
+          </button>
+          <button type="button" id="settings-open" class="icon-btn" aria-haspopup="dialog" aria-label="Settings" title="Settings">
+            <span class="icon" data-icon="gear" aria-hidden="true"></span>
+          </button>
+        </div>
+
         <div class="kpi-strip" role="group" aria-label="Session status and metrics">
           <span id="status" class="status disconnected">Disconnected</span>
+          <span id="budget-flag" class="budget-flag hidden" title="The spending budget was reached and analyses are paused. Raise the budget in Settings, Model, or reset.">Budget cap reached</span>
+          <span id="decider-chip" class="decider-chip hidden" data-state="ok"><span class="icon" data-icon="check-circle" aria-hidden="true"></span><span id="decider-chip-text">Decider on</span></span>
           <div class="stat">
             <span class="stat-label">Messages</span>
             <span id="ingested" class="stat-value">0</span>
@@ -40,11 +66,11 @@
             <span id="buffer" class="stat-value">0</span>
           </div>
           <div class="stat">
-            <span class="stat-label">LLM</span>
+            <span class="stat-label">Last call</span>
             <span id="proc" class="stat-value">idle</span>
           </div>
           <div class="stat">
-            <span class="stat-label">Latency</span>
+            <span class="stat-label">Avg latency</span>
             <span id="avg-latency" class="stat-value">n/a</span>
           </div>
           <div class="stat stat-cost">
@@ -55,32 +81,14 @@
             </span>
             <span id="budget-meter" class="meter hidden" role="meter" aria-label="Budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-level="ok"><span class="meter-fill"></span></span>
           </div>
-          <span id="budget-flag" class="budget-flag hidden" title="The spending budget was reached and analyses are paused. Raise the budget in Settings, Model, or reset.">Budget cap reached</span>
-          <select id="language" aria-label="Analysis language" title="Language of the LLM analyses">
-            <option value="Portuguese (Brazil)">Português (BR)</option>
-            <option value="English">English</option>
-            <option value="Spanish">Español</option>
-            <option value="French">Français</option>
-            <option value="German">Deutsch</option>
-            <option value="Italian">Italiano</option>
-            <option value="Japanese">日本語</option>
-          </select>
-        </div>
-
-        <div class="topbar-actions">
-          <button type="button" id="theme-toggle" class="icon-btn" aria-label="Theme: System. Switch to Light" title="Theme: System. Click for Light">
-            <span class="icon" data-icon="desktop" aria-hidden="true"></span>
-          </button>
-          <button type="button" id="settings-open" class="icon-btn" aria-haspopup="dialog" aria-label="Settings" title="Settings">
-            <span class="icon" data-icon="gear" aria-hidden="true"></span>
-          </button>
         </div>
       </div>
     </header>
 
-    <main id="main" class="app">
+    <main id="main" class="app" tabindex="-1">
       <!-- Composer: the always-visible probe ask bar -->
-      <section class="composer" aria-label="Ask the chat">
+      <section class="composer" aria-labelledby="composer-title">
+        <h2 id="composer-title" class="sr-only">Ask the chat</h2>
         <div class="composer-row">
           <div class="seg" role="group" aria-label="Probe kind">
             <span class="seg-thumb" aria-hidden="true"></span>
@@ -103,54 +111,63 @@
         <div id="suggestions"></div>
       </section>
 
-      <div class="workspace">
-        <!-- DOM order: probes first, then the rail (the rail sits to the right at 1200px and up,
-             so keyboard order follows the visual order). -->
-        <section class="results-panel" aria-labelledby="results-title">
-          <div class="results-head">
-            <div class="results-title">
-              <h2 id="results-title">Probes</h2>
-              <span id="probe-count" class="count-pill" aria-live="polite">0 probes</span>
-            </div>
-            <div class="results-head-actions">
-              <button type="button" id="force-run" class="btn-secondary btn-small"><span class="icon" data-icon="lightning" aria-hidden="true"></span><span class="btn-label">Analyze now</span></button>
-              <button type="button" id="stop-batch" class="btn-danger btn-small" disabled title="Immediately cancels the in-flight LLM batch"><span class="icon" data-icon="stop" aria-hidden="true"></span><span class="btn-label">Stop</span></button>
-              <div class="menu-wrap">
-                <button type="button" id="export-menu-btn" class="btn-secondary btn-small" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"><span class="icon" data-icon="download-simple" aria-hidden="true"></span><span class="btn-label">Export</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
-                <div id="export-menu" class="menu hidden" role="menu" aria-label="Export">
-                  <a role="menuitem" tabindex="-1" href="/export.json" download title="Download every probe's snapshot history as JSON">JSON</a>
-                  <a role="menuitem" tabindex="-1" href="/export.csv" download title="Download the snapshot history flattened as CSV">CSV</a>
-                </div>
+      <!-- DOM order = visual order = Tab order. At 1200px and up the rail is the right column,
+           so it follows the probes; below that it is the collapsible panel between the composer and
+           the probes, and main.ts moves it there (placeChatRail). -->
+      <section class="results-panel" aria-labelledby="results-title">
+        <div class="results-head">
+          <div class="results-title">
+            <h2 id="results-title">Probes</h2>
+            <span id="probe-count" class="count-pill">0 probes</span>
+          </div>
+          <div class="results-head-actions">
+            <button type="button" id="force-run" class="btn-secondary btn-small"><span class="icon" data-icon="lightning" aria-hidden="true"></span><span class="btn-label">Analyze now</span></button>
+            <button type="button" id="stop-batch" class="btn-danger btn-small" disabled title="Immediately cancels the in-flight LLM batch"><span class="icon" data-icon="stop" aria-hidden="true"></span><span class="btn-label">Stop</span></button>
+            <div class="menu-wrap">
+              <button type="button" id="export-menu-btn" class="btn-secondary btn-small" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"><span class="icon" data-icon="download-simple" aria-hidden="true"></span><span class="btn-label">Export</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+              <div id="export-menu" class="menu hidden" role="menu" aria-label="Export">
+                <a role="menuitem" tabindex="-1" href="/export.json" download title="Download every probe's snapshot history as JSON">JSON</a>
+                <a role="menuitem" tabindex="-1" href="/export.csv" download title="Download the snapshot history flattened as CSV">CSV</a>
               </div>
             </div>
           </div>
-          <div id="results" class="results-list">
-            <p class="empty-hint">Connecting to the live session</p>
-          </div>
-        </section>
+        </div>
+        <div id="results" class="results-list">
+          <p class="empty-hint">Connecting to the live session</p>
+        </div>
+      </section>
 
-        <!-- Live chat rail: sticky column at 1200px and up, collapsible panel below it. -->
-        <section id="chat-rail" class="chat-rail" aria-labelledby="chat-title">
-          <div class="chat-head">
-            <h2 id="chat-title">Live chat</h2>
-            <span id="chat-count" class="chat-count">0 msgs</span>
-            <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
-            <button type="button" id="chat-toggle" class="chat-toggle" aria-expanded="false" aria-controls="chat-body"><span class="chat-toggle-label">Show</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+      <!-- Live chat rail (complementary landmark): sticky column at 1200px and up, collapsible panel below it. -->
+      <aside id="chat-rail" class="chat-rail" aria-labelledby="chat-title">
+        <div class="chat-head">
+          <h2 id="chat-title">Live chat</h2>
+          <span id="chat-count" class="chat-count">0 msgs</span>
+          <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
+          <button type="button" id="chat-toggle" class="chat-toggle" aria-expanded="false" aria-controls="chat-body"><span class="chat-toggle-label">Show</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+        </div>
+        <div id="chat-body" class="chat-body">
+          <div class="feed-wrap">
+            <div id="feed" role="region" aria-label="Chat messages" tabindex="0"><div class="empty-hint feed-empty">
+              <span class="empty-icon" data-icon="chat-circle-text" aria-hidden="true"></span>
+              <strong>Waiting for chat messages</strong>
+              <span>Start the capture on the chat popout and lines show up here.</span>
+              <button type="button" id="open-capture" class="btn-secondary btn-small">Open capture settings</button>
+            </div></div>
+            <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
           </div>
-          <div id="chat-body" class="chat-body">
-            <div class="feed-wrap">
-              <div id="feed" role="region" aria-label="Chat messages" tabindex="0"><div class="empty-hint feed-empty">
-                <span class="empty-icon" data-icon="chat-circle-text" aria-hidden="true"></span>
-                <strong>Waiting for chat messages</strong>
-                <span>Start the capture on the chat popout and lines show up here.</span>
-                <button type="button" id="open-capture" class="btn-secondary btn-small">Open capture settings</button>
-              </div></div>
-              <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
-            </div>
-          </div>
-        </section>
-      </div>
+        </div>
+      </aside>
     </main>
+    <script>
+      /* Pre-paint twin of placeChatRail (main.ts): below 1200px the rail sits before the probes. */
+      try {
+        if (!window.matchMedia("(min-width: 1200px)").matches) {
+          const rail = document.getElementById("chat-rail");
+          const probes = document.querySelector(".results-panel");
+          if (rail && probes) probes.before(rail);
+        }
+      } catch (e) {}
+    </script>
 
     <!-- Settings drawer: Window, Model, Probes, Capture -->
     <dialog id="settings-drawer" class="drawer" aria-labelledby="settings-title">
@@ -216,6 +233,7 @@
               <option value="ollama">Ollama</option>
               <option value="openai">OpenAI</option>
               <option value="groq">Groq</option>
+              <option value="perplexity">Perplexity</option>
             </select>
           </div>
           <div class="field">
@@ -226,7 +244,7 @@
             <label for="api_key">API key</label>
             <div class="input-group">
               <input type="password" id="api_key" placeholder="sk-or-..." aria-describedby="api-key-help" />
-              <button type="button" id="toggle-key" class="btn-secondary" aria-controls="api_key"><span class="btn-label">show</span></button>
+              <button type="button" id="toggle-key" class="btn-secondary" aria-controls="api_key"><span class="btn-label">Show</span></button>
             </div>
             <p class="help" id="api-key-help">Leave blank to keep the current key.</p>
           </div>
@@ -236,8 +254,9 @@
           </div>
           <div class="field">
             <label for="decider_model">Decider model</label>
-            <input type="text" id="decider_model" placeholder="perplexity/pplx-decider-flash-v1.2" aria-describedby="decider-help" />
-            <p class="help" id="decider-help">Optional. Classifies messages instead of the chat model. Blank means off.</p>
+            <input type="text" id="decider_model" placeholder="Off" autocomplete="off" spellcheck="false" aria-describedby="decider-status decider-help" />
+            <p id="decider-status" class="decider-status hidden" data-state="off"><span class="icon" data-icon="info" aria-hidden="true"></span><span id="decider-status-text"></span></p>
+            <p class="help" id="decider-help">Optional. Classifies messages instead of the chat model. Leave blank to turn it off. Example: perplexity/pplx-decider-flash-v1.2 (Perplexity or OpenRouter only).</p>
           </div>
           <div class="field">
             <label for="budget">Budget (USD)</label>
@@ -323,7 +342,7 @@ Notes:
           </div>
           <div class="button-row">
             <button type="button" id="import-json" class="btn-secondary">Import JSON</button>
-            <span id="import-json-status" class="hint" role="status"></span>
+            <span id="import-json-status" class="hint"></span>
           </div>
         </section>
 
@@ -340,11 +359,11 @@ Notes:
 
           <h4 class="step-title">Browser extension</h4>
           <p class="help help-lead">
-            Works in Chrome and Vivaldi, set and forget.
-            <a id="ext-link" href="/viewlyt-extension.zip">Download the viewlyt extension (.zip)</a>,
-            unzip it and load the folder from your browser&rsquo;s Extensions page
-            (Developer mode, then Load unpacked). It runs on every chat popout.
+            Works in Chrome and Vivaldi, set and forget. Download the extension, unzip it and
+            load the folder from your browser&rsquo;s Extensions page (Developer mode, then
+            Load unpacked). It runs on every chat popout.
           </p>
+          <p class="help-lead"><a id="ext-link" class="link-action" href="/viewlyt-extension.zip" download><span class="icon" data-icon="download-simple" aria-hidden="true"></span>Download the viewlyt extension (.zip)</a></p>
 
           <h4 class="step-title">Bookmark</h4>
           <p class="help help-lead">
