@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from importlib.metadata import PackageNotFoundError, version
 
 from .decisions import DEFAULT_DECIDER_MODEL
@@ -47,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        choices=["lmstudio", "ollama", "openai", "openrouter", "groq"],
+        choices=["lmstudio", "ollama", "openai", "openrouter", "groq", "perplexity"],
         default="openrouter",
         help="LLM provider (sets the base URL; --base-url overrides) (default: %(default)s)",
     )
@@ -67,15 +68,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("LLM_NAME") or "google/gemini-3.1-flash-lite",
         help="LLM model name (default: $LLM_NAME, else google/gemini-3.1-flash-lite)",
     )
+    # Default is the sentinel None = "not given": the server keeps the PERSISTED decider
+    # unless the launch states a choice (flag or $LLM_DECIDER), which then wins — same
+    # rule as the API key. `--no-decider` is the explicit "off" ("" , not None).
     parser.add_argument(
         "--decider",
         nargs="?",
         const=DEFAULT_DECIDER_MODEL,
-        default=os.environ.get("LLM_DECIDER") or "",
+        default=os.environ.get("LLM_DECIDER") or None,
         metavar="MODEL",
         help="Decision model that classifies messages instead of the chat model "
         "(cheaper/faster; OpenRouter or Perplexity only). `--decider` alone = "
-        f"{DEFAULT_DECIDER_MODEL}; default: $LLM_DECIDER, else off",
+        f"{DEFAULT_DECIDER_MODEL}; default: $LLM_DECIDER, else the saved choice "
+        "(off on a first run). Overrides the saved choice when given",
+    )
+    parser.add_argument(
+        "--no-decider",
+        dest="decider",
+        action="store_const",
+        const="",
+        help="Turn the decision model off (also clears a saved --decider)",
     )
     parser.add_argument(
         "-n",
@@ -140,20 +152,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_BARE_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
 def _looks_like_live_url(value: str) -> bool:
-    """True when a ``--decider`` value is really the positional live URL.
+    """True when a ``--decider`` value is really the positional live URL or video id.
 
     ``--decider`` takes an OPTIONAL model (``nargs="?"``), so argparse greedily eats a
     following positional: ``vl live --decider 'https://youtube.com/...'`` would make the
     URL the model name and leave ``url`` empty. A model id never has a scheme or a
-    YouTube host, so such a value is unambiguously the URL.
+    YouTube host, so such a value is unambiguously the URL. A bare 11-char id
+    (``dQw4w9WgXcQ``) is the same case: OpenRouter model ids always carry a provider
+    prefix (``/``) and Perplexity's (``pplx-decider-...``) are longer.
     """
     v = value.lower()
-    return "://" in v or "youtube.com" in v or "youtu.be" in v
+    if "://" in v or "youtube.com" in v or "youtu.be" in v:
+        return True
+    return "/" not in value and _BARE_VIDEO_ID.fullmatch(value) is not None
 
 
 def untangle_decider(args: argparse.Namespace) -> argparse.Namespace:
-    """Move a URL swallowed by ``--decider`` back into ``url`` (decider = default model)."""
+    """Move a URL swallowed by ``--decider`` back into ``url`` (decider = default model).
+
+    ``decider`` may be ``None`` (not given) or ``""`` (``--no-decider``); both are
+    falsy and left alone.
+    """
     if args.decider and args.url is None and _looks_like_live_url(args.decider):
         args.url = args.decider
         args.decider = DEFAULT_DECIDER_MODEL
@@ -189,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         base_url=resolved_base_url,
         api_key=args.api_key,
         model=args.model,
-        decider_model=args.decider,
+        decider_model=args.decider or "",
     )
     window = WindowConfig(
         n=args.n,
@@ -231,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             open_browser=not args.no_open,
             capture_url=args.url if args.capture == "server" else None,
             allow_insecure_bind=args.allow_insecure_bind,
+            decider_override=args.decider,
         )
     except KeyboardInterrupt:
         pass

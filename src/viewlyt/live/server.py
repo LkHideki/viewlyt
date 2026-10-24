@@ -33,8 +33,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import persistence
+from .decisions import decisions_url
 from .llm import (
     PROVIDERS,
+    HybridRunner,
     LLMConfig,
     LLMRunner,
     build_runner,
@@ -56,6 +58,9 @@ _SEND_TIMEOUT = 5.0
 
 # Snapshots kept per probe, server-side, for reconnect backfill and export.
 _HISTORY_CAP = 120
+
+# Max seconds a replaced LLM client waits for the in-flight batch before it is closed.
+_CLOSE_GRACE_S = 120.0
 
 
 def _is_youtube_origin(origin: str | None) -> bool:
@@ -211,6 +216,53 @@ class LiveServer:
         # loses the session's analysis history.
         self.history: dict[str, deque[dict]] = {}
         self._client: LLMRunner | None = None
+        # Strong refs to fire-and-forget tasks (retiring old clients) so the loop's
+        # weak task set can't garbage-collect them mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def decider_state(self) -> str:
+        """Health of the decision-model backend for the dashboard.
+
+        ``"off"`` (none configured), ``"inactive"`` (configured but the provider has no
+        decisions endpoint, so it is ignored), else the runner's own ``"ok"`` /
+        ``"degraded"`` / ``"open"`` once a hybrid runner exists (``"ok"`` before the
+        first window has built one). Never builds the client as a side effect.
+        """
+        if not self.llm_cfg.decider_model:
+            return "off"
+        if decisions_url(self.llm_cfg.base_url) is None:
+            return "inactive"
+        if isinstance(self._client, HybridRunner):
+            return self._client.decider_state
+        return "ok"
+
+    def retire_client(self) -> None:
+        """Drop the cached runner and close the old one in the background.
+
+        Called when a control op replaces the config. The close waits for an in-flight
+        batch (which still holds the old runner) so a model swap never aborts a window
+        mid-request, and any error is swallowed: it must never reach the control op.
+        """
+        old, self._client = self._client, None
+        closer = getattr(old, "aclose", None)
+        if closer is None:
+            return
+        batch = self.current_batch_task
+
+        async def _close() -> None:
+            try:
+                if batch is not None and not batch.done():
+                    await asyncio.wait({batch}, timeout=_CLOSE_GRACE_S)
+                await closer()
+            except Exception:
+                logger.debug("error closing the replaced LLM client", exc_info=True)
+
+        try:
+            task = asyncio.get_running_loop().create_task(_close())
+        except RuntimeError:  # no running loop (sync caller): nothing to await on
+            return
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def client(self) -> LLMRunner:
         """Lazily build (and cache) the LLM client for the current config."""
@@ -229,6 +281,7 @@ class LiveServer:
             "type": "state",
             "window": self.window.to_dict(),
             "model": self.llm_cfg.to_public_dict(),
+            "decider_state": self.decider_state(),
             "paused": self.paused,
             "processing": self.processing,
             "budget_blocked": self.budget_blocked,
@@ -259,6 +312,19 @@ def resolve_launch_api_key(provided: str, persisted: str) -> str:
     back to the saved key only when none was provided this launch.
     """
     return provided or persisted
+
+
+def describe_decider(cfg: LLMConfig) -> str:
+    """One startup line with the EFFECTIVE decider (after merging launch + saved state)."""
+    if not cfg.decider_model:
+        return "decider:      off"
+    if decisions_url(cfg.base_url) is None:
+        return (
+            f"decider:      {cfg.decider_model} INACTIVE: base_url {cfg.base_url!r} has no "
+            "decisions endpoint (OpenRouter or Perplexity only); classification stays on "
+            "the chat model"
+        )
+    return f"decider:      {cfg.decider_model} (classification)"
 
 
 async def persist(server: LiveServer) -> None:
@@ -341,14 +407,16 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 model=data.get("model") or server.llm_cfg.model,
                 budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
                 language=str(data.get("language") or server.llm_cfg.language),
-                # Present key (even "") is explicit: "" clears the decider.
+                # A str (even "") is explicit: "" clears the decider. Any other type
+                # (None / number / dict) is ignored — str() would turn it into the model
+                # name "None"/"123" and silently switch the decider on.
                 decider_model=(
-                    str(data["decider_model"])
-                    if "decider_model" in data
+                    data["decider_model"].strip()
+                    if isinstance(data.get("decider_model"), str)
                     else server.llm_cfg.decider_model
                 ),
             )
-            server._client = None
+            server.retire_client()
         elif op == "pause":
             server.paused = True
         elif op == "resume":
@@ -382,7 +450,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.window = WindowConfig()
             server.llm_cfg = LLMConfig()
             server.buffer = WindowBuffer(maxlen=server.window.capacity)
-            server._client = None
+            server.retire_client()
             server.total_tokens = 0
             server.total_cost = 0.0
             server.budget_blocked = False
@@ -1133,8 +1201,15 @@ def run(
     open_browser: bool = False,
     capture_url: str | None = None,
     allow_insecure_bind: bool = False,
+    decider_override: str | None = None,
 ) -> None:
     """Build the app and serve it with uvicorn (blocking).
+
+    ``decider_override`` is the decision model chosen at launch (``--decider`` /
+    ``$LLM_DECIDER``; ``""`` = ``--no-decider``). ``None`` means "not given": the
+    persisted choice is kept. Like the API key, an explicit launch choice wins over
+    the saved state — otherwise the first launch's seeded state would pin the decider
+    forever and it could never be turned off from the CLI.
 
     ``capture_url`` switches on the server-side capture: a managed headless
     Chrome opens that video's chat popout and runs the snippet, so no user
@@ -1168,9 +1243,28 @@ def run(
             model=m["model"],
             budget_usd=float(m.get("budget", 0.0)),
             language=str(m.get("language") or "Portuguese (Brazil)"),
-            decider_model=str(m.get("decider_model") or ""),
+            decider_model=(
+                decider_override
+                if decider_override is not None
+                else str(m.get("decider_model") or "")
+            ),
         )
         server._client = None
+        if server.llm_cfg.decider_model != str(m.get("decider_model") or ""):
+            # Persist the explicit launch choice so a later launch without the flag
+            # keeps it (and `--no-decider` stays off) instead of reverting.
+            persistence.save_state(
+                server.window.to_dict(),
+                {
+                    "base_url": server.llm_cfg.base_url,
+                    "model": server.llm_cfg.model,
+                    "api_key": server.llm_cfg.api_key,
+                    "budget": server.llm_cfg.budget_usd,
+                    "language": server.llm_cfg.language,
+                    "decider_model": server.llm_cfg.decider_model,
+                },
+                list(st.get("probes", [])),
+            )
         for pd in st.get("probes", []):
             try:
                 p = probe_from_dict(pd)
@@ -1179,6 +1273,8 @@ def run(
                 logger.warning("skipping unrestorable saved probe: %r", pd, exc_info=True)
     else:
         # No saved state yet: seed the file with the current config.
+        if decider_override is not None:
+            server.llm_cfg = replace(server.llm_cfg, decider_model=decider_override)
         persistence.save_state(
             server.window.to_dict(),
             {
@@ -1191,6 +1287,7 @@ def run(
             },
             [p.to_dict() for p in server.probes.values()],
         )
+    print(describe_decider(server.llm_cfg))
     capture = None
     if capture_url:
         from .capture import BrowserCapture, popout_url

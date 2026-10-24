@@ -58,7 +58,8 @@ def test_decider_flag_parsing(monkeypatch):
     monkeypatch.delenv("LLM_DECIDER", raising=False)
     assert build_parser().parse_args(["--decider"]).decider == DEFAULT_DECIDER_MODEL
     assert build_parser().parse_args(["--decider", "x/y"]).decider == "x/y"
-    assert build_parser().parse_args([]).decider == ""
+    assert build_parser().parse_args([]).decider is None  # sentinel: "not given"
+    assert build_parser().parse_args(["--no-decider"]).decider == ""  # explicit off
     monkeypatch.setenv("LLM_DECIDER", "env/model")
     assert build_parser().parse_args([]).decider == "env/model"
 
@@ -78,3 +79,29 @@ def test_decider_flag_does_not_swallow_the_live_url(monkeypatch):
     # URL first, bare flag last: nothing to untangle.
     a = untangle_decider(build_parser().parse_args([url, "--decider"]))
     assert (a.url, a.decider) == (url, DEFAULT_DECIDER_MODEL)
+
+
+def test_decider_flag_does_not_swallow_a_bare_video_id(monkeypatch):
+    """`--decider dQw4w9WgXcQ`: an 11-char id is the live target, never a model name."""
+    from viewlyt.live.cli import _looks_like_live_url, build_parser, untangle_decider
+    from viewlyt.live.decisions import DEFAULT_DECIDER_MODEL
+
+    monkeypatch.delenv("LLM_DECIDER", raising=False)
+    a = untangle_decider(build_parser().parse_args(["--decider", "dQw4w9WgXcQ"]))
+    assert (a.url, a.decider) == ("dQw4w9WgXcQ", DEFAULT_DECIDER_MODEL)
+    assert _looks_like_live_url("dQw4w9WgXcQ")
+    assert _looks_like_live_url("-_aB3-_xYz9")  # ids may start with - or _
+    # Real model ids are never mistaken for a URL or an id.
+    for model in (
+        "perplexity/pplx-decider-flash-v1.2",
+        "pplx-decider-flash-latest",
+        "pplx-decider-latest",
+        "x/y",
+        "abcdefghijk/",  # 11 chars but has a provider slash
+    ):
+        assert not _looks_like_live_url(model), model
+    # --no-decider and the unset sentinel survive untangling untouched.
+    a = untangle_decider(build_parser().parse_args(["--no-decider"]))
+    assert (a.url, a.decider) == (None, "")
+    a = untangle_decider(build_parser().parse_args([]))
+    assert (a.url, a.decider) == (None, None)

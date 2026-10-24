@@ -71,7 +71,10 @@ def test_build_requests_batches_with_global_indices() -> None:
             assert q["type"] == "choice"
             assert list(q["criteria"]) == probe.categories
     assert "text number 32" in reqs[1]["questions"]["m32"]["instructions"]
-    assert "How does the author feel?" in reqs[0]["questions"]["m0"]["instructions"]
+    # The probe question lives ONCE in ``state``; per-question instructions carry only
+    # the per-message ask (no repeated question = no batch-size x token overhead).
+    assert "How does the author feel?" not in reqs[0]["questions"]["m0"]["instructions"]
+    assert "Which category best fits" in reqs[0]["questions"]["m0"]["instructions"]
     state = reqs[0]["state"]
     assert state["task"] == probe.question
     assert state["categories"] == probe.categories

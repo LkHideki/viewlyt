@@ -13,10 +13,11 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-from .decisions import DecisionClient, decisions_url
+from .decisions import DECIDER_TIMEOUT, DecisionClient, decisions_url
 from .messages import ChatMessage
 from .probes import Probe, ProbeResult, _fold_label, _numbered, _parse_pair
 
@@ -30,6 +31,9 @@ PROVIDERS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "groq": "https://api.groq.com/openai/v1",
+    # Chat is OpenAI-compatible here; the same host also serves the decisions API, so
+    # this is the route to the Perplexity decider.
+    "perplexity": "https://api.perplexity.ai",
 }
 
 
@@ -58,6 +62,10 @@ class LLMConfig:
             "budget": self.budget_usd,
             "language": self.language,
             "decider_model": self.decider_model,
+            # Configured AND usable: a decider on a provider without a decisions
+            # endpoint is silently ignored by build_runner, so the dashboard must not
+            # present it as running.
+            "decider_active": bool(self.decider_model) and decisions_url(self.base_url) is not None,
         }
 
 
@@ -152,6 +160,15 @@ class LLMClient:
         except Exception:
             pass
 
+    async def aclose(self) -> None:
+        """Close the underlying openai client if it exposes ``close``/``aclose``."""
+        closer = getattr(self._client, "aclose", None) or getattr(self._client, "close", None)
+        if closer is None:
+            return
+        result = closer()
+        if asyncio.iscoroutine(result):
+            await result
+
     @property
     def avg_latency_ms(self) -> int | None:
         """Average request->response round-trip across every completed LLM call."""
@@ -235,6 +252,14 @@ class LLMClient:
         return await self._complete(msgs, schema)
 
 
+# Circuit breaker for the decider: after this many CONSECUTIVE failures, stop calling it
+# for ``_BREAKER_COOLDOWN_S`` and route classification straight to the chat model. A
+# dead/hanging decider otherwise taxes every window with a full timeout before the
+# fallback even starts.
+_BREAKER_THRESHOLD = 3
+_BREAKER_COOLDOWN_S = 300.0
+
+
 class HybridRunner:
     """Routes classification to a decision model and everything else to the chat model.
 
@@ -242,12 +267,26 @@ class HybridRunner:
     ``complete_json`` (rewrite / suggest / decompose) stay on ``chat``. A decider
     failure (endpoint down, bad key, quota) degrades to the chat model for that call
     instead of losing the probe — classification is still produced, just at chat cost.
+
+    A circuit breaker keeps a persistently failing decider from slowing every window:
+    after 3 consecutive failures it is skipped for 5 minutes, then ONE call is let
+    through (half-open — a single further failure re-opens it, a success closes it for
+    good). ``decider_state`` reports ``"ok"`` / ``"degraded"`` / ``"open"``.
     """
 
-    def __init__(self, chat: LLMClient, decider: DecisionClient) -> None:
+    def __init__(
+        self,
+        chat: LLMClient,
+        decider: DecisionClient,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.chat = chat
         self.decider = decider
         self.model = chat.model
+        self._clock = clock
+        self._failures = 0
+        self._open_until: float | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -266,21 +305,68 @@ class HybridRunner:
         total = self.chat._latency_sum_ms + self.decider._latency_sum_ms
         return round(total / count)
 
+    @property
+    def decider_state(self) -> str:
+        """``"open"`` (breaker tripped), ``"degraded"`` (recent failures), else ``"ok"``."""
+        if self._open_until is not None and self._clock() < self._open_until:
+            return "open"
+        return "degraded" if self._failures else "ok"
+
+    def _decider_allowed(self) -> bool:
+        """False while the breaker is open; closes it (half-open) once the cooldown ends."""
+        if self._open_until is None:
+            return True
+        if self._clock() < self._open_until:
+            return False
+        self._open_until = None
+        self._failures = _BREAKER_THRESHOLD - 1  # half-open: one more failure re-opens
+        logger.info("decider %r circuit closed; trying it again", self.decider.model)
+        return True
+
+    def _record_failure(self, exc: Exception, probe_id: str) -> None:
+        self._failures += 1
+        logger.warning(
+            "decider %r failed (%s: %s); falling back to the chat model for probe %r",
+            self.decider.model,
+            type(exc).__name__,
+            exc,
+            probe_id,
+        )
+        if self._failures >= _BREAKER_THRESHOLD and self._open_until is None:
+            self._open_until = self._clock() + _BREAKER_COOLDOWN_S
+            logger.warning(
+                "decider %r failed %d times in a row; skipping it for %d min "
+                "(classification stays on the chat model)",
+                self.decider.model,
+                self._failures,
+                round(_BREAKER_COOLDOWN_S / 60),
+            )
+
     async def run(self, probe: Probe, messages: list[ChatMessage]) -> dict:
-        if probe.kind == "classification" and getattr(probe, "categories", None):
+        if (
+            probe.kind == "classification"
+            and getattr(probe, "categories", None)
+            and self._decider_allowed()
+        ):
             try:
-                return await self.decider.classify(probe, messages)  # type: ignore[arg-type]
+                out = await self.decider.classify(probe, messages)  # type: ignore[arg-type]
             except Exception as exc:
-                logger.warning(
-                    "decider %r failed (%s); falling back to the chat model for probe %r",
-                    self.decider.model,
-                    exc,
-                    probe.id,
-                )
+                self._record_failure(exc, probe.id)
+            else:
+                self._failures = 0
+                return out
         return await self.chat.run(probe, messages)
 
     async def complete_json(self, system: str, user: str, schema: dict) -> dict:
         return await self.chat.complete_json(system, user, schema)
+
+    async def aclose(self) -> None:
+        """Close both clients; one failing never prevents closing the other."""
+        for client in (self.decider, self.chat):
+            try:
+                await client.aclose()
+            except Exception:
+                logger.debug("error closing %r", client, exc_info=True)
 
 
 def build_runner(cfg: LLMConfig) -> LLMRunner:
@@ -296,7 +382,8 @@ def build_runner(cfg: LLMConfig) -> LLMRunner:
             cfg.base_url,
         )
         return chat
-    decider = DecisionClient(cfg.base_url, cfg.api_key, cfg.decider_model, cfg.timeout)
+    # Own (shorter) timeout: independent of the chat model's, see DECIDER_TIMEOUT.
+    decider = DecisionClient(cfg.base_url, cfg.api_key, cfg.decider_model, DECIDER_TIMEOUT)
     return HybridRunner(chat, decider)
 
 
