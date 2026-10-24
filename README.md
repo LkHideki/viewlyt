@@ -534,8 +534,8 @@ flowing, so no LLM spend happens before you look.
   popout and streams it in. Nothing to install in your browser.
 - **`--capture browser`** — you open the popout
   (`https://www.youtube.com/live_chat?is_popout=1&v=LIVE_ID`) yourself and start
-  the capture there with one of the options on the dashboard's **Capture** panel:
-  the **browser extension** (`viewlyt-extension.zip`, load unpacked; auto-runs on
+  the capture there with one of the options in the **Capture** tab of the
+  dashboard's Settings: the **browser extension** (`viewlyt-extension.zip`, load unpacked; auto-runs on
   every popout), a **bookmarklet**, or the **console snippet** (type `allow pasting`
   first if Chrome refuses the paste). A `viewlyt: connected | captured N` badge
   appears in the popout. Always use the **popout** URL — the embedded chat frame
@@ -543,35 +543,65 @@ flowing, so no LLM spend happens before you look.
 
 ### The dashboard
 
+The dashboard follows your system theme (dark or light); the theme button in the
+top bar switches between System, Light and Dark and remembers the choice.
+
+- **Top bar** — the run control (**Live** while analysing, **Paused** otherwise;
+  the server starts paused), the connection status, live counters (messages
+  ingested, buffer size, LLM state, average latency, cost against the budget with
+  a meter), a **Decider** indicator when a decision model is active, the analysis
+  language and the **Settings** button.
 - **Ask bar** — type a question (`how is the crowd feeling?`, `liste os 3
   jogadores mais elogiados`). **Auto** rewrites it into a probe and picks the
   kind, chart and categories; **Open**/**Classify** force a kind; **Suggest**
   proposes two probes from the live chat; **Split** decomposes a broad theme into
-  elementary probes offered as chips. A new probe is analyzed right away.
-- **Live Results** — one card per probe: editable label and prompt, **Edit**
-  (per-probe refresh/sample overrides; reorder/recolor categories), **Remove**,
-  collapse. Classification cards pick among a dozen visualizations (bars,
-  columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin,
-  and a 2-D *descartes* grid) with per-category `%`, delta vs the previous
-  snapshot and a sparkline; open probes render Markdown (sanitized). A **time
-  slider** scrubs the last 120 snapshots per probe (kept server-side, so a reload
-  replays the session); **Export JSON / CSV** downloads them all.
-- **Live Chat** — the raw captured feed, with a "↓ N new" pill when you scroll up.
-- **Configs → Window** — sample size, refresh interval, buffer, mode
-  (count / time / hybrid) and the spam toggles (near-duplicate drop, same-author
-  merge). Applies live.
-- **Configs → Model** — provider / base URL / API key / chat model / **decider
-  model** / **budget USD** (`0` = off; analyses pause once the cumulative cost is
-  reached). Applies live, no restart. The header's language selector sets the
-  language the analyses are written in (default Português (BR)).
+  elementary probes offered as chips. A new probe is analysed right away. With
+  no probes yet, example questions are offered as one-click chips.
+- **Probe cards** — one card per probe: the label (click to rename) and its
+  prompt, a chart-type picker for classification probes, and a menu with **Edit**
+  (per-probe refresh interval and sample size, which override the global window
+  for that probe only; reorder and recolour categories), **Widen**, **Collapse**
+  and **Remove**. Drag a card by its handle to reorder. Classification cards
+  offer a dozen visualizations (bars, columns, stacked, donut, lines, area, delta,
+  gauge, heatmap, podium, violin and a 2-D grid for ordered pairs) with each
+  category's `%`, its change since the previous snapshot and a sparkline; hover a
+  mark, or focus the chart and use the arrow keys, for exact values. Open probes
+  render Markdown (sanitized). The **timeline** at the bottom of each card
+  scrubs the last 120 snapshots (kept server-side, so a reload replays the
+  session); **Live** jumps back to the newest. **Export** downloads every
+  snapshot as JSON or CSV. On a 2-D grid card, removing a row or column takes a
+  second press (the first one arms the button), so a tap meant for a tooltip
+  never deletes data.
+- **Live chat** — the raw captured feed in a side rail (a collapsible panel
+  above the probes on narrower screens), with a "N new" pill when you scroll away from the newest
+  messages and a **Newest** toggle for the order.
+- **Settings** (drawer with four tabs):
+  - **Window** — sample size, refresh interval, buffer, mode (count / time /
+    hybrid) and the spam toggles (near-duplicate drop, same-author merge).
+  - **Model** — provider, base URL, API key, chat model, **decider model** (with
+    its live status: active, inactive for providers without a decisions
+    endpoint, or falling back to the chat model) and **budget USD** (`0` = off;
+    analyses pause once the cumulative cost reaches it). Applies live.
+  - **Probes** — add a probe by hand (exact kind, label, question and
+    categories) or import many at once from JSON (paste or upload).
+  - **Capture** — the browser extension, bookmarklet and console snippet for
+    `--capture browser`.
 - Everything is persisted to `~/.viewlyt/live-state.json` (API key
   Fernet-encrypted, files `0600`), so a restart resumes where you left off;
   **Reset / forget saved** clears it. On later launches the saved provider, base
   URL and model win over `--provider`/`--base-url`/`--model` (change them in the
-  Model panel, or Reset); a key given at launch (`--api-key` /
+  Model tab, or Reset); a key given at launch (`--api-key` /
   `$OPENROUTER_API_KEY`) and an explicit `--decider`/`--no-decider` always win.
 - The server binds to loopback only and has **no authentication**; a
   non-loopback `--host` is refused unless you pass `--allow-insecure-bind`.
+- **Accessibility:** keyboard-operable throughout (menus, drawer tabs, chart
+  inspection), visible focus, WCAG 2.2 AAA text contrast in both themes, honours
+  reduced motion, and every chart has a text summary for screen readers.
+
+The dashboard ships prebuilt in the package. To change it, edit
+`src/viewlyt/live/dashboard/` (Vite + TypeScript) and rebuild the committed
+bundle with `npm --prefix src/viewlyt/live/dashboard install` (once) and
+`npm --prefix src/viewlyt/live/dashboard run build`.
 
 ### Troubleshooting
 
@@ -583,8 +613,8 @@ flowing, so no LLM spend happens before you look.
   from `https` for every host); use the default `--capture server`.
 - **`ad_break … ERR_BLOCKED_BY_CLIENT` in the console:** your ad blocker blocking
   YouTube telemetry — unrelated, harmless.
-- **A probe shows no results:** the LLM must be reachable (Model panel + server
-  log); classification needs at least two categories. **Analyze now** retries
+- **A probe shows no results:** the LLM must be reachable (Model tab in Settings +
+  server log); classification needs at least two categories. **Analyze now** retries
   without waiting for the refresh.
 
 ### Decision models for classification (`--decider`)
@@ -596,7 +626,7 @@ need prose, they need one label per message. A **decision model** such as
 *state* plus typed *questions* and returns **probabilities per option** instead of
 generated text. `--decider [MODEL]` routes classification probes through it
 (`--decider` alone = `perplexity/pplx-decider-flash-v1.2`; `$LLM_DECIDER` does the
-same; `--no-decider` turns it off; the dashboard's Model panel has the same field,
+same; `--no-decider` turns it off; the dashboard's Model tab has the same field,
 blank = off).
 
 ```bash
@@ -609,7 +639,7 @@ uv run vl live --provider perplexity --api-key pplx-... --model sonar \
 
 - **Launch choice wins.** An explicit `--decider` / `$LLM_DECIDER` / `--no-decider`
   overrides the saved choice and is remembered; with none of them the saved choice
-  (or what you set in the Model panel) applies. The startup output prints the
+  (or what you set in the Model tab) applies. The startup output prints the
   effective decider (`decider: ... (classification)`, `off`, or `INACTIVE` with the
   reason).
 - **Cost:** ~$0.01 per million *input* tokens (the 27B `pplx-decider-v1.2` costs
@@ -900,7 +930,7 @@ src/viewlyt/
   snap.py                 `vl snap`: quick video/channel metadata snapshot via ytdl.py (Selenium-free)
   clipboard.py            stdlib clipboard shim, copy (pbcopy/clip/xclip/xsel) + read (pbpaste/...), shared by cli/split/watch/snap
   rag.py                  `vl ask`: ephemeral chat (default) or --persist LightRAG (opt-in 'ask'/'rag' extras; lazy)
-  live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard; extra 'live')
+  live/                   `vl live`: opt-in real-time live-chat subpackage (FastAPI + dashboard + optional decision-model classifier; extra 'live')
 tests/test_units.py       browser-free tests for the pure functions
 tests/test_tokens.py      tokenizer-free tests for the pure token/split helpers
 tests/test_rag.py         browser-free tests for the pure RAG-prep helpers
