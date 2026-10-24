@@ -24,6 +24,19 @@ import iconLightbulb from "@phosphor-icons/core/assets/regular/lightbulb.svg?raw
 import iconCheckCircle from "@phosphor-icons/core/assets/regular/check-circle.svg?raw";
 import iconWarningCircle from "@phosphor-icons/core/assets/regular/warning-circle.svg?raw";
 import iconInfo from "@phosphor-icons/core/assets/regular/info.svg?raw";
+import iconDotsThree from "@phosphor-icons/core/assets/regular/dots-three.svg?raw";
+import iconGrip from "@phosphor-icons/core/assets/regular/dots-six-vertical.svg?raw";
+import iconPencil from "@phosphor-icons/core/assets/regular/pencil-simple.svg?raw";
+import iconTrash from "@phosphor-icons/core/assets/regular/trash.svg?raw";
+import iconArrowUp from "@phosphor-icons/core/assets/regular/arrow-up.svg?raw";
+import iconArrowDown from "@phosphor-icons/core/assets/regular/arrow-down.svg?raw";
+import iconChartBar from "@phosphor-icons/core/assets/regular/chart-bar.svg?raw";
+import iconChartBarH from "@phosphor-icons/core/assets/regular/chart-bar-horizontal.svg?raw";
+import iconChatText from "@phosphor-icons/core/assets/regular/chat-text.svg?raw";
+import iconOutH from "@phosphor-icons/core/assets/regular/arrows-out-line-horizontal.svg?raw";
+import iconInH from "@phosphor-icons/core/assets/regular/arrows-in-line-horizontal.svg?raw";
+import iconOutV from "@phosphor-icons/core/assets/regular/arrows-out-line-vertical.svg?raw";
+import iconInV from "@phosphor-icons/core/assets/regular/arrows-in-line-vertical.svg?raw";
 
 const ICONS: Record<string, string> = {
   gear: iconGear,
@@ -45,6 +58,19 @@ const ICONS: Record<string, string> = {
   "check-circle": iconCheckCircle,
   "warning-circle": iconWarningCircle,
   info: iconInfo,
+  "dots-three": iconDotsThree,
+  "dots-six-vertical": iconGrip,
+  "pencil-simple": iconPencil,
+  trash: iconTrash,
+  "arrow-up": iconArrowUp,
+  "arrow-down": iconArrowDown,
+  "chart-bar": iconChartBar,
+  "chart-bar-horizontal": iconChartBarH,
+  "chat-text": iconChatText,
+  "arrows-out-line-horizontal": iconOutH,
+  "arrows-in-line-horizontal": iconInH,
+  "arrows-out-line-vertical": iconOutV,
+  "arrows-in-line-vertical": iconInV,
 };
 
 /** Inline SVG markup for an icon (decorative: hidden from assistive tech). */
@@ -476,20 +502,54 @@ function probeChart(probeId: string): ChartType {
     : "bars";
 }
 
-/** Small delta badge: ▲ +x.x (green) / ▼ -x.x (red) / 0 (dim) vs previous. */
-function buildDeltaBadge(delta: number | null): HTMLElement {
-  const badge = document.createElement("span");
-  if (delta === null || Math.abs(delta) < 0.05) {
-    badge.className = "delta-badge delta-zero";
-    badge.textContent = "0";
-  } else if (delta > 0) {
-    badge.className = "delta-badge delta-up";
-    badge.textContent = `▲ +${delta.toFixed(1)}`;
-  } else {
-    badge.className = "delta-badge delta-down";
-    badge.textContent = `▼ ${delta.toFixed(1)}`;
-  }
-  return badge;
+// ---------------------------------------------------------------------------
+// Chart toolkit shared by every renderer: tiny DOM helpers, tooltip data,
+// the plot frame (gridlines + y ticks), sparkline, delta badge, accessibility
+// summaries. Colours are never hard-coded here: category marks come from
+// colorFor (palette slots / probe overrides), chrome comes from CSS tokens.
+// ---------------------------------------------------------------------------
+
+/** What every renderer needs to know about the snapshot it draws. */
+interface ChartCtx {
+  probeId: string;
+  /** Messages in the snapshot being viewed (drives the "about N msgs" tooltip). */
+  n: number;
+  /** Pixel width the chart may use (the card's content box). */
+  width: number;
+}
+
+/** Friendly chart names (option.value stays the ChartType id). */
+const CHART_LABELS: Record<ChartType, string> = {
+  bars: "Bars",
+  columns: "Columns",
+  stacked: "Stacked bar",
+  donut: "Donut",
+  lines: "Lines",
+  area: "Area",
+  delta: "Change",
+  gauge: "Gauge",
+  heatmap: "Heatmap",
+  podium: "Podium",
+  violin: "Violin",
+  descartes: "Grid (2D)",
+};
+
+function mk<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className = "",
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** A 16px (via CSS) icon holder with a Phosphor SVG inside. */
+function iconNode(name: string, extraClass = ""): HTMLSpanElement {
+  const node = mk("span", extraClass ? `icon ${extraClass}` : "icon");
+  node.innerHTML = iconSvg(name);
+  return node;
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -506,25 +566,37 @@ function svg<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
-// The sparkline is a compact ACCENT, not the chart: cap its points so a long
-// session (up to 60 snapshots) can't widen its auto-sized grid column and
-// starve the 1fr track of the real (colored) bar.
-const SPARK_POINTS = 10;
-
-/** Map a 0–100 value to one of the 8 unicode block characters (last N points). */
-function sparkline(values: number[]): string {
-  const blocks = "▁▂▃▄▅▆▇█";
-  return values
-    .slice(-SPARK_POINTS)
-    .map((v) => blocks[Math.min(7, Math.floor(v / 12.5))])
-    .join("");
+/** Root <svg> for a chart: real pixel viewBox, decorative to assistive tech. */
+function svgRoot(cls: string, width: number, height: number): SVGSVGElement {
+  return svg("svg", {
+    class: `chart-svg ${cls}`,
+    viewBox: `0 0 ${width} ${height}`,
+    width,
+    height,
+    "aria-hidden": "true",
+    focusable: "false",
+  });
 }
 
-// ---------------------------------------------------------------------------
-// Display renderers (one snapshot at a time; the scrubber picks the snapshot)
-// ---------------------------------------------------------------------------
+function svgText(
+  x: number,
+  y: number,
+  text: string,
+  cls: string,
+  anchor: "start" | "middle" | "end" = "middle",
+): SVGTextElement {
+  const node = svg("text", { class: cls, x: x.toFixed(1), y: y.toFixed(1), "text-anchor": anchor });
+  node.textContent = text;
+  return node;
+}
 
-/** Clamp a percentage into the 0–100 range. */
+/** Shorten `text` to roughly `maxChars` characters with an ellipsis. */
+function clip(text: string, maxChars: number): string {
+  const max = Math.max(1, Math.floor(maxChars));
+  return text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1))}…`;
+}
+
+/** Clamp a percentage into the 0-100 range. */
 function clampPct(pct: number): number {
   return Math.max(0, Math.min(100, pct));
 }
@@ -542,273 +614,457 @@ interface CatView {
   i: number;
 }
 
-/** Default: horizontal % bars + delta badge vs previous + per-category sparkline. */
-function renderBars(probeId: string, views: CatView[]): HTMLElement {
-  const barsEl = document.createElement("div");
-  barsEl.className = "bars";
+function contrastRatio(a: string, b: string): number {
+  const la = relLuminance(a);
+  const lb = relLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
 
+/** True when text on `bg` cannot reach 7:1 with either near-black or near-white. */
+function needsChip(bg: string): boolean {
+  return contrastRatio(inkOn(bg), bg) < 7;
+}
+
+// ----- tooltip data ---------------------------------------------------------
+
+/**
+ * Mark a chart element as hoverable/inspectable. The tooltip (see
+ * wireChartTips) reads these data attributes, so the marks stay plain nodes
+ * and survive in-place updates.
+ */
+function setTip(
+  node: Element,
+  ctx: ChartCtx,
+  v: { cat: string; pct: number; i?: number },
+  opts: { note?: string; color?: string; nonav?: boolean } = {},
+): void {
+  node.setAttribute("data-tip-name", v.cat);
+  node.setAttribute("data-tip-color", opts.color ?? colorFor(ctx.probeId, v.cat, v.i ?? 0));
+  node.setAttribute("data-tip-pct", `${v.pct.toFixed(1)}%`);
+  if (ctx.n > 0) {
+    node.setAttribute(
+      "data-tip-count",
+      `about ${Math.round((v.pct / 100) * ctx.n)} of ${ctx.n} msgs`,
+    );
+  }
+  if (opts.note) node.setAttribute("data-tip-note", opts.note);
+  if (opts.nonav) node.setAttribute("data-tip-nonav", "");
+}
+
+// ----- delta badge + sparkline ----------------------------------------------
+
+function fmtDelta(delta: number | null): string {
+  if (delta === null || Math.abs(delta) < 0.05) return "0.0";
+  return (delta > 0 ? "+" : "") + delta.toFixed(1);
+}
+
+/** Delta vs previous snapshot: arrow icon + signed number, neutral ink (a category rising is not "good"). */
+function buildDeltaBadge(delta: number | null): HTMLElement {
+  const flat = delta === null || Math.abs(delta) < 0.05;
+  const badge = mk("span", `delta-badge ${flat ? "delta-zero" : (delta as number) > 0 ? "delta-up" : "delta-down"}`);
+  if (!flat) badge.appendChild(iconNode((delta as number) > 0 ? "arrow-up" : "arrow-down", "delta-icon"));
+  if (delta !== null) badge.appendChild(document.createTextNode(fmtDelta(delta)));
+  badge.title = "Change vs the previous snapshot, in percentage points";
+  return badge;
+}
+
+// The sparkline is a compact accent (48x18), not the chart: cap its points so
+// a long session (up to 60 snapshots) keeps its shape readable.
+const SPARK_POINTS = 16;
+
+function sparkline(values: number[], color: string): SVGSVGElement {
+  const w = 48;
+  const h = 18;
+  const pad = 2;
+  const root = svg("svg", {
+    class: "spark-svg",
+    viewBox: `0 0 ${w} ${h}`,
+    width: w,
+    height: h,
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  const pts = values.slice(-SPARK_POINTS);
+  if (pts.length === 0) return root;
+  let lo = Math.min(...pts);
+  let hi = Math.max(...pts);
+  if (hi - lo < 10) {
+    const mid = (hi + lo) / 2;
+    lo = mid - 5;
+    hi = mid + 5;
+  }
+  const xFor = (i: number): number =>
+    pts.length === 1 ? w - pad - 1.5 : pad + (i / (pts.length - 1)) * (w - 2 * pad);
+  const yFor = (v: number): number => pad + (1 - (v - lo) / (hi - lo)) * (h - 2 * pad);
+  if (pts.length === 1) {
+    root.appendChild(svg("circle", { cx: xFor(0).toFixed(1), cy: yFor(pts[0]!).toFixed(1), r: 1.5, fill: color }));
+  } else {
+    root.appendChild(
+      svg("polyline", {
+        class: "spark-line",
+        stroke: color,
+        points: pts.map((p, i) => `${xFor(i).toFixed(1)},${yFor(p).toFixed(1)}`).join(" "),
+      }),
+    );
+  }
+  return root;
+}
+
+function sparkCell(cls: string, v: CatView, color: string): HTMLElement {
+  const cell = mk("span", cls);
+  cell.appendChild(sparkline(v.series, color));
+  return cell;
+}
+
+// ----- accessibility twins --------------------------------------------------
+
+/** One-sentence summary of a chart (the role=img label). */
+function chartSummary(type: ChartType, label: string, views: CatView[]): string {
+  const name = label || "Probe";
+  if (views.length === 0) return `${name}: ${CHART_LABELS[type]} chart, no data yet.`;
+  const byChange = type === "delta";
+  const ranked = [...views].sort((a, b) =>
+    byChange ? Math.abs(b.delta ?? 0) - Math.abs(a.delta ?? 0) : b.pct - a.pct,
+  );
+  const part = (v: CatView): string =>
+    byChange ? `${v.cat} ${fmtDelta(v.delta)} points` : `${v.cat} ${v.pct.toFixed(1)}%`;
+  const top = ranked.slice(0, 3).map(part).join(", ");
+  const more = ranked.length > 3 ? `, and ${ranked.length - 3} more` : "";
+  const lead = byChange ? "Change since the previous snapshot. Largest" : "Top";
+  return `${name}: ${CHART_LABELS[type]} chart of ${views.length} categories. ${lead}: ${top}${more}.`;
+}
+
+/** Visually hidden data table: the screen-reader twin of the drawn chart. */
+function buildDataTable(views: CatView[], caption: string): HTMLElement {
+  // A table ignores width:1px (it never shrinks below its content), so the
+  // visually-hidden clip lives on a wrapper div.
+  const wrap = mk("div", "sr-only chart-table");
+  const table = mk("table");
+  table.appendChild(mk("caption", "", caption));
+  const head = mk("tr");
+  for (const t of ["Category", "Share", "Change in points"]) head.appendChild(mk("th", "", t));
+  table.appendChild(mk("thead")).appendChild(head);
+  const body = mk("tbody");
   for (const v of views) {
-    const row = document.createElement("div");
-    row.className = "bar-row";
+    const row = mk("tr");
+    row.appendChild(mk("th", "", v.cat));
+    row.appendChild(mk("td", "", `${v.pct.toFixed(1)}%`));
+    row.appendChild(mk("td", "", v.delta === null ? "none" : fmtDelta(v.delta)));
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+  return wrap;
+}
 
-    const catLabel = document.createElement("span");
-    catLabel.className = "bar-label";
-    catLabel.textContent = v.cat;
+// ----- plot frame (gridlines at 0/50/100 + y tick labels) -------------------
 
-    const track = document.createElement("div");
-    track.className = "bar-track";
+interface Frame {
+  x0: number;
+  x1: number;
+  yTop: number;
+  yBase: number;
+  yFor: (pct: number) => number;
+}
 
-    const fill = document.createElement("div");
-    fill.className = "bar-fill";
+function chartFrame(
+  root: SVGSVGElement,
+  width: number,
+  height: number,
+  pad: { left: number; right: number; top: number; bottom: number },
+): Frame {
+  const x0 = pad.left;
+  const x1 = width - pad.right;
+  const yTop = pad.top;
+  const yBase = height - pad.bottom;
+  const yFor = (pct: number): number => yBase - (clampPct(pct) / 100) * (yBase - yTop);
+  for (const p of [100, 50, 0]) {
+    const y = yFor(p) + 0.5;
+    root.appendChild(
+      svg("line", {
+        class: p === 0 ? "chart-baseline" : "chart-grid-line",
+        x1: x0,
+        y1: y.toFixed(1),
+        x2: x1,
+        y2: y.toFixed(1),
+      }),
+    );
+    const t = svgText(x0 - 8, y, `${p}%`, "chart-tick", "end");
+    t.setAttribute("dy", "0.35em");
+    root.appendChild(t);
+  }
+  return { x0, x1, yTop, yBase, yFor };
+}
+
+/** The last point of a series: an 8px dot ringed by 2px of surface. */
+function lastDot(root: SVGElement, x: number, y: number, color: string): void {
+  root.appendChild(svg("circle", { class: "chart-dot-ring", cx: x.toFixed(1), cy: y.toFixed(1), r: 6 }));
+  root.appendChild(svg("circle", { cx: x.toFixed(1), cy: y.toFixed(1), r: 4, fill: color }));
+}
+
+/** Rect with only the top corners rounded (marks anchored at a baseline). */
+function topRoundPath(x: number, y: number, w: number, hgt: number, r: number): string {
+  const rr = Math.max(0, Math.min(r, w / 2, hgt));
+  const f = (n: number): string => n.toFixed(1);
+  return (
+    `M${f(x)} ${f(y + hgt)}V${f(y + rr)}Q${f(x)} ${f(y)} ${f(x + rr)} ${f(y)}` +
+    `H${f(x + w - rr)}Q${f(x + w)} ${f(y)} ${f(x + w)} ${f(y + rr)}V${f(y + hgt)}Z`
+  );
+}
+
+/** Transparent, full-height hit area for one slot of an SVG chart. */
+function hitRect(x: number, y: number, w: number, hgt: number): SVGRectElement {
+  return svg("rect", {
+    class: "chart-hit",
+    x: x.toFixed(1),
+    y: y.toFixed(1),
+    width: Math.max(1, w).toFixed(1),
+    height: Math.max(1, hgt).toFixed(1),
+    fill: "transparent",
+  });
+}
+
+/** Label drawn on a cell of colour `bg`: plain ink when it reaches 7:1, else on a surface chip. */
+function cellLabel(root: SVGElement, cx: number, cy: number, text: string, bg: string): void {
+  if (needsChip(bg)) {
+    const w = text.length * 6.8 + 8;
+    root.appendChild(
+      svg("rect", {
+        class: "chart-chip",
+        x: (cx - w / 2).toFixed(1),
+        y: (cy - 8).toFixed(1),
+        width: w.toFixed(1),
+        height: 16,
+        rx: 4,
+      }),
+    );
+    const t = svgText(cx, cy, text, "chart-chip-text");
+    t.setAttribute("dy", "0.35em");
+    root.appendChild(t);
+  } else {
+    const t = svgText(cx, cy, text, "chart-cell-text");
+    t.setAttribute("dy", "0.35em");
+    t.setAttribute("fill", inkOn(bg));
+    root.appendChild(t);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Display renderers (one snapshot at a time; the scrubber picks the snapshot)
+// ---------------------------------------------------------------------------
+
+/** Default: thin horizontal % bars + delta vs previous + per-category sparkline. */
+function renderBars(ctx: ChartCtx, views: CatView[]): HTMLElement {
+  const barsEl = mk("div", "bars");
+  for (const v of views) {
+    const color = colorFor(ctx.probeId, v.cat, v.i);
+    const row = mk("div", "bar-row");
+
+    const catLabel = mk("span", "bar-label", v.cat);
+    catLabel.title = v.cat;
+
+    // The track is the hit area (20px tall); the fill is a thin 10px mark.
+    const track = mk("div", "bar-track");
+    setTip(track, ctx, v, { note: v.delta === null ? "" : `${fmtDelta(v.delta)} pts vs previous` });
+    const fill = mk("div", "bar-fill");
     fill.style.width = `${clampPct(v.pct)}%`;
-    fill.style.backgroundColor = colorFor(probeId, v.cat, v.i);
-
-    const pctLabel = document.createElement("span");
-    pctLabel.className = "bar-pct";
-    pctLabel.textContent = `${v.pct.toFixed(1)}%`;
-
-    // Delta vs the immediately-previous snapshot, beside the pct.
-    const deltaBadge = buildDeltaBadge(v.delta);
-
-    const sparkEl = document.createElement("span");
-    sparkEl.className = "spark";
-    sparkEl.textContent = v.series.length > 0 ? sparkline(v.series) : "";
-
+    fill.style.backgroundColor = color;
     track.appendChild(fill);
+
     row.appendChild(catLabel);
     row.appendChild(track);
-    row.appendChild(pctLabel);
-    row.appendChild(deltaBadge);
-    row.appendChild(sparkEl);
+    row.appendChild(mk("span", "bar-pct", `${v.pct.toFixed(1)}%`));
+    row.appendChild(buildDeltaBadge(v.delta));
+    row.appendChild(sparkCell("spark", v, color));
     barsEl.appendChild(row);
   }
-
   return barsEl;
 }
 
 /**
- * The loved stats table, reused under EVERY non-bars chart: one row per
- * category with a color swatch, name, pct, delta badge and sparkline.
+ * The legend, reused under EVERY non-bars chart: one row per category with a
+ * swatch, name, pct, delta and sparkline (the 5-child grid contract).
  */
-function buildStats(probeId: string, views: CatView[]): HTMLElement {
-  const stats = document.createElement("div");
-  stats.className = "cat-stats";
-
+function buildStats(ctx: ChartCtx, views: CatView[]): HTMLElement {
+  const stats = mk("div", "cat-stats");
   for (const v of views) {
-    const row = document.createElement("div");
-    row.className = "cat-stat-row";
-
-    const swatch = document.createElement("span");
-    swatch.className = "cat-swatch";
-    swatch.style.backgroundColor = colorFor(probeId, v.cat, v.i);
-
-    const name = document.createElement("span");
-    name.className = "cat-name";
-    name.textContent = v.cat;
-
-    const pctEl = document.createElement("span");
-    pctEl.className = "cat-pct";
-    pctEl.textContent = `${v.pct.toFixed(1)}%`;
-
-    const sparkEl = document.createElement("span");
-    sparkEl.className = "cat-spark";
-    sparkEl.textContent = v.series.length > 0 ? sparkline(v.series) : "";
-
+    const color = colorFor(ctx.probeId, v.cat, v.i);
+    const row = mk("div", "cat-stat-row");
+    const swatch = mk("span", "cat-swatch");
+    swatch.style.backgroundColor = color;
+    const name = mk("span", "cat-name", v.cat);
+    name.title = v.cat;
     row.appendChild(swatch);
     row.appendChild(name);
-    row.appendChild(pctEl);
+    row.appendChild(mk("span", "cat-pct", `${v.pct.toFixed(1)}%`));
     row.appendChild(buildDeltaBadge(v.delta));
-    row.appendChild(sparkEl);
+    row.appendChild(sparkCell("cat-spark", v, color));
     stats.appendChild(row);
   }
-
   return stats;
 }
 
-/** Vertical columns (SVG): one bar per category, height proportional to pct. */
-function renderColumns(probeId: string, views: CatView[]): Element {
-  const width = 320;
-  const height = 140;
-  const padX = 8;
-  const padY = 8;
-  const baseline = height - padY;
-
-  const root = svg("svg", {
-    class: "chart-svg chart-columns",
-    viewBox: `0 0 ${width} ${height}`,
-    preserveAspectRatio: "none",
-    role: "img",
-  });
-
-  // Faint baseline line along the bottom.
-  root.appendChild(
-    svg("line", {
-      class: "chart-baseline",
-      x1: padX,
-      y1: baseline,
-      x2: width - padX,
-      y2: baseline,
-    }),
-  );
-
-  const n = views.length;
-  const plotW = width - 2 * padX;
-  const plotH = baseline - padY;
-  // Evenly spaced slots; bar takes ~60% of its slot, centered.
-  const slot = n > 0 ? plotW / n : plotW;
-  const barW = Math.max(2, slot * 0.6);
+/** Vertical columns (SVG): one rounded-top bar per category on a 0/50/100 grid. */
+function renderColumns(ctx: ChartCtx, views: CatView[]): Element {
+  const W = ctx.width;
+  const H = 156;
+  const root = svgRoot("chart-columns", W, H);
+  const f = chartFrame(root, W, H, { left: 40, right: 4, top: 8, bottom: 22 });
+  const n = Math.max(1, views.length);
+  const slot = (f.x1 - f.x0) / n;
+  const barW = Math.max(6, Math.min(44, slot - 6));
 
   views.forEach((v, idx) => {
-    const h = (clampPct(v.pct) / 100) * plotH;
-    const x = padX + slot * idx + (slot - barW) / 2;
-    const y = baseline - h;
-    root.appendChild(
-      svg("rect", {
-        x: x.toFixed(1),
-        y: y.toFixed(1),
-        width: barW.toFixed(1),
-        height: Math.max(0, h).toFixed(1),
-        fill: colorFor(probeId, v.cat, v.i),
-        rx: 2,
-      }),
-    );
+    const cx = f.x0 + slot * idx + slot / 2;
+    const top = f.yFor(v.pct);
+    const hgt = f.yBase - top;
+    if (hgt > 0.4) {
+      root.appendChild(
+        svg("path", {
+          d: topRoundPath(cx - barW / 2, top, barW, Math.max(hgt, 1.5), 4),
+          fill: colorFor(ctx.probeId, v.cat, v.i),
+        }),
+      );
+    }
+    if (slot >= 40) {
+      root.appendChild(svgText(cx, f.yBase + 16, clip(v.cat, (slot - 4) / 6.4), "chart-xlabel"));
+    }
+    const hit = hitRect(f.x0 + slot * idx, f.yTop, slot, f.yBase - f.yTop + 24);
+    setTip(hit, ctx, v);
+    root.appendChild(hit);
   });
-
   return root;
 }
 
-/** Single full-width bar split into colored segments. */
-function renderStacked(probeId: string, entries: [string, number][]): HTMLElement {
-  const bar = document.createElement("div");
-  bar.className = "stacked-bar";
+/** Single full-width bar split into segments with 2px surface gaps. */
+function renderStacked(ctx: ChartCtx, entries: [string, number][]): HTMLElement {
+  const bar = mk("div", "stacked-bar");
   entries.forEach(([cat, pct], i) => {
-    const seg = document.createElement("div");
-    seg.className = "stacked-seg";
+    if (pct <= 0.05) return;
+    const seg = mk("div", "stacked-seg");
     seg.style.flexBasis = `${clampPct(pct)}%`;
-    seg.style.backgroundColor = colorFor(probeId, cat, i);
-    seg.title = `${cat}: ${pct.toFixed(1)}%`;
+    seg.style.backgroundColor = colorFor(ctx.probeId, cat, i);
+    setTip(seg, ctx, { cat, pct, i });
     bar.appendChild(seg);
   });
   return bar;
 }
 
-/** Inline SVG donut — one arc per category, sized to its pct. */
-function renderDonut(probeId: string, entries: [string, number][]): Element {
-  const size = 140;
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = 52;
-  const circumference = 2 * Math.PI * radius;
+function polar(cx: number, cy: number, r: number, a: number): [number, number] {
+  return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+}
 
-  const root = svg("svg", {
-    class: "chart-svg chart-donut",
-    viewBox: `0 0 ${size} ${size}`,
-    role: "img",
-  });
+/** Ring segment between radii r..R from angle a0 to a1 (radians, 0 = 12 o'clock, clockwise). */
+function wedgePath(cx: number, cy: number, R: number, r: number, a0: number, a1: number): string {
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  const [x0, y0] = polar(cx, cy, R, a0);
+  const [x1, y1] = polar(cx, cy, R, a1);
+  const [x2, y2] = polar(cx, cy, r, a1);
+  const [x3, y3] = polar(cx, cy, r, a0);
+  const f = (n: number): string => n.toFixed(2);
+  return (
+    `M${f(x0)} ${f(y0)}A${R} ${R} 0 ${large} 1 ${f(x1)} ${f(y1)}` +
+    `L${f(x2)} ${f(y2)}A${r} ${r} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`
+  );
+}
+
+/** Donut: a 16px ring of wedges separated by 2px gaps, leading category in the centre. */
+function renderDonut(ctx: ChartCtx, entries: [string, number][]): Element {
+  const size = 152;
+  const c = size / 2;
+  const R = 70;
+  const r = 54;
+  const rMid = (R + r) / 2;
+  const root = svgRoot("chart-donut", size, size);
 
   const total = entries.reduce((acc, [, pct]) => acc + Math.max(0, pct), 0);
-  let offset = 0;
-  if (total > 0) {
-    entries.forEach(([cat, pct], i) => {
-      const frac = Math.max(0, pct) / total;
-      const dash = frac * circumference;
-      const seg = svg("circle", {
-        cx,
-        cy,
-        r: radius,
+  const gap = 2 / rMid;
+  const live = entries
+    .map(([cat, pct], i) => ({ cat, pct, i }))
+    .filter((e) => e.pct > 0 && total > 0);
+  let acc = 0;
+  for (const e of live) {
+    const sweep = (Math.max(0, e.pct) / total) * Math.PI * 2;
+    const color = colorFor(ctx.probeId, e.cat, e.i);
+    if (live.length === 1) {
+      const full = svg("circle", {
+        cx: c,
+        cy: c,
+        r: rMid,
         fill: "none",
-        stroke: colorFor(probeId, cat, i),
-        "stroke-width": 18,
-        "stroke-dasharray": `${dash} ${circumference - dash}`,
-        // Start at 12 o'clock and walk clockwise from the running offset.
-        "stroke-dashoffset": -offset,
-        transform: `rotate(-90 ${cx} ${cy})`,
+        stroke: color,
+        "stroke-width": R - r,
       });
-      root.appendChild(seg);
-      offset += dash;
-    });
+      setTip(full, ctx, e);
+      root.appendChild(full);
+    } else if (sweep > gap + 0.004) {
+      const wedge = svg("path", {
+        d: wedgePath(c, c, R, r, acc + gap / 2, acc + sweep - gap / 2),
+        fill: color,
+      });
+      setTip(wedge, ctx, e);
+      root.appendChild(wedge);
+    }
+    acc += sweep;
   }
 
+  let top: { cat: string; pct: number } | null = null;
+  for (const [cat, pct] of entries) if (top === null || pct > top.pct) top = { cat, pct };
+  if (top && total > 0) {
+    root.appendChild(svgText(c, c + 4, `${top.pct.toFixed(0)}%`, "chart-donut-pct"));
+    root.appendChild(svgText(c, c + 22, clip(top.cat, 13), "chart-donut-name"));
+  }
   return root;
 }
 
-/** Inline SVG multi-line chart over each category's snapshot series. */
-function renderLines(probeId: string, views: CatView[]): Element {
-  const width = 320;
-  const height = 120;
-  const padX = 4;
-  const padY = 6;
-
-  const root = svg("svg", {
-    class: "chart-svg chart-lines",
-    viewBox: `0 0 ${width} ${height}`,
-    preserveAspectRatio: "none",
-    role: "img",
-  });
-
-  // Faint baseline at y = 0%.
-  root.appendChild(
-    svg("line", {
-      class: "chart-baseline",
-      x1: padX,
-      y1: height - padY,
-      x2: width - padX,
-      y2: height - padY,
-    }),
-  );
-
-  const plotW = width - 2 * padX;
-  const plotH = height - 2 * padY;
+/** Multi-line chart over each category's snapshot series (2px strokes, last-point dots). */
+function renderLines(ctx: ChartCtx, views: CatView[]): Element {
+  const W = ctx.width;
+  const H = 148;
+  const root = svgRoot("chart-lines", W, H);
+  const f = chartFrame(root, W, H, { left: 40, right: 10, top: 8, bottom: 8 });
   const xFor = (idx: number, len: number): number =>
-    len <= 1 ? padX + plotW : padX + (idx / (len - 1)) * plotW;
-  const yFor = (pct: number): number => padY + (1 - clampPct(pct) / 100) * plotH;
+    len <= 1 ? f.x1 : f.x0 + (idx / (len - 1)) * (f.x1 - f.x0);
 
+  const hits: SVGElement[] = [];
   for (const v of views) {
     const series = v.series;
     if (series.length === 0) continue;
-    const pts = series
-      .map((p, idx) => `${xFor(idx, series.length).toFixed(1)},${yFor(p).toFixed(1)}`)
-      .join(" ");
-    root.appendChild(
-      svg("polyline", {
-        class: "chart-line",
-        stroke: colorFor(probeId, v.cat, v.i),
-        points: pts,
-      }),
-    );
+    const color = colorFor(ctx.probeId, v.cat, v.i);
+    const pts = series.map((p, idx) => `${xFor(idx, series.length).toFixed(1)},${f.yFor(p).toFixed(1)}`);
+    if (series.length > 1) {
+      root.appendChild(
+        svg("polyline", { class: "chart-line", stroke: color, points: pts.join(" ") }),
+      );
+    }
+    const hit = svg("polyline", { class: "chart-hit-line", points: pts.join(" ") });
+    setTip(hit, ctx, v);
+    hits.push(hit);
   }
-
+  for (const v of views) {
+    if (v.series.length === 0) continue;
+    lastDot(root, xFor(v.series.length - 1, v.series.length), f.yFor(v.series[v.series.length - 1]!), colorFor(ctx.probeId, v.cat, v.i));
+  }
+  for (const hit of hits) root.appendChild(hit);
   return root;
 }
 
 /**
- * 100%-stacked area over the snapshot history: shows how the mix evolves. Each
- * category is a filled band between its lower and upper cumulative boundary at
- * every time point. A single time point degrades to one vertical 100% stack.
+ * 100%-stacked area over the snapshot history: how the mix evolves. Each
+ * category is a band at 16% fill under a 2px boundary line; a single time
+ * point degrades to one stack of gapped bands.
  */
-function renderArea(probeId: string, views: CatView[]): Element {
-  const width = 320;
-  const height = 120;
-
-  const root = svg("svg", {
-    class: "chart-svg chart-area",
-    viewBox: `0 0 ${width} ${height}`,
-    preserveAspectRatio: "none",
-    role: "img",
-  });
-
+function renderArea(ctx: ChartCtx, views: CatView[]): Element {
+  const W = ctx.width;
+  const H = 148;
+  const root = svgRoot("chart-area", W, H);
+  const f = chartFrame(root, W, H, { left: 40, right: 10, top: 8, bottom: 8 });
   if (views.length === 0) return root;
 
-  // Number of time points = longest series among the categories.
   const steps = views.reduce((m, v) => Math.max(m, v.series.length), 0);
   if (steps === 0) return root;
 
-  const xFor = (t: number): number => (steps <= 1 ? 0 : (t / (steps - 1)) * width);
-  // y grows downward; cumulative 0 -> top (0), 100 -> bottom (height) inverted.
-  const yFor = (cumPct: number): number => height - (clampPct(cumPct) / 100) * height;
-
   // At each time point compute the normalized (to 100%) cumulative boundaries.
-  // boundaries[t][k] = cumulative pct AFTER stacking categories 0..k-1.
   const lowers: number[][] = [];
   const uppers: number[][] = [];
   for (let i = 0; i < views.length; i++) {
@@ -820,392 +1076,325 @@ function renderArea(probeId: string, views: CatView[]): Element {
     const total = vals.reduce((a, b) => a + b, 0);
     let cum = 0;
     for (let i = 0; i < views.length; i++) {
-      const share = total > 0 ? (vals[i] / total) * 100 : 0;
-      lowers[i][t] = cum;
+      const share = total > 0 ? (vals[i]! / total) * 100 : 0;
+      lowers[i]![t] = cum;
       cum += share;
-      uppers[i][t] = cum;
+      uppers[i]![t] = cum;
     }
   }
 
   if (steps === 1) {
-    // Single vertical 100% stack: one full-width rect band per category.
-    for (let i = 0; i < views.length; i++) {
-      const yTop = yFor(uppers[i][0]);
-      const yBot = yFor(lowers[i][0]);
-      root.appendChild(
-        svg("rect", {
-          x: 0,
-          y: Math.min(yTop, yBot).toFixed(1),
-          width,
-          height: Math.abs(yBot - yTop).toFixed(1),
-          fill: colorFor(probeId, views[i].cat, views[i].i),
-          "fill-opacity": 0.85,
-        }),
-      );
-    }
+    views.forEach((v, i) => {
+      const yTop = f.yFor(uppers[i]![0]!);
+      const yBot = f.yFor(lowers[i]![0]!);
+      if (yBot - yTop < 0.5) return;
+      const band = svg("rect", {
+        x: f.x0,
+        y: (yTop + 1).toFixed(1),
+        width: f.x1 - f.x0,
+        height: Math.max(0.5, yBot - yTop - 2).toFixed(1),
+        rx: 3,
+        fill: colorFor(ctx.probeId, v.cat, v.i),
+      });
+      setTip(band, ctx, v);
+      root.appendChild(band);
+    });
     return root;
   }
 
-  for (let i = 0; i < views.length; i++) {
-    // Upper boundary left->right, then lower boundary right->left = closed band.
+  const xFor = (t: number): number => f.x0 + (t / (steps - 1)) * (f.x1 - f.x0);
+  const lines: SVGElement[] = [];
+  views.forEach((v, i) => {
+    const color = colorFor(ctx.probeId, v.cat, v.i);
     const top: string[] = [];
     const bottom: string[] = [];
     for (let t = 0; t < steps; t++) {
-      top.push(`${xFor(t).toFixed(1)},${yFor(uppers[i][t]).toFixed(1)}`);
-      bottom.push(`${xFor(t).toFixed(1)},${yFor(lowers[i][t]).toFixed(1)}`);
+      top.push(`${xFor(t).toFixed(1)},${f.yFor(uppers[i]![t]!).toFixed(1)}`);
+      bottom.push(`${xFor(t).toFixed(1)},${f.yFor(lowers[i]![t]!).toFixed(1)}`);
     }
-    bottom.reverse();
-    root.appendChild(
-      svg("polygon", {
-        class: "chart-area-band",
-        points: top.concat(bottom).join(" "),
-        fill: colorFor(probeId, views[i].cat, views[i].i),
-        "fill-opacity": 0.85,
-      }),
-    );
-  }
-
+    const band = svg("polygon", {
+      class: "chart-area-band",
+      points: top.concat(bottom.reverse()).join(" "),
+      fill: color,
+      "fill-opacity": 0.16,
+    });
+    setTip(band, ctx, v);
+    root.appendChild(band);
+    lines.push(svg("polyline", { class: "chart-line", stroke: color, points: top.join(" ") }));
+  });
+  for (const l of lines) root.appendChild(l);
+  views.forEach((v, i) => {
+    lastDot(root, xFor(steps - 1), f.yFor(uppers[i]![steps - 1]!), colorFor(ctx.probeId, v.cat, v.i));
+  });
   return root;
 }
 
-/** Diverging horizontal bars: change vs previous snapshot (right=green, left=red). */
-function renderDelta(views: CatView[]): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = "delta-chart";
-
-  // Symmetric scale from the largest absolute delta (min 1 so flat data shows).
+/** Diverging bars: change vs the previous snapshot (left = down, right = up), category colour. */
+function renderDelta(ctx: ChartCtx, views: CatView[]): HTMLElement {
+  const wrap = mk("div", "delta-chart");
   const deltas = views.map((v) => v.delta ?? 0);
   const maxAbs = Math.max(1, ...deltas.map((d) => Math.abs(d)));
 
   views.forEach((v, idx) => {
-    const delta = deltas[idx];
-    const row = document.createElement("div");
-    row.className = "delta-row";
+    const delta = deltas[idx]!;
+    const color = colorFor(ctx.probeId, v.cat, v.i);
+    const row = mk("div", "delta-row");
 
-    const label = document.createElement("span");
-    label.className = "delta-label";
-    label.textContent = v.cat;
+    const label = mk("span", "delta-label", v.cat);
+    label.title = v.cat;
 
-    // Track with a centered zero axis; one half fills per sign.
-    const track = document.createElement("div");
-    track.className = "delta-track";
-
-    const neg = document.createElement("div");
-    neg.className = "delta-half delta-half-neg";
-    const pos = document.createElement("div");
-    pos.className = "delta-half delta-half-pos";
-
-    const bar = document.createElement("div");
-    bar.className = delta >= 0 ? "delta-bar delta-bar-pos" : "delta-bar delta-bar-neg";
+    const track = mk("div", "delta-track");
+    setTip(track, ctx, v, { note: `Change ${fmtDelta(v.delta)} pts vs previous` });
+    const neg = mk("div", "delta-half delta-half-neg");
+    const pos = mk("div", "delta-half delta-half-pos");
+    const bar = mk("div", delta >= 0 ? "delta-bar delta-bar-pos" : "delta-bar delta-bar-neg");
     bar.style.width = `${(Math.abs(delta) / maxAbs) * 100}%`;
-
-    if (delta >= 0) pos.appendChild(bar);
-    else neg.appendChild(bar);
+    bar.style.backgroundColor = color;
+    (delta >= 0 ? pos : neg).appendChild(bar);
     track.appendChild(neg);
     track.appendChild(pos);
 
-    const value = document.createElement("span");
-    value.className =
-      delta > 0.05
-        ? "delta-value delta-up"
-        : delta < -0.05
-          ? "delta-value delta-down"
-          : "delta-value delta-zero";
-    value.textContent =
-      delta > 0.05 ? `+${delta.toFixed(1)}` : delta < -0.05 ? delta.toFixed(1) : "0";
+    const value = buildDeltaBadge(v.delta);
+    value.classList.add("delta-value");
 
     row.appendChild(label);
     row.appendChild(track);
     row.appendChild(value);
     wrap.appendChild(row);
   });
-
   return wrap;
 }
 
 /**
- * Semicircular gauge for the leading category: a 180° track plus a colored arc
- * filling pct/100 of the half-circle, a big centered pct number and the category
- * name beneath. Defensive when every category is zero (empty track only).
+ * Semicircular gauge for the leading category: a 12px track, the arc filling
+ * pct/100, the percentage and name in the middle (text tokens, never series ink).
  */
-function renderGauge(views: CatView[], probeId: string): Element {
+function renderGauge(ctx: ChartCtx, views: CatView[]): Element {
   const width = 200;
-  const height = 120;
+  const height = 118;
   const cx = width / 2;
-  const cy = height - 12;
-  const radius = 78;
-  const stroke = 16;
+  const cy = 96;
+  const radius = 80;
+  const stroke = 12;
+  const root = svgRoot("chart-gauge", width, height);
 
-  const root = svg("svg", {
-    class: "chart-svg chart-gauge",
-    viewBox: `0 0 ${width} ${height}`,
-    role: "img",
-  });
-
-  // Point on the semicircle for a fraction f in [0,1] (left=0 -> right=1),
-  // walking the upper half: 180° (left) down to 0° (right).
-  const pointAt = (f: number): [number, number] => {
-    const angle = Math.PI * (1 - Math.max(0, Math.min(1, f)));
+  const pointAt = (frac: number): [number, number] => {
+    const angle = Math.PI * (1 - Math.max(0, Math.min(1, frac)));
     return [cx + radius * Math.cos(angle), cy - radius * Math.sin(angle)];
   };
-  const arcPath = (f: number): string => {
+  const arcPath = (frac: number): string => {
     const [sx, sy] = pointAt(0);
-    const [ex, ey] = pointAt(f);
-    const large = f > 0.5 ? 1 : 0;
-    return `M ${sx.toFixed(1)} ${sy.toFixed(1)} A ${radius} ${radius} 0 ${large} 1 ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+    const [ex, ey] = pointAt(frac);
+    // The gauge is a semicircle, so any value arc spans at most 180 degrees: the
+    // large-arc flag must stay 0 (setting it above 50% drew the long way round).
+    return `M${sx.toFixed(1)} ${sy.toFixed(1)}A${radius} ${radius} 0 0 1 ${ex.toFixed(1)} ${ey.toFixed(1)}`;
   };
 
-  // Full-sweep background track.
-  root.appendChild(
-    svg("path", {
-      class: "chart-gauge-track",
-      d: arcPath(1),
+  let top: CatView | null = null;
+  for (const v of views) if (top === null || v.pct > top.pct) top = v;
+  const pct = top ? clampPct(top.pct) : 0;
+
+  const track = svg("path", {
+    class: "chart-gauge-track",
+    d: arcPath(1),
+    fill: "none",
+    "stroke-width": stroke,
+    "stroke-linecap": "round",
+  });
+  root.appendChild(track);
+  if (top && pct > 0) {
+    const arc = svg("path", {
+      class: "chart-gauge-arc",
+      d: arcPath(pct / 100),
       fill: "none",
-      stroke: chartAxisColor,
+      stroke: colorFor(ctx.probeId, top.cat, top.i),
       "stroke-width": stroke,
       "stroke-linecap": "round",
-    }),
-  );
-
-  // Top category (max pct); defensive when there are no categories / all zero.
-  let top: CatView | null = null;
-  for (const v of views) {
-    if (top === null || v.pct > top.pct) top = v;
-  }
-  const pct = top ? clampPct(top.pct) : 0;
-  if (top && pct > 0) {
-    root.appendChild(
-      svg("path", {
-        class: "chart-gauge-arc",
-        d: arcPath(pct / 100),
-        fill: "none",
-        stroke: colorFor(probeId, top.cat, top.i),
-        "stroke-width": stroke,
-        "stroke-linecap": "round",
-      }),
-    );
+    });
+    setTip(arc, ctx, top);
+    root.appendChild(arc);
+  } else if (top) {
+    setTip(track, ctx, top);
   }
 
-  const num = svg("text", {
-    class: "chart-gauge-pct",
-    x: cx,
-    y: cy - 8,
-    "text-anchor": "middle",
-    fill: "currentColor",
-    "font-size": 26,
-    "font-weight": 700,
-  });
-  num.textContent = `${pct.toFixed(0)}%`;
-  root.appendChild(num);
-
-  const name = svg("text", {
-    class: "chart-gauge-name",
-    x: cx,
-    y: cy + 10,
-    "text-anchor": "middle",
-    fill: "currentColor",
-    "font-size": 11,
-    "fill-opacity": 0.7,
-  });
-  name.textContent = top ? top.cat : "—";
-  root.appendChild(name);
-
+  root.appendChild(svgText(cx, cy - 24, `${pct.toFixed(0)}%`, "chart-gauge-pct"));
+  root.appendChild(svgText(cx, cy - 4, top ? clip(top.cat, 22) : "No data", "chart-gauge-name"));
+  const lo = svgText(cx - radius, cy + 18, "0%", "chart-tick");
+  const hi = svgText(cx + radius, cy + 18, "100%", "chart-tick");
+  root.appendChild(lo);
+  root.appendChild(hi);
   return root;
 }
 
 /**
- * Heatmap grid: one ROW per category, columns = the last up-to-24 snapshots of
- * that category's series. Cell fill = the category color at opacity scaled by
- * its % (0 -> near transparent). Defensive against short/empty series. Names
- * live in the stats table, so no left gutter is drawn.
+ * Heatmap: one ROW per category, columns = the last up-to-24 snapshots of that
+ * category's series, filled from the sequential blue ramp (value / max). Row
+ * names sit in a left gutter because colour no longer identifies the row.
  */
-function renderHeatmap(views: CatView[], probeId: string): Element {
-  const COLS = 24;
-  const cell = 12;
+function renderHeatmap(ctx: ChartCtx, views: CatView[]): Element {
+  const W = ctx.width;
   const gap = 2;
+  const cellH = 20;
   const rows = views.length;
   const maxLen = views.reduce((m, v) => Math.max(m, v.series.length), 0);
-  const cols = Math.max(1, Math.min(COLS, maxLen));
-  const width = cols * (cell + gap);
-  const height = Math.max(1, rows) * (cell + gap);
+  const cols = Math.max(1, Math.min(24, maxLen));
+  const labelW = Math.min(112, Math.max(64, Math.round(W * 0.3)));
+  const gridW = W - labelW - 4;
+  const cellW = Math.max(3, Math.floor((gridW - gap * (cols - 1)) / cols));
+  const axisH = 20;
+  const H = Math.max(1, rows) * (cellH + gap) + axisH;
+  const root = svgRoot("chart-heatmap", W, H);
 
-  const root = svg("svg", {
-    class: "chart-svg chart-heatmap",
-    viewBox: `0 0 ${width} ${height}`,
-    role: "img",
-  });
+  let maxV = 1;
+  for (const v of views) {
+    for (const value of v.series.slice(-cols)) maxV = Math.max(maxV, clampPct(value));
+  }
 
   views.forEach((v, r) => {
-    // Take the last `cols` values of this category's series (right-aligned).
+    const y = r * (cellH + gap);
+    root.appendChild(svgText(labelW - 8, y + cellH / 2, clip(v.cat, (labelW - 12) / 6.6), "chart-heat-label", "end")).setAttribute("dy", "0.35em");
     const series = v.series;
     const start = Math.max(0, series.length - cols);
-    const fill = colorFor(probeId, v.cat, v.i);
     for (let c = 0; c < cols; c++) {
       const value = series[start + c];
-      const has = value !== undefined;
-      const opacity = has ? clampPct(value) / 100 : 0;
-      root.appendChild(
-        svg("rect", {
-          x: c * (cell + gap),
-          y: r * (cell + gap),
-          width: cell,
-          height: cell,
-          rx: 2,
-          fill,
-          "fill-opacity": Math.max(0.04, opacity).toFixed(3),
-        }),
-      );
+      const x = labelW + c * (cellW + gap);
+      if (value === undefined) {
+        root.appendChild(svg("rect", { class: "chart-cell-empty", x, y, width: cellW, height: cellH, rx: 3 }));
+        continue;
+      }
+      const fill = seqColor(clampPct(value) / maxV);
+      const cell = svg("rect", { x, y, width: cellW, height: cellH, rx: 3, fill });
+      const age = cols - 1 - c;
+      const last = c === cols - 1;
+      setTip(cell, ctx, { cat: v.cat, pct: value, i: v.i }, {
+        note: last ? "Latest snapshot" : `${age} snapshot${age === 1 ? "" : "s"} earlier`,
+        nonav: !last,
+      });
+      root.appendChild(cell);
+      if (cellW >= 30) cellLabel(root, x + cellW / 2, y + cellH / 2, `${Math.round(value)}`, fill);
     }
   });
-
+  const axisY = Math.max(1, rows) * (cellH + gap) + 14;
+  root.appendChild(svgText(labelW, axisY, "Older", "chart-tick", "start"));
+  root.appendChild(svgText(labelW + cols * (cellW + gap) - gap, axisY, "Now", "chart-tick", "end"));
   return root;
 }
 
-/**
- * Winner's podium: rank categories by current pct (desc) and render the top 3 as
- * blocks ordered 2nd–1st–3rd, heights proportional to pct (1st tallest). Fewer
- * than three categories simply show what exists. Defensive on empty input.
- */
-function renderPodium(views: CatView[], probeId: string): Element {
-  const ranked = [...views].sort((a, b) => b.pct - a.pct).slice(0, 3);
+/** "Less to more" ramp legend shared by heatmap and descartes. */
+function buildRampLegend(): HTMLElement {
+  const legend = mk("div", "ramp-legend");
+  legend.appendChild(mk("span", "", "Less"));
+  legend.appendChild(mk("span", "ramp-bar"));
+  legend.appendChild(mk("span", "", "More"));
+  return legend;
+}
 
-  const width = 300;
-  const height = 150;
-  const root = svg("svg", {
-    class: "chart-svg chart-podium",
-    viewBox: `0 0 ${width} ${height}`,
-    role: "img",
-  });
+/**
+ * Winner's podium: the top 3 categories as blocks ordered 2nd, 1st, 3rd, heights
+ * proportional to pct (1st tallest). Fewer than three simply show what exists.
+ */
+function renderPodium(ctx: ChartCtx, views: CatView[]): Element {
+  const ranked = [...views].sort((a, b) => b.pct - a.pct).slice(0, 3);
+  const W = ctx.width;
+  const H = 156;
+  const root = svgRoot("chart-podium", W, H);
   if (ranked.length === 0) return root;
 
-  // Visual slot order left->right by rank: 2nd, 1st, 3rd (center is tallest).
   const slotOrder = [1, 0, 2].filter((r) => r < ranked.length);
-  const slotW = width / slotOrder.length;
-  const blockW = Math.min(72, slotW * 0.7);
-  const baseline = height - 20;
+  const slotW = W / slotOrder.length;
+  const blockW = Math.min(76, slotW * 0.6);
+  const baseline = H - 24;
   const maxPct = Math.max(1, ...ranked.map((v) => clampPct(v.pct)));
-  const maxBarH = baseline - 24;
+  const maxBarH = baseline - 26;
 
+  root.appendChild(svg("line", { class: "chart-baseline", x1: 0, y1: baseline + 0.5, x2: W, y2: baseline + 0.5 }));
   slotOrder.forEach((rank, slot) => {
-    const v = ranked[rank];
-    const h = (clampPct(v.pct) / maxPct) * maxBarH;
-    const x = slot * slotW + (slotW - blockW) / 2;
-    const y = baseline - h;
-
+    const v = ranked[rank]!;
+    const hgt = Math.max(2, (clampPct(v.pct) / maxPct) * maxBarH);
+    const cx = slot * slotW + slotW / 2;
+    const y = baseline - hgt;
     root.appendChild(
-      svg("rect", {
-        x: x.toFixed(1),
-        y: y.toFixed(1),
-        width: blockW.toFixed(1),
-        height: Math.max(2, h).toFixed(1),
-        rx: 3,
-        fill: colorFor(probeId, v.cat, v.i),
+      svg("path", {
+        d: topRoundPath(cx - blockW / 2, y, blockW, hgt, 4),
+        fill: colorFor(ctx.probeId, v.cat, v.i),
       }),
     );
-
-    const place = svg("text", {
-      x: x + blockW / 2,
-      y: y - 4,
-      "text-anchor": "middle",
-      fill: "currentColor",
-      "font-size": 12,
-      "font-weight": 700,
-    });
-    place.textContent = `#${rank + 1} ${v.pct.toFixed(0)}%`;
-    root.appendChild(place);
-
-    const baseLbl = svg("text", {
-      x: x + blockW / 2,
-      y: baseline + 14,
-      "text-anchor": "middle",
-      fill: "currentColor",
-      "font-size": 10,
-      "fill-opacity": 0.7,
-    });
-    baseLbl.textContent = v.cat;
-    root.appendChild(baseLbl);
+    root.appendChild(svgText(cx, y - 6, `#${rank + 1}  ${v.pct.toFixed(0)}%`, "chart-podium-value"));
+    root.appendChild(svgText(cx, baseline + 16, clip(v.cat, (slotW - 8) / 6.4), "chart-xlabel"));
+    const hit = hitRect(slot * slotW, 0, slotW, H);
+    setTip(hit, ctx, v, { note: `Rank ${rank + 1}` });
+    root.appendChild(hit);
   });
-
   return root;
 }
 
 /**
- * Violin plot: per category, a ~9-bin histogram of its series values, mirrored
- * into a symmetric vertical shape. Categories with <3 points degrade to a thin
- * bar at the current value. Defensive against empty input.
+ * Violin plot: per category, a ~9-bin histogram of its series mirrored into a
+ * symmetric shape, with a ringed dot at the current value. Categories with
+ * fewer than 3 points degrade to a thin rounded bar.
  */
-function renderViolin(views: CatView[], probeId: string): Element {
+function renderViolin(ctx: ChartCtx, views: CatView[]): Element {
   const BINS = 9;
-  const slotW = 56;
-  const height = 130;
-  const padY = 8;
-  const width = Math.max(slotW, views.length * slotW);
-
-  const root = svg("svg", {
-    class: "chart-svg chart-violin",
-    viewBox: `0 0 ${width} ${height}`,
-    role: "img",
-  });
+  const W = ctx.width;
+  const H = 164;
+  const root = svgRoot("chart-violin", W, H);
   if (views.length === 0) return root;
-
-  const plotH = height - 2 * padY;
-  // Value (0..100) -> y, with 0 at the bottom and 100 at the top.
-  const yFor = (value: number): number => padY + (1 - clampPct(value) / 100) * plotH;
-  const maxHalf = slotW * 0.42;
+  const f = chartFrame(root, W, H, { left: 40, right: 4, top: 8, bottom: 22 });
+  const slot = (f.x1 - f.x0) / views.length;
+  const maxHalf = Math.min(30, slot * 0.4);
 
   views.forEach((v, idx) => {
-    const cx = idx * slotW + slotW / 2;
-    const color = colorFor(probeId, v.cat, v.i);
+    const cx = f.x0 + slot * idx + slot / 2;
+    const color = colorFor(ctx.probeId, v.cat, v.i);
     const series = v.series;
 
     if (series.length < 3) {
-      // Too few points for a distribution: a thin bar at the current value.
-      const y = yFor(v.pct);
+      const y = f.yFor(v.pct);
       root.appendChild(
-        svg("rect", {
-          x: (cx - 2).toFixed(1),
-          y: Math.min(y, height - padY).toFixed(1),
-          width: 4,
-          height: Math.max(2, height - padY - y).toFixed(1),
-          rx: 2,
+        svg("path", { d: topRoundPath(cx - 3, y, 6, Math.max(2, f.yBase - y), 3), fill: color }),
+      );
+    } else {
+      const counts = new Array<number>(BINS).fill(0);
+      for (const raw of series) {
+        const b = Math.min(BINS - 1, Math.floor((clampPct(raw) / 100) * BINS));
+        counts[b]! += 1;
+      }
+      const maxCount = Math.max(1, ...counts);
+      // Span only the occupied value range (plus one empty bin each side) so a
+      // narrow distribution is a compact shape, not a spike stretched to 0..100.
+      let first = counts.findIndex((c) => c > 0);
+      let last = BINS - 1 - [...counts].reverse().findIndex((c) => c > 0);
+      first = Math.max(0, first - 1);
+      last = Math.min(BINS - 1, last + 1);
+      const rightPts: string[] = [];
+      const leftPts: string[] = [];
+      for (let b = first; b <= last; b++) {
+        const y = f.yFor(((b + 0.5) / BINS) * 100);
+        const half = (counts[b]! / maxCount) * maxHalf;
+        rightPts.push(`${(cx + half).toFixed(1)},${y.toFixed(1)}`);
+        leftPts.push(`${(cx - half).toFixed(1)},${y.toFixed(1)}`);
+      }
+      leftPts.reverse();
+      root.appendChild(
+        svg("path", {
+          class: "chart-violin-shape",
+          d: `M${rightPts.concat(leftPts).join("L")}Z`,
           fill: color,
           "fill-opacity": 0.85,
+          stroke: color,
+          "stroke-width": 1.5,
+          "stroke-linejoin": "round",
         }),
       );
-      return;
     }
-
-    // Histogram over BINS buckets spanning 0..100.
-    const counts = new Array<number>(BINS).fill(0);
-    for (const raw of series) {
-      const value = clampPct(raw);
-      const b = Math.min(BINS - 1, Math.floor((value / 100) * BINS));
-      counts[b] += 1;
+    lastDot(root, cx, f.yFor(v.pct), color);
+    if (slot >= 40) {
+      root.appendChild(svgText(cx, f.yBase + 16, clip(v.cat, (slot - 4) / 6.4), "chart-xlabel"));
     }
-    const maxCount = Math.max(1, ...counts);
-
-    // Build a closed mirrored path: down the right edge, up the left edge.
-    const rightPts: string[] = [];
-    const leftPts: string[] = [];
-    for (let b = 0; b < BINS; b++) {
-      // Bin center value -> y; width proportional to the bin's share.
-      const value = ((b + 0.5) / BINS) * 100;
-      const y = yFor(value);
-      const half = (counts[b] / maxCount) * maxHalf;
-      rightPts.push(`${(cx + half).toFixed(1)},${y.toFixed(1)}`);
-      leftPts.push(`${(cx - half).toFixed(1)},${y.toFixed(1)}`);
-    }
-    leftPts.reverse();
-    root.appendChild(
-      svg("path", {
-        class: "chart-violin-shape",
-        d: `M ${rightPts.concat(leftPts).join(" L ")} Z`,
-        fill: color,
-        "fill-opacity": 0.8,
-      }),
-    );
+    const hit = hitRect(f.x0 + slot * idx, f.yTop - 4, slot, f.yBase - f.yTop + 28);
+    setTip(hit, ctx, v);
+    root.appendChild(hit);
   });
-
   return root;
 }
 
@@ -1463,20 +1652,24 @@ function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClas
   wrap.className = `${gridClass} descartes-tick`;
 
   const renderReadState = (): void => {
+    wrap.classList.remove("is-editing");
     const text = document.createElement("button");
     text.type = "button";
     text.className = "descartes-tick-label";
     text.dataset["axis"] = axis;
     text.dataset["label"] = label;
+    text.dataset["fk"] = `tick:${axis}:${label}`;
     text.textContent = label;
-    text.title = `${label} — clique para renomear`;
+    text.title = `${label}. Click to rename`;
     text.addEventListener("click", enterEditState);
 
     const del = document.createElement("button");
     del.type = "button";
     del.className = "descartes-tick-del";
-    del.textContent = "✕";
-    del.title = axis === "x" ? "Remover coluna" : "Remover linha";
+    del.dataset["fk"] = `del:${axis}:${label}`;
+    del.innerHTML = iconSvg("x");
+    del.title = axis === "x" ? "Remove column" : "Remove row";
+    del.setAttribute("aria-label", `${del.title} ${label}`);
     del.addEventListener("click", (e) => {
       e.stopPropagation();
       descartesRemoveAxis(probeId, axis, label);
@@ -1505,10 +1698,14 @@ function buildAxisTick(probeId: string, axis: "x" | "y", label: string, gridClas
       else if (ev.key === "Escape") {
         committed = true; // suppress the blur commit that follows
         renderReadState();
+        wrap.querySelector<HTMLElement>(".descartes-tick-label")?.focus();
       }
     });
     input.addEventListener("blur", commit);
-    wrap.replaceChildren(input);
+    // The label and remove button stay in the flow (hidden) so the tick keeps
+    // its width; the input overlays them, so the plot never shifts while editing.
+    wrap.classList.add("is-editing");
+    wrap.appendChild(input);
     input.focus();
     input.select();
   };
@@ -1525,15 +1722,17 @@ function buildAxisAddButton(
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = `descartes-addbtn descartes-add-${axis}-${side}`;
-  btn.textContent = "+";
+  btn.innerHTML = iconSvg("plus");
+  btn.dataset["fk"] = `add:${axis}-${side}`;
   btn.title =
     axis === "x"
       ? side === "before"
-        ? "Adicionar coluna antes"
-        : "Adicionar coluna depois"
+        ? "Add column before"
+        : "Add column after"
       : side === "before"
-        ? "Adicionar linha abaixo"
-        : "Adicionar linha acima";
+        ? "Add row below"
+        : "Add row above";
+  btn.setAttribute("aria-label", btn.title);
   btn.addEventListener("click", () => descartesAddAxis(probeId, axis, side));
   return btn;
 }
@@ -1541,6 +1740,7 @@ function buildAxisAddButton(
 function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElement {
   const root = document.createElement("div");
   root.className = "descartes";
+  const ctx: ChartCtx = { probeId, n, width: chartWidth(probeId) };
 
   const probe = probeState.get(probeId);
   const categories = probe?.categories ?? [];
@@ -1579,17 +1779,17 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
     const hint = document.createElement("p");
     hint.className = "empty-hint";
     hint.textContent =
-      "Descartes mapeia cada mensagem numa coordenada (x, y) de um plano cartesiano.";
+      "Grid (2D) places each message on an (x, y) coordinate of a Cartesian plane.";
     const gen = document.createElement("button");
     gen.type = "button";
     gen.className = "btn-secondary btn-small";
-    gen.textContent = "Gerar grade 3×3";
+    gen.textContent = "Generate 3×3 grid";
     gen.addEventListener("click", () => {
       // Switching an existing (non-pair) classification probe to descartes must
       // never silently wipe its real categories.
       if (
         categories.length > 0 &&
-        !window.confirm("Isso substitui as categorias atuais desta probe. Continuar?")
+        !window.confirm("This replaces the probe's current categories. Continue?")
       ) {
         return;
       }
@@ -1636,7 +1836,8 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
       if (pct === undefined) {
         cell.classList.add("is-empty");
         cell.setAttribute("role", "img");
-        cell.setAttribute("aria-label", `${x}, ${y}: sem dados`);
+        cell.setAttribute("aria-label", `${x}, ${y}: no data`);
+        setTip(cell, ctx, { cat: `(${x}, ${y})`, pct: 0, i: 0 }, { color: "transparent" });
       } else {
         const cellFill = seqColor(pct / maxPct);
         cell.style.background = cellFill;
@@ -1654,11 +1855,13 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
         if (hasValue) {
           const t = document.createElement("span");
           t.className = "descartes-pct";
-          t.style.color = inkOn(cellFill);
+          // One label treatment for every cell: a surface chip in text ink. No ink
+          // reaches 7:1 on every ramp step, so the chip keeps contrast uniform.
+          t.classList.add("is-chip");
           t.textContent = value;
           cell.appendChild(t);
         }
-        cell.title = `(${x}, ${y}) — ${value}`;
+        setTip(cell, ctx, { cat: `(${x}, ${y})`, pct }, { color: cellFill });
         cell.setAttribute("role", "img");
         cell.setAttribute("aria-label", `${x}, ${y}: ${value}`);
       }
@@ -1708,24 +1911,25 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
   foot.className = "descartes-foot";
   const legend = document.createElement("div");
   legend.className = "descartes-legend";
-  legend.appendChild(document.createTextNode("menos"));
+  legend.appendChild(document.createTextNode("Less"));
   const bar = document.createElement("span");
-  bar.className = "descartes-legend-bar";
+  bar.className = "ramp-bar";
   legend.appendChild(bar);
-  legend.appendChild(document.createTextNode("mais"));
+  legend.appendChild(document.createTextNode("More"));
   const modeBtn = document.createElement("button");
   modeBtn.type = "button";
   modeBtn.className = "descartes-valuemode";
   modeBtn.textContent = valueMode === "abs" ? "#" : "%";
-  modeBtn.title =
-    valueMode === "abs" ? "Mostrar como percentual" : "Mostrar como contagem (#)";
+  modeBtn.dataset["fk"] = "valuemode";
+  modeBtn.title = valueMode === "abs" ? "Show as percentage" : "Show as count (#)";
+  modeBtn.setAttribute("aria-label", modeBtn.title);
   modeBtn.addEventListener("click", () => descartesToggleValueMode(probeId));
   legend.appendChild(modeBtn);
   foot.appendChild(legend);
   if (outro > 0.05) {
     const o = document.createElement("span");
     o.className = "descartes-outro";
-    o.textContent = `fora da grade: ${outro.toFixed(0)}%`;
+    o.textContent = `Outside the grid: ${outro.toFixed(0)}%`;
     foot.appendChild(o);
   }
   root.appendChild(foot);
@@ -1735,8 +1939,9 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
 
 /**
  * Build the classification .result-display content for the snapshot at `index`:
- * the chosen visualization wrapped in .chart-viz, plus (for every chart EXCEPT
- * "bars"/"descartes") the .cat-stats table underneath it.
+ * the chosen visualization wrapped in .chart-viz (role=img with a text summary,
+ * one tab stop, arrow keys walk the marks), a visually hidden data table twin
+ * and, under every chart EXCEPT "bars"/"descartes", the legend (.cat-stats).
  */
 function buildClassificationBody(probeId: string, index: number): HTMLElement {
   const body = document.createElement("div");
@@ -1766,53 +1971,69 @@ function buildClassificationBody(probeId: string, index: number): HTMLElement {
   });
 
   const type = probeChart(probeId);
+  const ctx: ChartCtx = { probeId, n: snap.n, width: chartWidth(probeId) };
+  const summary = chartSummary(type, probeState.get(probeId)?.label ?? "", views);
 
   const viz = document.createElement("div");
   viz.className = "chart-viz";
+  viz.setAttribute("aria-label", summary);
   switch (type) {
     case "columns":
-      viz.appendChild(renderColumns(probeId, views));
+      viz.appendChild(renderColumns(ctx, views));
       break;
     case "stacked":
-      viz.appendChild(renderStacked(probeId, entries));
+      viz.appendChild(renderStacked(ctx, entries));
       break;
     case "donut":
-      viz.appendChild(renderDonut(probeId, entries));
+      viz.appendChild(renderDonut(ctx, entries));
       break;
     case "lines":
-      viz.appendChild(renderLines(probeId, views));
+      viz.appendChild(renderLines(ctx, views));
       break;
     case "area":
-      viz.appendChild(renderArea(probeId, views));
+      viz.appendChild(renderArea(ctx, views));
       break;
     case "delta":
-      viz.appendChild(renderDelta(views));
+      viz.appendChild(renderDelta(ctx, views));
       break;
     case "gauge":
-      viz.appendChild(renderGauge(views, probeId));
+      viz.appendChild(renderGauge(ctx, views));
       break;
     case "heatmap":
-      viz.appendChild(renderHeatmap(views, probeId));
+      viz.appendChild(renderHeatmap(ctx, views));
+      viz.appendChild(buildRampLegend());
       break;
     case "podium":
-      viz.appendChild(renderPodium(views, probeId));
+      viz.appendChild(renderPodium(ctx, views));
       break;
     case "violin":
-      viz.appendChild(renderViolin(views, probeId));
+      viz.appendChild(renderViolin(ctx, views));
       break;
     case "descartes":
       viz.appendChild(renderDescartes(views, probeId, snap.n));
       break;
     default:
-      viz.appendChild(renderBars(probeId, views));
+      viz.appendChild(renderBars(ctx, views));
       break;
   }
   body.appendChild(viz);
 
+  if (type === "descartes") {
+    // The grid carries interactive controls (rename, add, remove): a group, not an image.
+    viz.setAttribute("role", "group");
+  } else {
+    viz.setAttribute("role", "img");
+    viz.tabIndex = 0;
+    viz.dataset["fk"] = "viz";
+    // Same chart + same categories next frame: update the nodes in place.
+    body.dataset["sig"] = `${probeId}|${type}|${ordered.join("\u0001")}`;
+    body.appendChild(buildDataTable(views, summary));
+  }
+
   // "bars" carries its own per-row stats; "descartes" IS a grid of every
   // category (a stats table would just duplicate all 16+ scorelines).
   if (type !== "bars" && type !== "descartes") {
-    body.appendChild(buildStats(probeId, views));
+    body.appendChild(buildStats(ctx, views));
   }
   return body;
 }
@@ -1837,6 +2058,96 @@ function buildOpenBody(probeId: string, index: number): HTMLElement {
   return body;
 }
 
+/**
+ * Placeholder shown until a probe's first result lands: the rough shape of the
+ * chart (rows of bars) or of the text (lines), static under reduced motion.
+ */
+function buildSkeleton(kind: string, rows: number): HTMLDivElement {
+  const box = document.createElement("div");
+  box.className = "result-display is-skeleton";
+  box.dataset["sk"] = `${kind}:${rows}`;
+  const sk = mk("div", "skeleton");
+  sk.setAttribute("aria-hidden", "true");
+  if (kind === "classification") {
+    const widths = [78, 52, 36, 24, 18, 12];
+    for (let i = 0; i < rows; i++) {
+      const row = mk("div", "sk-row");
+      row.appendChild(mk("span", "sk-line sk-label"));
+      const bar = mk("span", "sk-line sk-bar");
+      bar.style.width = `${widths[i % widths.length]}%`;
+      row.appendChild(bar);
+      sk.appendChild(row);
+    }
+  } else {
+    for (const w of [100, 94, 97, 58]) {
+      const line = mk("span", "sk-line sk-text");
+      line.style.width = `${w}%`;
+      sk.appendChild(line);
+    }
+  }
+  box.appendChild(sk);
+  // Announced to assistive tech; sighted users read the same words in the footer.
+  box.appendChild(mk("span", "sr-only", "Waiting for the first result"));
+  return box;
+}
+
+/** Keep a not-yet-rendered card's skeleton in step with its kind and category count. */
+function syncSkeleton(card: HTMLDivElement, probeId: string): void {
+  const display = card.querySelector<HTMLDivElement>(".result-display");
+  if (!display || !display.classList.contains("is-skeleton")) return;
+  const kind = cardKind(probeId);
+  const cats = probeState.get(probeId)?.categories?.length ?? 4;
+  const rows = Math.min(6, Math.max(3, cats));
+  if (display.dataset["sk"] !== `${kind}:${rows}`) display.replaceWith(buildSkeleton(kind, rows));
+}
+
+// ---------------------------------------------------------------------------
+// In-place update. Rebuilding the chart every frame would drop hover, focus and
+// any running CSS transition; when the next frame has the same shape (same
+// chart, same categories) the new tree is merged into the live nodes instead.
+// ---------------------------------------------------------------------------
+
+function syncAttrs(from: Element, to: Element): void {
+  for (const a of Array.from(from.attributes)) {
+    if (!to.hasAttribute(a.name)) from.removeAttribute(a.name);
+  }
+  for (const a of Array.from(to.attributes)) {
+    if (a.name === "class") {
+      // Runtime-only highlight survives the merge.
+      const next = from.classList.contains("is-active") ? `${a.value} is-active` : a.value;
+      if (from.getAttribute("class") !== next) from.setAttribute("class", next);
+    } else if (from.getAttribute(a.name) !== a.value) {
+      from.setAttribute(a.name, a.value);
+    }
+  }
+}
+
+function morph(from: Element, to: Element): void {
+  syncAttrs(from, to);
+  const a = Array.from(from.childNodes);
+  const b = Array.from(to.childNodes);
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (!y) {
+      if (x) from.removeChild(x);
+    } else if (!x) {
+      from.appendChild(y);
+    } else if (x.nodeType === Node.TEXT_NODE && y.nodeType === Node.TEXT_NODE) {
+      if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue;
+    } else if (
+      x.nodeType === Node.ELEMENT_NODE &&
+      y.nodeType === Node.ELEMENT_NODE &&
+      x.nodeName === y.nodeName
+    ) {
+      morph(x as Element, y as Element);
+    } else {
+      from.replaceChild(y, x);
+    }
+  }
+}
+
 /** (Re)render a card's single .result-display at the given snapshot index. */
 function renderDisplay(card: HTMLDivElement, probeId: string, kind: string, index: number): void {
   const existing = card.querySelector<HTMLDivElement>(".result-display");
@@ -1849,18 +2160,28 @@ function renderDisplay(card: HTMLDivElement, probeId: string, kind: string, inde
     kind === "classification"
       ? buildClassificationBody(probeId, index)
       : buildOpenBody(probeId, index);
-  if (existing) existing.replaceWith(next);
-  else card.appendChild(next);
+  const sig = existing?.dataset["sig"];
+  if (existing && sig !== undefined && sig === next.dataset["sig"]) {
+    morph(existing, next);
+  } else if (existing) {
+    const active = document.activeElement;
+    const fk = active instanceof HTMLElement && existing.contains(active) ? active.dataset["fk"] : undefined;
+    existing.replaceWith(next);
+    if (fk) next.querySelector<HTMLElement>(`[data-fk="${CSS.escape(fk)}"]`)?.focus({ preventScroll: true });
+  } else {
+    card.insertBefore(next, card.querySelector(".result-scrubber"));
+  }
+  refreshTip();
 }
 
-/** Format the "n=…" + time string used by both header meta and scrub meta. */
+/** Format the timestamp + message count string shown in the card footer. */
 function snapStamp(snap: Snapshot): string {
-  return new Date(snap.ts * 1000).toLocaleTimeString() + "  n=" + String(snap.n);
+  return `${new Date(snap.ts * 1000).toLocaleTimeString()} · ${snap.n} msgs`;
 }
 
 /**
- * Refresh the scrubber DOM (range bounds/value, scrub-meta text + LIVE badge)
- * and the header meta to reflect the snapshot currently being viewed.
+ * Refresh the footer timeline (range bounds/value/fill, the stamp text node and
+ * the Live toggle) to reflect the snapshot currently being viewed.
  */
 function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): void {
   const history = resultHistory.get(probeId) ?? [];
@@ -1870,17 +2191,22 @@ function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): 
   const scrubber = card.querySelector<HTMLDivElement>(".result-scrubber");
   const range = card.querySelector<HTMLInputElement>(".scrub-range");
   const meta = card.querySelector<HTMLDivElement>(".scrub-meta");
-  const live = card.querySelector<HTMLSpanElement>(".scrub-live");
+  const live = card.querySelector<HTMLButtonElement>(".scrub-live");
 
-  if (scrubber) scrubber.classList.toggle("is-single", history.length <= 1);
+  if (scrubber) {
+    scrubber.classList.toggle("is-single", history.length <= 1);
+    scrubber.classList.toggle("is-empty", history.length === 0);
+  }
   if (range) {
     range.min = "0";
     range.max = String(max);
     range.value = String(index);
+    range.style.setProperty("--fill", max > 0 ? `${(index / max) * 100}%` : "100%");
+    range.setAttribute("aria-valuetext", snap ? snapStamp(snap) : "");
   }
   if (meta) {
-    // Keep the LIVE badge node; set the leading text via the first text node.
-    const label = snap ? snapStamp(snap) + " " : "";
+    // The stamp lives in the FIRST child text node; the Live toggle is the next child.
+    const label = snap ? snapStamp(snap) : "";
     if (meta.firstChild && meta.firstChild.nodeType === Node.TEXT_NODE) {
       meta.firstChild.textContent = label;
     } else {
@@ -1888,13 +2214,12 @@ function refreshScrubber(card: HTMLDivElement, probeId: string, index: number): 
     }
   }
   if (live) {
-    if (index === max) {
-      live.textContent = "LIVE";
-      live.classList.remove("scrub-behind");
-    } else {
-      live.textContent = String(index - max); // e.g. "-3" snapshots behind
-      live.classList.add("scrub-behind");
-    }
+    const atLatest = index === max;
+    live.setAttribute("aria-pressed", String(atLatest));
+    live.classList.toggle("scrub-behind", !atLatest);
+    live.title = atLatest
+      ? "Following the latest snapshot"
+      : `${max - index} snapshot${max - index === 1 ? "" : "s"} behind. Jump to the latest`;
   }
 }
 
@@ -2019,9 +2344,37 @@ function wireCardDragAndDrop(): void {
 /**
  * Find (or build) the .result-card for a probe. A freshly-built card has the
  * FULL skeleton and its static handlers wired exactly once; the kind-specific
- * chrome (badge text, label, prompt, chart-select / edit-categories visibility)
+ * chrome (kind tag, label, prompt, chart-select / edit-categories visibility)
  * is applied later by updateCardChrome from state.
+ *
+ * Anatomy: progress bar, header (grip, title + kind tag + prompt, chart select,
+ * one overflow menu), inline editor, inline error, display, footer timeline.
  */
+let cardMenuSeq = 0;
+
+function menuItem(cls: string, icon: string, label: string): HTMLButtonElement {
+  const item = mk("button", `menu-item ${cls}`);
+  item.type = "button";
+  item.setAttribute("role", "menuitem");
+  item.tabIndex = -1;
+  item.appendChild(iconNode(icon));
+  item.appendChild(mk("span", "menu-label", label));
+  return item;
+}
+
+function setMenuItem(item: HTMLElement, icon: string, label: string): void {
+  const holder = item.querySelector<HTMLElement>(".icon");
+  if (holder) holder.innerHTML = iconSvg(icon);
+  const text = item.querySelector<HTMLElement>(".menu-label");
+  if (text) text.textContent = label;
+}
+
+/** Show/hide the chart-type control (select + its icon wrapper) together. */
+function setChartSelectHidden(card: HTMLElement, hidden: boolean): void {
+  card.querySelector(".chart-select")?.classList.toggle("hidden", hidden);
+  card.querySelector(".chart-select-wrap")?.classList.toggle("hidden", hidden);
+}
+
 function ensureCard(probeId: string): HTMLDivElement {
   const container = el<HTMLDivElement>("results");
   const existing = container.querySelector<HTMLDivElement>(
@@ -2034,22 +2387,22 @@ function ensureCard(probeId: string): HTMLDivElement {
   card.dataset["probeId"] = probeId;
   card.dataset["kind"] = cardKind(probeId);
 
-  // --- header (vertical: a compact meta strip, then the title on its own line) ---
-  const header = document.createElement("div");
-  header.className = "result-header";
+  // In-flight indicator: a 2px indeterminate bar on the top edge (.analyzing).
+  const progress = mk("div", "card-progress");
+  progress.setAttribute("aria-hidden", "true");
+  card.appendChild(progress);
 
-  // Meta strip: kind badge (left) + action controls (right). Keeping the
-  // controls up here means they never steal width from the title below.
-  const headerTop = document.createElement("div");
-  headerTop.className = "result-header-top";
+  // --- header ---
+  const header = mk("div", "result-header");
+  const headerTop = mk("div", "result-header-top");
 
   // Drag handle: reorders cards (see the drag-and-drop block above). Only this
-  // element is draggable, never the card itself.
-  const dragHandle = document.createElement("span");
-  dragHandle.className = "card-drag-handle";
+  // element is draggable, never the card itself. Visible on hover/focus only.
+  const dragHandle = mk("span", "card-drag-handle");
   dragHandle.draggable = true;
-  dragHandle.textContent = "⠿";
-  dragHandle.title = "Arraste para reordenar";
+  dragHandle.title = "Drag to reorder";
+  dragHandle.setAttribute("aria-hidden", "true");
+  dragHandle.innerHTML = iconSvg("dots-six-vertical");
   dragHandle.addEventListener("dragstart", (e: DragEvent) => {
     draggedCard = card;
     e.dataTransfer?.setData("text/plain", probeId); // required by Firefox to start the drag
@@ -2064,26 +2417,39 @@ function ensureCard(probeId: string): HTMLDivElement {
   });
   headerTop.appendChild(dragHandle);
 
-  const badge = document.createElement("span");
-  badge.className = "result-kind-badge";
-  badge.textContent = cardKind(probeId);
-  headerTop.appendChild(badge);
+  // Title column: label + kind tag on one line, the prompt as a 2-line subtitle.
+  const titles = mk("div", "result-titles");
+  const titleRow = mk("div", "result-title-row");
+  const labelEl = mk("span", "result-label");
+  const badge = mk("span", "result-kind-badge");
+  badge.appendChild(iconNode(cardKind(probeId) === "classification" ? "chart-bar-horizontal" : "chat-text"));
+  badge.appendChild(mk("span", "kind-text", kindName(cardKind(probeId))));
+  titleRow.appendChild(labelEl);
+  titleRow.appendChild(badge);
+  const promptEl = mk("span", "result-prompt");
+  titles.appendChild(titleRow);
+  headerTop.appendChild(titles);
 
-  const right = document.createElement("div");
-  right.className = "result-header-right";
+  const right = mk("div", "result-header-right");
 
-  const select = document.createElement("select");
-  select.className = "chart-select";
+  // Chart type (classification only): icon + friendly name; option.value is the id.
+  const selectWrap = mk("div", "chart-select-wrap");
+  selectWrap.appendChild(iconNode("chart-bar", "chart-select-icon"));
+  const select = mk("select", "chart-select");
   select.setAttribute("aria-label", "Chart type");
   for (const t of CHART_TYPES) {
     const opt = document.createElement("option");
     opt.value = t;
-    opt.textContent = t;
+    opt.textContent = CHART_LABELS[t];
     select.appendChild(opt);
   }
   select.value = probeChart(probeId);
+  select.title = CHART_LABELS[select.value as ChartType] ?? "Chart type";
+  selectWrap.appendChild(select);
+  selectWrap.appendChild(iconNode("caret-down", "chart-select-caret"));
   select.addEventListener("change", () => {
     const chosen = select.value as ChartType;
+    select.title = CHART_LABELS[chosen] ?? "Chart type";
     // Persist server-side by re-upserting the existing probe descriptor.
     const prev = probeState.get(probeId);
     const probe: ProbeDescriptor = prev
@@ -2100,17 +2466,41 @@ function ensureCard(probeId: string): HTMLDivElement {
     const vs = viewState.get(probeId);
     renderDisplay(card, probeId, domKind(card), vs ? vs.index : 0);
   });
+  right.appendChild(selectWrap);
 
-  // Collapse toggle: header stays visible (title + meta), body folds away.
-  const collapseBtn = document.createElement("button");
-  collapseBtn.className = "card-collapse btn-secondary btn-small";
-  collapseBtn.type = "button";
+  // The ONE overflow menu: Edit, Widen/Narrow, Collapse/Expand, Remove.
+  const menuId = `card-menu-${++cardMenuSeq}`;
+  const menuWrap = mk("div", "menu-wrap card-menu-wrap");
+  const menuBtn = mk("button", "card-menu-btn");
+  menuBtn.type = "button";
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.setAttribute("aria-expanded", "false");
+  menuBtn.setAttribute("aria-controls", menuId);
+  menuBtn.setAttribute("aria-label", "Probe actions");
+  menuBtn.title = "Probe actions";
+  menuBtn.appendChild(iconNode("dots-three"));
+  const menu = mk("div", "menu card-menu hidden");
+  menu.id = menuId;
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Probe actions");
+
+  const editBtn = menuItem("card-edit", "pencil-simple", "Edit");
+  editBtn.addEventListener("click", () => {
+    openEditor(probeId);
+    card.querySelector<HTMLInputElement>(".edit-label")?.focus();
+  });
+
+  const spanBtn = menuItem("card-span", "arrows-out-line-horizontal", "Widen");
+
+  const collapseBtn = menuItem("card-collapse", "arrows-in-line-vertical", "Collapse");
   const collapsedKey = "viewlyt.cardcollapsed." + probeId;
   const setCollapsed = (collapsed: boolean): void => {
     card.classList.toggle("collapsed", collapsed);
-    collapseBtn.textContent = collapsed ? "▸" : "▾";
-    collapseBtn.title = collapsed ? "Expand" : "Collapse";
-    collapseBtn.setAttribute("aria-expanded", String(!collapsed));
+    setMenuItem(
+      collapseBtn,
+      collapsed ? "arrows-out-line-vertical" : "arrows-in-line-vertical",
+      collapsed ? "Expand" : "Collapse",
+    );
   };
   setCollapsed(lsGet(collapsedKey) === "1");
   collapseBtn.addEventListener("click", () => {
@@ -2119,44 +2509,28 @@ function ensureCard(probeId: string): HTMLDivElement {
     lsSet(collapsedKey, next ? "1" : "0");
   });
 
-  const editBtn = document.createElement("button");
-  editBtn.className = "card-edit btn-secondary btn-small";
-  editBtn.type = "button";
-  editBtn.textContent = "Edit";
-  editBtn.addEventListener("click", () => openEditor(probeId));
-
-  const removeBtn = document.createElement("button");
-  removeBtn.className = "card-remove btn-danger btn-small";
-  removeBtn.type = "button";
-  removeBtn.textContent = "Remove";
+  const removeBtn = menuItem("card-remove menu-item-danger", "trash", "Remove");
   removeBtn.addEventListener("click", () => {
     send({ op: "remove_probe", id: probeId });
     probeState.delete(probeId);
     resultHistory.delete(probeId);
     viewState.delete(probeId);
+    cardWidths.delete(probeId);
+    cardObserver?.unobserve(card);
     card.remove();
+    // The focused item just left the DOM: park focus on a stable control nearby.
+    document.getElementById("force-run")?.focus();
   });
 
-  right.appendChild(select);
-  right.appendChild(editBtn);
-  right.appendChild(removeBtn);
-  right.appendChild(collapseBtn);
+  const sep = mk("div", "menu-sep");
+  sep.setAttribute("role", "separator");
+  menu.append(editBtn, spanBtn, collapseBtn, sep, removeBtn);
+  menuWrap.append(menuBtn, menu);
+  right.appendChild(menuWrap);
   headerTop.appendChild(right);
   header.appendChild(headerTop);
-
-  // Title + prompt on their own lines below the meta strip: the label gets a
-  // full, dedicated line (wraps completely, never truncated to an ellipsis) and
-  // the prompt sits under it as a 2-line-clamped subtitle.
-  const titles = document.createElement("div");
-  titles.className = "result-titles";
-  const labelEl = document.createElement("span");
-  labelEl.className = "result-label";
-  const promptEl = document.createElement("span");
-  promptEl.className = "result-prompt";
-  titles.appendChild(labelEl);
-  titles.appendChild(promptEl);
-  header.appendChild(titles);
-
+  // The subtitle is its own full-width row under the header controls.
+  header.appendChild(promptEl);
   card.appendChild(header);
 
   // --- inline editor (hidden by default) ---
@@ -2169,6 +2543,7 @@ function ensureCard(probeId: string): HTMLDivElement {
   labelInput.className = "edit-label";
   labelInput.type = "text";
   labelInput.placeholder = "Label";
+  labelInput.setAttribute("aria-label", "Label");
   labelField.appendChild(labelInput);
   editor.appendChild(labelField);
 
@@ -2178,6 +2553,7 @@ function ensureCard(probeId: string): HTMLDivElement {
   promptInput.className = "edit-prompt";
   promptInput.rows = 3;
   promptInput.placeholder = "Prompt";
+  promptInput.setAttribute("aria-label", "Prompt");
   promptField.appendChild(promptInput);
   editor.appendChild(promptField);
 
@@ -2208,7 +2584,7 @@ function ensureCard(probeId: string): HTMLDivElement {
   mkSetting("edit-sample", "Sample (msgs)", "10");
   const settingsHint = document.createElement("span");
   settingsHint.className = "hint";
-  settingsHint.textContent = "blank/0 = follow the global Window config";
+  settingsHint.textContent = "Blank or 0 follows the global Window config";
   settings.appendChild(settingsHint);
   editor.appendChild(settings);
 
@@ -2227,11 +2603,29 @@ function ensureCard(probeId: string): HTMLDivElement {
   buttonRow.appendChild(saveBtn);
   buttonRow.appendChild(cancelBtn);
   editor.appendChild(buttonRow);
+  editor.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !ev.defaultPrevented) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeEditor(probeId);
+    }
+  });
   card.appendChild(editor);
 
-  // --- scrubber ---
-  const scrubber = document.createElement("div");
-  scrubber.className = "result-scrubber";
+  // --- inline error for this probe's last failed analysis (cleared by the next result) ---
+  const errorEl = mk("div", "card-error hidden");
+  errorEl.appendChild(iconNode("warning-circle"));
+  errorEl.appendChild(mk("span", "card-error-text"));
+  card.appendChild(errorEl);
+
+  // --- display (skeleton until the first result arrives) ---
+  const kindNow = cardKind(probeId);
+  card.appendChild(
+    buildSkeleton(kindNow, Math.min(6, Math.max(3, probeState.get(probeId)?.categories?.length ?? 4))),
+  );
+
+  // --- footer timeline: range + stamp + Live toggle, one row ---
+  const scrubber = mk("div", "result-scrubber is-single is-empty");
 
   const range = document.createElement("input");
   range.className = "scrub-range";
@@ -2242,15 +2636,14 @@ function ensureCard(probeId: string): HTMLDivElement {
   range.value = "0";
   range.step = "1";
 
-  const scrubMeta = document.createElement("div");
-  scrubMeta.className = "scrub-meta";
-  // Leading text node (filled by refreshScrubber) + the LIVE/behind badge.
-  scrubMeta.appendChild(document.createTextNode(""));
-  const liveBadge = document.createElement("span");
-  liveBadge.className = "scrub-live";
-  liveBadge.textContent = "LIVE";
-  liveBadge.title = "Jump to the most recent";
-  // Clicking the LIVE / -N badge snaps the scrubber back to the latest snapshot.
+  const scrubMeta = mk("div", "scrub-meta");
+  // Leading text node (filled by refreshScrubber) + the Live toggle.
+  scrubMeta.appendChild(document.createTextNode("Waiting for the first result"));
+  const liveBadge = mk("button", "scrub-live", "Live");
+  liveBadge.type = "button";
+  liveBadge.setAttribute("aria-pressed", "true");
+  liveBadge.title = "Following the latest snapshot";
+  // Clicking Live snaps the scrubber back to the latest snapshot.
   liveBadge.addEventListener("click", () => {
     const hist = resultHistory.get(probeId) ?? [];
     const max = Math.max(0, hist.length - 1);
@@ -2270,11 +2663,15 @@ function ensureCard(probeId: string): HTMLDivElement {
   card.appendChild(scrubber);
 
   // Wire the scrubber listener ONCE; read the live max + kind each time.
-  // rAF-throttled: dragging fires `input` continuously and each pass rebuilds
-  // the chart SVG from scratch, so render at most once per frame (the handler
-  // reads range.value at frame time — intermediate positions are skipped).
+  // rAF-throttled: dragging fires `input` continuously, so render at most once
+  // per frame (the handler reads range.value at frame time).
   let scrubQueued = false;
   range.addEventListener("input", () => {
+    {
+      const hist = resultHistory.get(probeId) ?? [];
+      const max = Math.max(1, hist.length - 1);
+      range.style.setProperty("--fill", `${(Number(range.value) / max) * 100}%`);
+    }
     if (scrubQueued) return;
     scrubQueued = true;
     requestAnimationFrame(() => {
@@ -2292,30 +2689,18 @@ function ensureCard(probeId: string): HTMLDivElement {
     });
   });
 
-  // --- display (placeholder until the first result arrives) ---
-  const display = document.createElement("div");
-  display.className = "result-display";
-  const placeholder = document.createElement("p");
-  placeholder.className = "empty-hint";
-  placeholder.textContent = "Waiting for first result…";
-  display.appendChild(placeholder);
-  card.appendChild(display);
-
-  // --- column-span toggle: a discreet button at the card's bottom-right that
-  // flips the card between one and two grid columns. Purely a client display
-  // preference (like collapse), persisted per-probe in localStorage. ---
-  const spanBtn = document.createElement("button");
-  spanBtn.type = "button";
-  spanBtn.className = "card-span";
+  // --- column-span toggle (menu item): flips the card between one and two grid
+  // columns. Purely a client display preference (like collapse), persisted per
+  // probe in localStorage. ---
   const spanKey = "viewlyt.cardspan." + probeId;
   const setSpan = (wide: boolean): void => {
     card.classList.toggle("span-2", wide);
     spanBtn.classList.toggle("is-wide", wide);
-    spanBtn.setAttribute("aria-pressed", String(wide));
-    spanBtn.title = wide ? "Shrink to one column" : "Expand to two columns";
-    // The label previews the TARGET state (what a click will produce), as a
-    // width multiplier — not a glyph, which read as a music-player pause icon.
-    spanBtn.textContent = wide ? "x1" : "x2";
+    setMenuItem(
+      spanBtn,
+      wide ? "arrows-in-line-horizontal" : "arrows-out-line-horizontal",
+      wide ? "Narrow" : "Widen",
+    );
   };
   setSpan(lsGet(spanKey) === "1");
   spanBtn.addEventListener("click", () => {
@@ -2323,9 +2708,8 @@ function ensureCard(probeId: string): HTMLDivElement {
     setSpan(next);
     lsSet(spanKey, next ? "1" : "0");
     // Below TWO_COL_MIN_WIDTH the @container query in style.css (kept in sync
-    // by hand) forces every card back to one column, so "x2" saves the
-    // preference but has nothing visible to do until the window widens —
-    // say so, or the click just looks broken.
+    // by hand) forces every card back to one column. The menu hides this item
+    // there, but keep the explanation for a window shrunk after it was opened.
     const resultsWidth = document.getElementById("results")?.clientWidth ?? Infinity;
     if (next && resultsWidth < TWO_COL_MIN_WIDTH) {
       showToast(
@@ -2335,7 +2719,12 @@ function ensureCard(probeId: string): HTMLDivElement {
       );
     }
   });
-  card.appendChild(spanBtn);
+
+  // Widen/Narrow only exists where two columns fit (or when undoing a wide card).
+  wireMenu(menuBtn, menu, () => {
+    const fits = (document.getElementById("results")?.clientWidth ?? 0) >= TWO_COL_MIN_WIDTH;
+    spanBtn.classList.toggle("hidden", !fits && !card.classList.contains("span-2"));
+  });
 
   // Drop the top-level "Waiting for results…" hint (a DIRECT child of #results;
   // never a card's own nested placeholder) the moment the first card appears.
@@ -2343,11 +2732,16 @@ function ensureCard(probeId: string): HTMLDivElement {
   if (topHint) topHint.remove();
 
   container.prepend(card);
+  cardObserver?.observe(card);
   return card;
 }
 
+function kindName(kind: string): string {
+  return kind === "classification" ? "Classify" : "Open";
+}
+
 /**
- * Apply the read-only chrome from state: kind badge, label, prompt line, and
+ * Apply the read-only chrome from state: kind tag, label, prompt line, and
  * the show/hide of the chart-select + edit-categories by kind. NEVER touches the
  * editor inputs while the editor is open (don't clobber an in-progress edit) and
  * never touches the display / scrubber / history.
@@ -2359,21 +2753,30 @@ function updateCardChrome(probeId: string): void {
   card.dataset["kind"] = kind;
 
   const badge = card.querySelector<HTMLSpanElement>(".result-kind-badge");
-  if (badge) badge.textContent = kind;
+  if (badge) {
+    const text = badge.querySelector<HTMLElement>(".kind-text");
+    if (text && text.textContent !== kindName(kind)) {
+      text.textContent = kindName(kind);
+      const holder = badge.querySelector<HTMLElement>(".icon");
+      if (holder) holder.innerHTML = iconSvg(kind === "classification" ? "chart-bar-horizontal" : "chat-text");
+    }
+  }
 
   const labelEl = card.querySelector<HTMLSpanElement>(".result-label");
   if (labelEl) labelEl.textContent = probe?.label ?? "";
 
   const promptEl = card.querySelector<HTMLSpanElement>(".result-prompt");
   if (promptEl) {
-    promptEl.textContent =
-      kind === "classification" ? (probe?.question ?? "") : (probe?.instruction ?? "");
+    const prompt = kind === "classification" ? (probe?.question ?? "") : (probe?.instruction ?? "");
+    promptEl.textContent = prompt;
+    promptEl.title = prompt;
   }
 
   const select = card.querySelector<HTMLSelectElement>(".chart-select");
   if (select) {
-    select.classList.toggle("hidden", kind !== "classification");
+    setChartSelectHidden(card, kind !== "classification");
     select.value = probeChart(probeId);
+    select.title = CHART_LABELS[select.value as ChartType] ?? "Chart type";
   }
 
   // Editor's category rows only make sense for classification — but never
@@ -2382,6 +2785,264 @@ function updateCardChrome(probeId: string): void {
     const editCats = card.querySelector<HTMLDivElement>(".edit-categories");
     if (editCats) editCats.classList.toggle("hidden", kind !== "classification");
   }
+  syncSkeleton(card, probeId);
+}
+
+// ---------------------------------------------------------------------------
+// Chart width: charts are drawn at the card's real pixel width (no stretched
+// viewBox, so text and strokes keep their size). A ResizeObserver keeps the
+// per-card width and re-renders a card when it actually changes (window resize,
+// widen/narrow). Renders are batched in rAF, never inside the observer callback.
+// ---------------------------------------------------------------------------
+
+const cardWidths = new Map<string, number>();
+const rerenderQueue = new Set<string>();
+let rerenderQueued = false;
+
+function chartWidth(probeId: string): number {
+  return Math.max(220, cardWidths.get(probeId) ?? 340);
+}
+
+function flushRerenders(): void {
+  rerenderQueued = false;
+  for (const id of rerenderQueue) {
+    const card = document.querySelector<HTMLDivElement>(
+      `.result-card[data-probe-id="${CSS.escape(id)}"]`,
+    );
+    const history = resultHistory.get(id);
+    if (!card || !history || history.length === 0) continue;
+    renderDisplay(card, id, domKind(card), viewState.get(id)?.index ?? history.length - 1);
+  }
+  rerenderQueue.clear();
+}
+
+const cardObserver: ResizeObserver | null =
+  typeof ResizeObserver === "undefined"
+    ? null
+    : new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const card = entry.target as HTMLElement;
+          const id = card.dataset["probeId"];
+          const w = Math.floor(entry.contentRect.width);
+          if (id === undefined || w < 120) continue;
+          if (Math.abs((cardWidths.get(id) ?? 0) - w) < 2) continue;
+          cardWidths.set(id, w);
+          rerenderQueue.add(id);
+        }
+        if (rerenderQueue.size > 0 && !rerenderQueued) {
+          rerenderQueued = true;
+          requestAnimationFrame(flushRerenders);
+        }
+      });
+
+// ---------------------------------------------------------------------------
+// Chart tooltips. One floating node; marks carry data-tip-* attributes, so the
+// delegated listeners on #results survive every in-place chart update. Mouse and
+// touch show it on the mark under the pointer; keyboard users get one tab stop
+// per chart (.chart-viz) and the arrow keys walk the marks.
+// ---------------------------------------------------------------------------
+
+let tipEl: HTMLDivElement | null = null;
+let tipTarget: Element | null = null;
+let tipTimer = 0;
+const vizIndex = new WeakMap<Element, number>();
+
+function tipNode(): HTMLDivElement {
+  if (!tipEl) {
+    tipEl = mk("div", "chart-tip hidden");
+    tipEl.setAttribute("aria-hidden", "true");
+    document.body.appendChild(tipEl);
+  }
+  return tipEl;
+}
+
+function fillTip(mark: Element): void {
+  const tip = tipNode();
+  tip.replaceChildren();
+  const head = mk("div", "chart-tip-head");
+  const swatch = mk("span", "chart-tip-swatch");
+  swatch.style.backgroundColor = mark.getAttribute("data-tip-color") ?? "transparent";
+  head.appendChild(swatch);
+  head.appendChild(mk("span", "chart-tip-name", mark.getAttribute("data-tip-name") ?? ""));
+  tip.appendChild(head);
+  const val = mk("div", "chart-tip-val");
+  val.appendChild(mk("strong", "", mark.getAttribute("data-tip-pct") ?? ""));
+  const count = mark.getAttribute("data-tip-count");
+  if (count) val.appendChild(mk("span", "", count));
+  tip.appendChild(val);
+  const note = mark.getAttribute("data-tip-note");
+  if (note) tip.appendChild(mk("div", "chart-tip-note", note));
+}
+
+function placeTip(x: number, y: number): void {
+  const tip = tipNode();
+  tip.classList.remove("hidden");
+  const w = tip.offsetWidth;
+  const hgt = tip.offsetHeight;
+  const vw = document.documentElement.clientWidth;
+  let left = x + 14;
+  if (left + w > vw - 8) left = x - 14 - w;
+  left = Math.max(8, left);
+  let top = y - hgt - 12;
+  if (top < 8) top = y + 18;
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function showTipFor(mark: Element, x?: number, y?: number): void {
+  window.clearTimeout(tipTimer);
+  tipTarget = mark;
+  fillTip(mark);
+  if (x === undefined || y === undefined) {
+    const r = mark.getBoundingClientRect();
+    x = r.left + r.width / 2;
+    y = r.top;
+  }
+  placeTip(x, y);
+}
+
+function hideTip(): void {
+  window.clearTimeout(tipTimer);
+  tipTarget = null;
+  tipEl?.classList.add("hidden");
+}
+
+/** After an in-place chart update: keep a visible tooltip in step, or drop it if its mark is gone. */
+function refreshTip(): void {
+  if (!tipTarget) return;
+  if (tipTarget.isConnected) fillTip(tipTarget);
+  else hideTip();
+}
+
+function navMarks(viz: Element): Element[] {
+  return Array.from(viz.querySelectorAll("[data-tip-name]:not([data-tip-nonav])"));
+}
+
+function activateMark(viz: Element, idx: number): void {
+  const marks = navMarks(viz);
+  if (marks.length === 0) return;
+  const i = ((idx % marks.length) + marks.length) % marks.length;
+  vizIndex.set(viz, i);
+  viz.querySelector(".is-active")?.classList.remove("is-active");
+  const mark = marks[i]!;
+  mark.classList.add("is-active");
+  showTipFor(mark);
+}
+
+function clearActive(viz: Element): void {
+  viz.querySelector(".is-active")?.classList.remove("is-active");
+  hideTip();
+}
+
+let tipScrollGraceUntil = 0;
+
+function wireChartTips(): void {
+  const root = el<HTMLDivElement>("results");
+  const markAt = (target: EventTarget | null): Element | null => {
+    const m = target instanceof Element ? target.closest("[data-tip-name]") : null;
+    return m && root.contains(m) ? m : null;
+  };
+
+  root.addEventListener("pointermove", (e: PointerEvent) => {
+    if (e.pointerType === "touch") return;
+    const mark = markAt(e.target);
+    if (mark) showTipFor(mark, e.clientX, e.clientY);
+    else if (!root.querySelector(".chart-viz:focus-within .is-active")) hideTip();
+  });
+  root.addEventListener("pointerleave", (e: PointerEvent) => {
+    if (e.pointerType === "touch") return;
+    if (!root.querySelector(".chart-viz:focus-within .is-active")) hideTip();
+  });
+  root.addEventListener("pointerdown", (e: PointerEvent) => {
+    if (e.pointerType !== "touch") return;
+    const mark = markAt(e.target);
+    if (!mark) {
+      hideTip();
+      return;
+    }
+    showTipFor(mark, e.clientX, e.clientY);
+    tipTimer = window.setTimeout(hideTip, 2500);
+  });
+
+  root.addEventListener("focusin", (e: FocusEvent) => {
+    const viz = e.target;
+    if (viz instanceof HTMLElement && viz.classList.contains("chart-viz") && viz.matches(":focus-visible")) {
+      // Focusing an off-screen chart scrolls it into view: that scroll must not dismiss the tip.
+      tipScrollGraceUntil = performance.now() + 300;
+      activateMark(viz, vizIndex.get(viz) ?? 0);
+    }
+  });
+  root.addEventListener("focusout", (e: FocusEvent) => {
+    const viz = e.target;
+    if (viz instanceof HTMLElement && viz.classList.contains("chart-viz")) clearActive(viz);
+  });
+  root.addEventListener("keydown", (e: KeyboardEvent) => {
+    const viz = e.target;
+    if (!(viz instanceof HTMLElement) || !viz.classList.contains("chart-viz")) return;
+    const cur = vizIndex.get(viz) ?? 0;
+    const count = navMarks(viz).length;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = cur + 1;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = cur - 1;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = count - 1;
+    else if (e.key === "Escape") {
+      clearActive(viz);
+      return;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    activateMark(viz, next);
+  });
+  // Page scroll moves marks out from under a fixed tooltip; inner scrollers
+  // (the live chat feed scrolls constantly) must not dismiss it.
+  window.addEventListener(
+    "scroll",
+    (e) => {
+      if (e.target === document && performance.now() > tipScrollGraceUntil) hideTip();
+    },
+    { passive: true, capture: true },
+  );
+  window.addEventListener("blur", hideTip);
+}
+
+// ---------------------------------------------------------------------------
+// Per-probe failure. The server's error frames carry no probe id, but a batch
+// is bracketed by proc frames that list its probes: any probe in the batch that
+// produced no result before the batch ended failed. The card shows it inline
+// (on top of the toast) until its next successful result.
+// ---------------------------------------------------------------------------
+
+const batchPending = new Set<string>();
+let batchCancelled = false;
+
+function setCardError(probeId: string, message: string | null): void {
+  const card = document.querySelector<HTMLDivElement>(
+    `.result-card[data-probe-id="${CSS.escape(probeId)}"]`,
+  );
+  const box = card?.querySelector<HTMLDivElement>(".card-error");
+  if (!box) return;
+  box.classList.toggle("hidden", message === null);
+  const text = box.querySelector<HTMLElement>(".card-error-text");
+  if (text) text.textContent = message ?? "";
+}
+
+function trackBatch(msg: ProcMsg): void {
+  if (msg.active) {
+    batchPending.clear();
+    batchCancelled = false;
+    for (const id of msg.probe_ids ?? []) batchPending.add(id);
+    return;
+  }
+  if (!batchCancelled) {
+    for (const id of msg.probe_ids ?? []) {
+      if (batchPending.has(id)) {
+        setCardError(id, "The last analysis failed. This probe will run again on the next pass.");
+      }
+    }
+  }
+  batchPending.clear();
+  batchCancelled = false;
 }
 
 /** Mirror probeState onto the cards: create/update/remove (A4). */
@@ -2483,12 +3144,15 @@ function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTML
   name.type = "text";
   name.value = cat;
   name.placeholder = "category";
+  name.setAttribute("aria-label", "Category name");
+  color.setAttribute("aria-label", `Colour for ${cat || "new category"}`);
 
   const up = document.createElement("button");
   up.className = "cat-up btn-secondary btn-small";
   up.type = "button";
   up.textContent = "↑";
   up.title = "Move up";
+  up.setAttribute("aria-label", "Move category up");
   up.addEventListener("click", () => {
     const prev = row.previousElementSibling;
     // Don't hop over the trailing "+ Add category" button (a non-row sibling).
@@ -2500,6 +3164,7 @@ function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTML
   down.type = "button";
   down.textContent = "↓";
   down.title = "Move down";
+  down.setAttribute("aria-label", "Move category down");
   down.addEventListener("click", () => {
     const next = row.nextElementSibling;
     if (next && next.classList.contains("edit-cat-row")) row.parentElement?.insertBefore(next, row);
@@ -2510,6 +3175,7 @@ function buildEditCatRow(probeId: string, cat: string, orderIndex: number): HTML
   del.type = "button";
   del.textContent = "✕";
   del.title = "Delete category";
+  del.setAttribute("aria-label", "Delete category");
   del.addEventListener("click", () => row.remove());
 
   row.appendChild(color);
@@ -2546,7 +3212,7 @@ function openEditor(probeId: string): void {
       editCats.classList.remove("hidden");
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = "Edite as colunas e linhas direto no gráfico do card.";
+      hint.textContent = "Edit columns and rows directly on the card's grid.";
       editCats.appendChild(hint);
 
       const axisRow = document.createElement("div");
@@ -2554,12 +3220,14 @@ function openEditor(probeId: string): void {
       const xLabelInput = document.createElement("input");
       xLabelInput.className = "edit-xlabel";
       xLabelInput.type = "text";
-      xLabelInput.placeholder = "Eixo X representa";
+      xLabelInput.placeholder = "What the X axis represents";
+      xLabelInput.setAttribute("aria-label", "X axis title");
       xLabelInput.value = probe?.x_label ?? "";
       const yLabelInput = document.createElement("input");
       yLabelInput.className = "edit-ylabel";
       yLabelInput.type = "text";
-      yLabelInput.placeholder = "Eixo Y representa";
+      yLabelInput.placeholder = "What the Y axis represents";
+      yLabelInput.setAttribute("aria-label", "Y axis title");
       yLabelInput.value = probe?.y_label ?? "";
       axisRow.appendChild(xLabelInput);
       axisRow.appendChild(yLabelInput);
@@ -2568,7 +3236,7 @@ function openEditor(probeId: string): void {
       const decimalsField = document.createElement("label");
       decimalsField.className = "edit-setting";
       const decimalsSpan = document.createElement("span");
-      decimalsSpan.textContent = "Casas decimais (%)";
+      decimalsSpan.textContent = "Decimal places (%)";
       const decimalsInput = document.createElement("input");
       decimalsInput.className = "edit-decimals";
       decimalsInput.type = "number";
@@ -2725,7 +3393,12 @@ function saveEditor(probeId: string): void {
 function closeEditor(probeId: string): void {
   const card = ensureCard(probeId);
   const editor = card.querySelector<HTMLDivElement>(".card-editor");
-  if (editor) editor.classList.add("hidden");
+  if (!editor) return;
+  // Hiding the editor would drop keyboard focus to <body>: hand it back to the
+  // card's menu button when focus was inside the editor.
+  const hadFocus = editor.contains(document.activeElement);
+  editor.classList.add("hidden");
+  if (hadFocus) card.querySelector<HTMLElement>(".card-menu-btn")?.focus();
 }
 
 // ---------------------------------------------------------------------------
@@ -2760,9 +3433,9 @@ function upsertResultCard(msg: ResultMsg): void {
   // The card may pre-exist (from state) or be created here (result-first).
   const card = ensureCard(msg.probe_id);
 
-  // Drop the "Waiting for first result…" placeholder on the first real frame.
-  const placeholder = card.querySelector(".result-display .empty-hint");
-  if (placeholder) placeholder.remove();
+  // This probe answered: it did not fail this batch, and any inline error is stale.
+  batchPending.delete(msg.probe_id);
+  setCardError(msg.probe_id, null);
 
   // The kind comes from state when known; fall back to the frame's kind so a
   // result that arrives before its state still renders correctly.
@@ -2770,7 +3443,7 @@ function upsertResultCard(msg: ResultMsg): void {
   card.dataset["kind"] = kind;
   // Make sure the chart-select is visible for classification even before state.
   const select = card.querySelector<HTMLSelectElement>(".chart-select");
-  if (select) select.classList.toggle("hidden", kind !== "classification");
+  setChartSelectHidden(card, kind !== "classification");
 
   // If pinned to latest, jump the view to the newest snapshot.
   if (view.live) view.index = history.length - 1;
@@ -3253,6 +3926,7 @@ function connectDashboard(): void {
       case "proc":
         setProc(msg.active, msg.latency_ms, msg.avg_latency_ms);
         setAnalyzingProbes(msg.probe_ids ?? [], msg.active);
+        trackBatch(msg);
         break;
       case "cost":
         handleCost(msg);
@@ -3481,6 +4155,7 @@ function wireButtons(): void {
   el("force-run").addEventListener("click", () => send({ op: "force_run" }));
   el("stop-batch").addEventListener("click", () => {
     send({ op: "stop_batch" });
+    batchCancelled = true;
     showToast("Análise interrompida.", "info");
   });
 
@@ -4038,11 +4713,14 @@ function wireChatRail(): void {
 // Home/End, Esc closes and returns focus, click outside closes.
 // ---------------------------------------------------------------------------
 
-function wireMenu(btn: HTMLButtonElement, menu: HTMLElement): void {
+function wireMenu(btn: HTMLButtonElement, menu: HTMLElement, beforeOpen?: () => void): void {
   const items = (): HTMLElement[] =>
-    Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+    Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).filter(
+      (item) => !item.classList.contains("hidden"),
+    );
   const isOpen = (): boolean => !menu.classList.contains("hidden");
   const open = (focusIndex: number): void => {
+    beforeOpen?.();
     menu.classList.remove("hidden");
     btn.setAttribute("aria-expanded", "true");
     const list = items();
@@ -4087,11 +4765,24 @@ function wireMenu(btn: HTMLButtonElement, menu: HTMLElement): void {
       close(false);
     }
   });
-  menu.addEventListener("click", () => close(false));
-  document.addEventListener("click", (e) => {
+  // After an item runs: hand focus back to the trigger, unless the action moved
+  // it somewhere meaningful (e.g. into an editor field).
+  menu.addEventListener("click", (e) => {
+    if (!(e.target as Element).closest('[role="menuitem"]')) return;
+    // Safari does not focus a button on mouse click: treat <body> as "unmoved" too.
+    const a = document.activeElement;
+    close(!a || a === document.body || menu.contains(a));
+  });
+  const outside = (e: MouseEvent): void => {
+    // A removed card takes its menu with it: drop the listener too.
+    if (!btn.isConnected) {
+      document.removeEventListener("click", outside);
+      return;
+    }
     const target = e.target as Node;
     if (isOpen() && !menu.contains(target) && !btn.contains(target)) close(false);
-  });
+  };
+  document.addEventListener("click", outside);
 }
 
 /** Copy buttons wired by attribute: <button data-copy-target="elementId">. */
@@ -4109,7 +4800,21 @@ function wireCopyButtons(): void {
   });
 }
 
+/** The KPI strip is a keyboard stop only while it actually scrolls (WCAG 2.1.1 for scrollers). */
+function wireKpiStrip(): void {
+  const strip = document.querySelector<HTMLElement>(".kpi-strip");
+  if (!strip) return;
+  const sync = (): void => {
+    if (strip.scrollWidth > strip.clientWidth + 1) strip.setAttribute("tabindex", "0");
+    else strip.removeAttribute("tabindex");
+  };
+  new ResizeObserver(sync).observe(strip);
+  Array.from(strip.children).forEach((c) => new ResizeObserver(sync).observe(c));
+  sync();
+}
+
 function wireShell(): void {
+  wireKpiStrip();
   wireSettingsDrawer();
   wireChatRail();
   wireMenu(el<HTMLButtonElement>("export-menu-btn"), el<HTMLElement>("export-menu"));
@@ -4128,6 +4833,7 @@ wireButtons();
 wireFeed();
 wireShell();
 wireCardDragAndDrop();
+wireChartTips();
 connectDashboard();
 connectControl();
 loadSnippet();

@@ -29,7 +29,7 @@
           <span id="paused-badge" class="paused-badge hidden"><span class="icon" data-icon="pause" aria-hidden="true"></span><span>Paused</span></span>
         </button>
 
-        <div class="kpi-strip" role="group" aria-label="Session status and metrics" tabindex="0">
+        <div class="kpi-strip" role="group" aria-label="Session status and metrics">
           <span id="status" class="status disconnected">Disconnected</span>
           <div class="stat">
             <span class="stat-label">Messages</span>
@@ -104,27 +104,8 @@
       </section>
 
       <div class="workspace">
-        <!-- Live chat rail: sticky column at 1200px and up, collapsible panel below it. -->
-        <section id="chat-rail" class="chat-rail" aria-labelledby="chat-title">
-          <div class="chat-head">
-            <h2 id="chat-title">Live chat</h2>
-            <span id="chat-count" class="chat-count">0 msgs</span>
-            <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
-            <button type="button" id="chat-toggle" class="chat-toggle" aria-expanded="false" aria-controls="chat-body"><span class="chat-toggle-label">Show</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
-          </div>
-          <div id="chat-body" class="chat-body">
-            <div class="feed-wrap">
-              <div id="feed" role="region" aria-label="Chat messages" tabindex="0"><div class="empty-hint feed-empty">
-                <span class="empty-icon" data-icon="chat-circle-text" aria-hidden="true"></span>
-                <strong>Waiting for chat messages</strong>
-                <span>Start the capture on the chat popout and lines show up here.</span>
-                <button type="button" id="open-capture" class="btn-secondary btn-small">Open capture settings</button>
-              </div></div>
-              <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
-            </div>
-          </div>
-        </section>
-
+        <!-- DOM order: probes first, then the rail (the rail sits to the right at 1200px and up,
+             so keyboard order follows the visual order). -->
         <section class="results-panel" aria-labelledby="results-title">
           <div class="results-head">
             <div class="results-title">
@@ -145,6 +126,27 @@
           </div>
           <div id="results" class="results-list">
             <p class="empty-hint">Connecting to the live session</p>
+          </div>
+        </section>
+
+        <!-- Live chat rail: sticky column at 1200px and up, collapsible panel below it. -->
+        <section id="chat-rail" class="chat-rail" aria-labelledby="chat-title">
+          <div class="chat-head">
+            <h2 id="chat-title">Live chat</h2>
+            <span id="chat-count" class="chat-count">0 msgs</span>
+            <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
+            <button type="button" id="chat-toggle" class="chat-toggle" aria-expanded="false" aria-controls="chat-body"><span class="chat-toggle-label">Show</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+          </div>
+          <div id="chat-body" class="chat-body">
+            <div class="feed-wrap">
+              <div id="feed" role="region" aria-label="Chat messages" tabindex="0"><div class="empty-hint feed-empty">
+                <span class="empty-icon" data-icon="chat-circle-text" aria-hidden="true"></span>
+                <strong>Waiting for chat messages</strong>
+                <span>Start the capture on the chat popout and lines show up here.</span>
+                <button type="button" id="open-capture" class="btn-secondary btn-small">Open capture settings</button>
+              </div></div>
+              <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
+            </div>
           </div>
         </section>
       </div>
