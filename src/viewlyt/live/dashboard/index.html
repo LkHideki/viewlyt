@@ -3,240 +3,298 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>viewlyt.live — Control Panel</title>
+    <title>viewlyt.live Control Panel</title>
+    <meta name="color-scheme" content="light dark" />
+    <!-- Apply a stored theme before first paint so a Light/Dark choice never flashes. -->
+    <script>
+      try {
+        var t = localStorage.getItem("viewlyt.theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header>
-      <div class="brand">
-        <div class="brand-row">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
           <h1>viewlyt<span id="brand-accent" class="accent">.live</span></h1>
           <span id="spinner" class="spinner hidden" aria-hidden="true"></span>
         </div>
-        <span id="paused-badge" class="paused-badge hidden">Paused</span>
-      </div>
-      <div class="top-stats">
-        <div class="stat">
-          <span class="stat-label">Ingested</span>
-          <span id="ingested" class="stat-value">0</span>
+
+        <button type="button" id="global-pause" class="global-pause run-toggle" title="Pause analysis" aria-label="Live, pause analysis" aria-pressed="false">
+          <span class="run-live"><span class="live-dot" aria-hidden="true"></span><span>Live</span></span>
+          <span id="paused-badge" class="paused-badge hidden"><span class="icon" data-icon="pause" aria-hidden="true"></span><span>Paused</span></span>
+        </button>
+
+        <div class="kpi-strip" role="group" aria-label="Session status and metrics" tabindex="0">
+          <span id="status" class="status disconnected">Disconnected</span>
+          <div class="stat">
+            <span class="stat-label">Messages</span>
+            <span id="ingested" class="stat-value">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Buffer</span>
+            <span id="buffer" class="stat-value">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">LLM</span>
+            <span id="proc" class="stat-value">idle</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Latency</span>
+            <span id="avg-latency" class="stat-value">n/a</span>
+          </div>
+          <div class="stat stat-cost">
+            <span class="stat-label">Cost</span>
+            <span class="stat-line">
+              <span id="cost" class="stat-value">$0.0000</span>
+              <span id="cost-delta" class="hint"></span>
+            </span>
+            <span id="budget-meter" class="meter hidden" role="meter" aria-label="Budget used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-level="ok"><span class="meter-fill"></span></span>
+          </div>
+          <span id="budget-flag" class="budget-flag hidden" title="The spending budget was reached and analyses are paused. Raise the budget in Settings, Model, or reset.">Budget cap reached</span>
+          <select id="language" aria-label="Analysis language" title="Language of the LLM analyses">
+            <option value="Portuguese (Brazil)">Português (BR)</option>
+            <option value="English">English</option>
+            <option value="Spanish">Español</option>
+            <option value="French">Français</option>
+            <option value="German">Deutsch</option>
+            <option value="Italian">Italiano</option>
+            <option value="Japanese">日本語</option>
+          </select>
         </div>
-        <div class="stat">
-          <span class="stat-label">Buffer</span>
-          <span id="buffer" class="stat-value">0</span>
+
+        <div class="topbar-actions">
+          <button type="button" id="theme-toggle" class="icon-btn" aria-label="Theme: System. Switch to Light" title="Theme: System. Click for Light">
+            <span class="icon" data-icon="desktop" aria-hidden="true"></span>
+          </button>
+          <button type="button" id="settings-open" class="icon-btn" aria-haspopup="dialog" aria-label="Settings" title="Settings">
+            <span class="icon" data-icon="gear" aria-hidden="true"></span>
+          </button>
         </div>
-        <div class="stat">
-          <span class="stat-label">LLM</span>
-          <span id="proc" class="stat-value">idle</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Avg time</span>
-          <span id="avg-latency" class="stat-value">—</span>
-        </div>
-        <div class="stat">
-          <span class="stat-label">Cost</span>
-          <span id="cost" class="stat-value">$0.0000</span>
-          <span id="cost-delta" class="hint"></span>
-        </div>
-      </div>
-      <div class="top-right">
-        <button type="button" id="global-pause" class="global-pause" title="Pause all analysis" aria-pressed="false">⏸</button>
-        <span id="budget-flag" class="budget-flag hidden" title="The spending budget was reached — analyses are paused. Raise the budget in Configs → Model, or reset.">budget cap reached</span>
-        <span id="status" class="status disconnected">Disconnected</span>
-        <select id="language" title="Language of the LLM analyses">
-          <option value="Portuguese (Brazil)">Português (BR)</option>
-          <option value="English">English</option>
-          <option value="Spanish">Español</option>
-          <option value="French">Français</option>
-          <option value="German">Deutsch</option>
-          <option value="Italian">Italiano</option>
-          <option value="Japanese">日本語</option>
-        </select>
       </div>
     </header>
 
-    <main>
-
-      <!-- Quick ask-bar — always-visible probe composer -->
-      <section class="ask-bar">
-        <div class="ask-chips">
-          <button type="button" id="ask-auto" class="ask-chip ask-chip-active">Auto</button>
-          <button type="button" id="ask-open" class="ask-chip">Open</button>
-          <button type="button" id="ask-classify" class="ask-chip">Classify</button>
-        </div>
-        <input type="text" id="ask-text" placeholder="Ask the audience… the system auto-picks kind, chart &amp; categories" autocomplete="off" />
-        <input type="text" id="ask-categories" class="hidden" placeholder="categories (CSV) — for Classify" autocomplete="off" />
-        <button type="button" id="ask-suggest" class="btn-secondary ask-suggest-btn">Suggest</button>
-        <button type="button" id="ask-split" class="btn-secondary ask-suggest-btn" title="Decompose a broad theme (e.g. 'technical problems') into elementary probes you confirm one by one">Split</button>
-        <button type="button" id="ask-send" class="btn-primary ask-send-btn">Add</button>
-      </section>
-      <div id="suggestions"></div>
-      <p class="hint" style="margin:-0.4rem 0 var(--gap)">The ask-bar rewrites your question into a probe that analyzes the entire sample. <strong>Split</strong> breaks a broad theme into elementary probes (quantify + explain) offered as chips. Use <strong>Add Probe</strong> below for an exact, manual probe.</p>
-
-      <!-- Live results — the visual star, always visible at the top.
-           Two columns: results (wide) on the left, live chat on the right. -->
-      <section class="panel full-width results-star">
-        <div class="results-cols">
-          <div class="results-col results-col-main">
-            <div class="results-head">
-              <h2>Live Results</h2>
-              <div class="results-head-actions">
-                <a href="/export.json" class="btn-secondary btn-small btn-link" download title="Download every probe's snapshot history as JSON">Export JSON</a>
-                <a href="/export.csv" class="btn-secondary btn-small btn-link" download title="Download the snapshot history flattened as CSV">Export CSV</a>
-                <button type="button" id="force-run" class="btn-secondary btn-small">Analyze now</button>
-                <button type="button" id="stop-batch" class="btn-danger btn-small" disabled title="Immediately cancels the in-flight LLM batch">Stop</button>
-              </div>
-            </div>
-            <div id="results" class="results-list">
-              <p class="empty-hint">Waiting for results…</p>
-            </div>
+    <main id="main" class="app">
+      <!-- Composer: the always-visible probe ask bar -->
+      <section class="composer" aria-label="Ask the chat">
+        <div class="composer-row">
+          <div class="seg" role="group" aria-label="Probe kind">
+            <span class="seg-thumb" aria-hidden="true"></span>
+            <button type="button" id="ask-auto" class="ask-chip ask-chip-active" aria-pressed="true">Auto</button>
+            <button type="button" id="ask-open" class="ask-chip" aria-pressed="false">Open</button>
+            <button type="button" id="ask-classify" class="ask-chip" aria-pressed="false">Classify</button>
           </div>
-          <div class="results-col results-col-chat">
-            <div class="chat-head">
-              <h2>Live Chat <span class="hint">— raw feed from the popout (proves the bridge)</span></h2>
-              <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
-            </div>
+          <div class="composer-field">
+            <label for="ask-text" class="sr-only">Ask the chat</label>
+            <input type="text" id="ask-text" placeholder="Ask the chat anything, e.g. how is the crowd feeling?" autocomplete="off" />
+            <input type="text" id="ask-categories" class="hidden" aria-label="Categories, comma separated" placeholder="Categories, comma separated" autocomplete="off" />
+          </div>
+          <div class="composer-actions">
+            <button type="button" id="ask-suggest" class="btn-secondary ask-suggest-btn"><span class="icon" data-icon="sparkle" aria-hidden="true"></span><span class="btn-label">Suggest</span></button>
+            <button type="button" id="ask-split" class="btn-secondary ask-suggest-btn" title="Break a broad theme (e.g. technical problems) into elementary probes you confirm one by one"><span class="icon" data-icon="git-fork" aria-hidden="true"></span><span class="btn-label">Split</span></button>
+            <button type="button" id="ask-send" class="btn-primary ask-send-btn"><span class="icon" data-icon="plus" aria-hidden="true"></span><span class="btn-label">Add</span></button>
+          </div>
+        </div>
+        <p class="composer-hint">Auto picks the probe kind, chart and categories. Split breaks a broad theme into probes you confirm. Need exact control? Add a probe by hand in Settings.</p>
+        <div id="suggestions"></div>
+      </section>
+
+      <div class="workspace">
+        <!-- Live chat rail: sticky column at 1200px and up, collapsible panel below it. -->
+        <section id="chat-rail" class="chat-rail" aria-labelledby="chat-title">
+          <div class="chat-head">
+            <h2 id="chat-title">Live chat</h2>
+            <span id="chat-count" class="chat-count">0 msgs</span>
+            <button type="button" id="feed-order" class="feed-order-btn" aria-pressed="false" title="Newest messages appear at the bottom (stack grows up). Click for newest at the top.">Newest <span class="feed-order-arrow">↓</span></button>
+            <button type="button" id="chat-toggle" class="chat-toggle" aria-expanded="false" aria-controls="chat-body"><span class="chat-toggle-label">Show</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+          </div>
+          <div id="chat-body" class="chat-body">
             <div class="feed-wrap">
-              <div id="feed"><p class="empty-hint">No messages yet — start the capture on the chat popout (see the Capture panel below).</p></div>
+              <div id="feed" role="region" aria-label="Chat messages" tabindex="0"><div class="empty-hint feed-empty">
+                <span class="empty-icon" data-icon="chat-circle-text" aria-hidden="true"></span>
+                <strong>Waiting for chat messages</strong>
+                <span>Start the capture on the chat popout and lines show up here.</span>
+                <button type="button" id="open-capture" class="btn-secondary btn-small">Open capture settings</button>
+              </div></div>
               <button type="button" id="feed-jump" class="feed-jump hidden">↓ 0 new</button>
             </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Group: Configs -->
-      <section class="group" id="group-configs">
-        <button type="button" class="group-header">Configs <span class="caret">&#x25be;</span></button>
-        <div class="group-body">
-          <div class="panels">
-            <!-- Window controls -->
-            <section class="panel">
-              <h2>Window</h2>
-              <div class="field-group">
-                <label for="n">Sample (comments)</label>
-                <input type="number" id="n" min="1" value="230" />
-              </div>
-              <div class="field-group">
-                <label for="gap">Refresh (s)</label>
-                <input type="number" id="gap" min="0" step="0.5" value="45" />
-              </div>
-              <div class="field-group">
-                <label for="capacity">Buffer (max)</label>
-                <input type="number" id="capacity" min="100" value="3000" />
-              </div>
-              <div class="field-group">
-                <label for="mode">Mode</label>
-                <select id="mode">
-                  <option value="count">count</option>
-                  <option value="time">time</option>
-                  <option value="hybrid" selected>hybrid</option>
-                </select>
-              </div>
-              <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
-                <input type="checkbox" id="dedupe" checked />
-                <label for="dedupe" style="margin:0">Drop spam duplicates</label>
-              </div>
-              <div class="field-group" style="flex-direction:row;align-items:center;gap:8px">
-                <input type="checkbox" id="merge_authors" checked />
-                <label for="merge_authors" style="margin:0">Merge same author</label>
-              </div>
-              <div class="button-row">
-                <button id="apply-window" class="btn-primary">Apply</button>
-                <button id="pause" class="btn-secondary">Pause</button>
-                <button id="resume" class="btn-secondary">Resume</button>
-                <button id="clear" class="btn-danger">Clear</button>
-              </div>
-            </section>
-
-            <!-- Model controls -->
-            <section class="panel">
-              <h2>Model</h2>
-              <div class="field-group">
-                <label for="provider">Provider</label>
-                <select id="provider">
-                  <option value="openrouter" selected>OpenRouter</option>
-                  <option value="lmstudio">LM Studio</option>
-                  <option value="ollama">Ollama</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="groq">Groq</option>
-                </select>
-              </div>
-              <div class="field-group">
-                <label for="base_url">Base URL</label>
-                <input type="text" id="base_url" value="https://openrouter.ai/api/v1" />
-              </div>
-              <div class="field-group">
-                <label for="api_key">API Key <span class="hint">(leave blank to keep current)</span></label>
-                <div style="flex-direction:row;align-items:center;gap:8px;display:flex">
-                  <input type="password" id="api_key" placeholder="sk-or-..." style="flex:1" />
-                  <button type="button" id="toggle-key" class="btn-secondary">show</button>
+        <section class="results-panel" aria-labelledby="results-title">
+          <div class="results-head">
+            <div class="results-title">
+              <h2 id="results-title">Probes</h2>
+              <span id="probe-count" class="count-pill" aria-live="polite">0 probes</span>
+            </div>
+            <div class="results-head-actions">
+              <button type="button" id="force-run" class="btn-secondary btn-small"><span class="icon" data-icon="lightning" aria-hidden="true"></span><span class="btn-label">Analyze now</span></button>
+              <button type="button" id="stop-batch" class="btn-danger btn-small" disabled title="Immediately cancels the in-flight LLM batch"><span class="icon" data-icon="stop" aria-hidden="true"></span><span class="btn-label">Stop</span></button>
+              <div class="menu-wrap">
+                <button type="button" id="export-menu-btn" class="btn-secondary btn-small" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu"><span class="icon" data-icon="download-simple" aria-hidden="true"></span><span class="btn-label">Export</span><span class="icon" data-icon="caret-down" aria-hidden="true"></span></button>
+                <div id="export-menu" class="menu hidden" role="menu" aria-label="Export">
+                  <a role="menuitem" tabindex="-1" href="/export.json" download title="Download every probe's snapshot history as JSON">JSON</a>
+                  <a role="menuitem" tabindex="-1" href="/export.csv" download title="Download the snapshot history flattened as CSV">CSV</a>
                 </div>
               </div>
-              <div class="field-group">
-                <label for="model">Model ID</label>
-                <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
-              </div>
-              <div class="field-group">
-                <label for="decider_model">Decider model <span class="hint">(optional; classifies messages instead of the chat model — blank = off)</span></label>
-                <input type="text" id="decider_model" placeholder="perplexity/pplx-decider-flash-v1.2" />
-              </div>
-              <div class="field-group">
-                <label for="budget">Budget USD <span class="hint">(0 = off; pauses analyses when reached)</span></label>
-                <input type="number" id="budget" min="0" step="0.01" value="0" />
-              </div>
-              <div class="button-row">
-                <button id="apply-model" class="btn-primary">Apply</button>
-              </div>
-              <div class="button-row reset-row">
-                <button id="reset-state" class="btn-danger btn-small">Reset / forget saved</button>
-              </div>
-            </section>
+            </div>
           </div>
-        </div>
-      </section>
+          <div id="results" class="results-list">
+            <p class="empty-hint">Connecting to the live session</p>
+          </div>
+        </section>
+      </div>
+    </main>
 
-      <!-- Group: Probes -->
-      <section class="group" id="group-probes">
-        <button type="button" class="group-header">Probes <span class="caret">&#x25be;</span></button>
-        <div class="group-body">
-          <!-- Add probe -->
-          <section class="panel full-width">
-            <h2>Add Probe</h2>
-            <div class="field-group">
-              <label for="probe-kind">Kind</label>
-              <select id="probe-kind">
-                <option value="open">open</option>
-                <option value="classification">classification</option>
-              </select>
+    <!-- Settings drawer: Window, Model, Probes, Capture -->
+    <dialog id="settings-drawer" class="drawer" aria-labelledby="settings-title">
+      <div class="drawer-head">
+        <h2 id="settings-title">Settings</h2>
+        <button type="button" id="settings-close" class="icon-btn" aria-label="Close settings" title="Close settings"><span class="icon" data-icon="x" aria-hidden="true"></span></button>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Settings sections">
+        <button type="button" role="tab" id="tab-window" class="tab" aria-controls="panel-window" aria-selected="true" data-tab="window">Window</button>
+        <button type="button" role="tab" id="tab-model" class="tab" aria-controls="panel-model" aria-selected="false" tabindex="-1" data-tab="model">Model</button>
+        <button type="button" role="tab" id="tab-probes" class="tab" aria-controls="panel-probes" aria-selected="false" tabindex="-1" data-tab="probes">Probes</button>
+        <button type="button" role="tab" id="tab-capture" class="tab" aria-controls="panel-capture" aria-selected="false" tabindex="-1" data-tab="capture">Capture</button>
+      </div>
+      <div class="drawer-body">
+        <!-- Window controls -->
+        <section id="panel-window" class="tabpanel" role="tabpanel" aria-labelledby="tab-window" tabindex="0">
+          <div class="field">
+            <label for="n">Sample (comments)</label>
+            <input type="number" id="n" min="1" value="230" />
+            <p class="help">How many of the latest comments each analysis reads.</p>
+          </div>
+          <div class="field">
+            <label for="gap">Refresh (s)</label>
+            <input type="number" id="gap" min="0" step="0.5" value="45" />
+            <p class="help">Seconds between automatic analysis runs.</p>
+          </div>
+          <div class="field">
+            <label for="capacity">Buffer (max)</label>
+            <input type="number" id="capacity" min="100" value="3000" />
+            <p class="help">Oldest comments are dropped past this size.</p>
+          </div>
+          <div class="field">
+            <label for="mode">Mode</label>
+            <select id="mode">
+              <option value="count">count</option>
+              <option value="time">time</option>
+              <option value="hybrid" selected>hybrid</option>
+            </select>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="dedupe" checked />
+            <label for="dedupe">Drop spam duplicates</label>
+          </div>
+          <div class="check">
+            <input type="checkbox" id="merge_authors" checked />
+            <label for="merge_authors">Merge same author</label>
+          </div>
+          <div class="button-row">
+            <button type="button" id="apply-window" class="btn-primary">Apply</button>
+            <button type="button" id="pause" class="btn-secondary">Pause</button>
+            <button type="button" id="resume" class="btn-secondary">Resume</button>
+            <button type="button" id="clear" class="btn-danger">Clear</button>
+          </div>
+        </section>
+
+        <!-- Model controls -->
+        <section id="panel-model" class="tabpanel" role="tabpanel" aria-labelledby="tab-model" tabindex="0" hidden>
+          <div class="field">
+            <label for="provider">Provider</label>
+            <select id="provider">
+              <option value="openrouter" selected>OpenRouter</option>
+              <option value="lmstudio">LM Studio</option>
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI</option>
+              <option value="groq">Groq</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="base_url">Base URL</label>
+            <input type="text" id="base_url" value="https://openrouter.ai/api/v1" />
+          </div>
+          <div class="field">
+            <label for="api_key">API key</label>
+            <div class="input-group">
+              <input type="password" id="api_key" placeholder="sk-or-..." aria-describedby="api-key-help" />
+              <button type="button" id="toggle-key" class="btn-secondary" aria-controls="api_key"><span class="btn-label">show</span></button>
             </div>
-            <div class="field-group">
-              <label for="probe-label">Label</label>
-              <input type="text" id="probe-label" placeholder="e.g. Sentiment" />
+            <p class="help" id="api-key-help">Leave blank to keep the current key.</p>
+          </div>
+          <div class="field">
+            <label for="model">Model ID</label>
+            <input type="text" id="model" value="google/gemini-3.1-flash-lite" />
+          </div>
+          <div class="field">
+            <label for="decider_model">Decider model</label>
+            <input type="text" id="decider_model" placeholder="perplexity/pplx-decider-flash-v1.2" aria-describedby="decider-help" />
+            <p class="help" id="decider-help">Optional. Classifies messages instead of the chat model. Blank means off.</p>
+          </div>
+          <div class="field">
+            <label for="budget">Budget (USD)</label>
+            <input type="number" id="budget" min="0" step="0.01" value="0" aria-describedby="budget-help" />
+            <p class="help" id="budget-help">0 means off. Analyses pause when the budget is reached.</p>
+          </div>
+          <div class="button-row">
+            <button type="button" id="apply-model" class="btn-primary">Apply</button>
+          </div>
+          <div class="button-row reset-row">
+            <button type="button" id="reset-state" class="btn-danger btn-small">Reset / forget saved</button>
+          </div>
+        </section>
+
+        <!-- Probes: manual add + JSON import -->
+        <section id="panel-probes" class="tabpanel" role="tabpanel" aria-labelledby="tab-probes" tabindex="0" hidden>
+          <h3 class="panel-title">Add probe</h3>
+          <div class="field">
+            <label for="probe-kind">Kind</label>
+            <select id="probe-kind">
+              <option value="open">open</option>
+              <option value="classification">classification</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="probe-label">Label</label>
+            <input type="text" id="probe-label" placeholder="e.g. Sentiment" />
+          </div>
+          <!-- open-only fields -->
+          <div id="open-fields">
+            <div class="field">
+              <label for="probe-instruction">Instruction</label>
+              <textarea id="probe-instruction" rows="4" placeholder="Summarize the main themes."></textarea>
             </div>
-            <!-- open-only fields -->
-            <div id="open-fields">
-              <div class="field-group">
-                <label for="probe-instruction">Instruction</label>
-                <textarea id="probe-instruction" rows="4" placeholder="Summarize the main themes."></textarea>
-              </div>
+          </div>
+          <!-- classification-only fields -->
+          <div id="classification-fields" class="hidden">
+            <div class="field">
+              <label for="probe-question">Question</label>
+              <input type="text" id="probe-question" placeholder="What is the overall sentiment?" />
             </div>
-            <!-- classification-only fields -->
-            <div id="classification-fields" class="hidden">
-              <div class="field-group">
-                <label for="probe-question">Question</label>
-                <input type="text" id="probe-question" placeholder="What is the overall sentiment?" />
-              </div>
-              <div class="field-group">
-                <label for="probe-categories">Categories <span class="hint">(CSV)</span></label>
-                <input type="text" id="probe-categories" placeholder="positive, negative, neutral" />
-              </div>
+            <div class="field">
+              <label for="probe-categories">Categories</label>
+              <input type="text" id="probe-categories" placeholder="positive, negative, neutral" aria-describedby="probe-categories-help" />
+              <p class="help" id="probe-categories-help">Comma separated.</p>
             </div>
-            <div class="button-row">
-              <button id="add-probe" class="btn-primary">Add Probe</button>
+          </div>
+          <div class="button-row">
+            <button type="button" id="add-probe" class="btn-primary">Add Probe</button>
+          </div>
+
+          <h3 class="panel-title panel-title-spaced">Import JSON</h3>
+          <p class="help help-lead">An array or a single object. Missing label and kind are filled in.</p>
+          <div class="code-block">
+            <div class="code-head">
+              <span class="code-title" id="schema-title">Format reference</span>
+              <button type="button" class="btn-secondary btn-small" data-copy-target="schema"><span class="icon" data-icon="copy" aria-hidden="true"></span><span class="btn-label">Copy</span></button>
             </div>
-            <!-- Bulk import via JSON -->
-            <div class="field-group" style="margin-top:0.75rem">
-              <label for="probe-json">Import JSON <span class="hint">(array or single object; missing label/kind are filled in)</span></label>
-              <pre class="schema">Array of probe objects — each one of:
+            <pre class="schema" id="schema" role="region" tabindex="0" aria-labelledby="schema-title">Array of probe objects, each one of:
 
 open:
   { "kind": "open", "instruction": "Summarize the main themes.", "label"?: "Themes", "max_words"?: 60 }
@@ -247,71 +305,76 @@ classification:
     "label"?: "Sentiment", "chart"?: "bars|columns|stacked|donut|lines|area|delta|gauge|heatmap|podium|violin|descartes" }
 
 Notes:
-  • "label" is optional — auto-generated from the text when omitted.
-  • "kind" defaults to "open" when omitted.
-  • "chart" applies only to classification probes (twelve types: bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin, descartes).
-  • "descartes" plots a match-scoreline probe on a home×away Cartesian grid; its categories should be scorelines like "2x1", "1x0", "0x0" (picking it on an empty probe seeds a 0–3 grid for you).
-  • any probe may carry "interval_s" (own refresh cadence, s) and "sample_n" (own sample size); 0/omitted = follow the global Window config.</pre>
-              <div class="field-group" style="margin-top:0.5rem">
-                <label for="probe-json-file">Upload JSON file</label>
-                <input type="file" id="probe-json-file" accept=".json,application/json" />
-              </div>
-              <textarea id="probe-json" rows="3" placeholder="paste or upload a JSON array of probes"></textarea>
-            </div>
-            <div class="button-row">
-              <button id="import-json" class="btn-secondary">Import JSON</button>
-              <span id="import-json-status" class="hint"></span>
-            </div>
-          </section>
+  - "label" is optional and auto-generated from the text when omitted.
+  - "kind" defaults to "open" when omitted.
+  - "chart" applies only to classification probes (twelve types: bars, columns, stacked, donut, lines, area, delta, gauge, heatmap, podium, violin, descartes).
+  - "descartes" plots a match-scoreline probe on a home x away Cartesian grid; its categories should be scorelines like "2x1", "1x0", "0x0" (picking it on an empty probe seeds a 0 to 3 grid for you).
+  - any probe may carry "interval_s" (own refresh cadence, s) and "sample_n" (own sample size); 0 or omitted follows the global Window config.</pre>
+          </div>
+          <div class="field">
+            <label for="probe-json-file">Upload JSON file</label>
+            <input type="file" id="probe-json-file" accept=".json,application/json" />
+          </div>
+          <div class="field">
+            <label for="probe-json">JSON</label>
+            <textarea id="probe-json" rows="4" placeholder="Paste or upload a JSON array of probes"></textarea>
+          </div>
+          <div class="button-row">
+            <button type="button" id="import-json" class="btn-secondary">Import JSON</button>
+            <span id="import-json-status" class="hint" role="status"></span>
+          </div>
+        </section>
 
-        </div>
-      </section>
+        <!-- Capture: extension, bookmark, console snippet -->
+        <section id="panel-capture" class="tabpanel snippet-section" role="tabpanel" aria-labelledby="tab-capture" tabindex="0" hidden>
+          <h3 class="panel-title">Capture the chat</h3>
+          <p class="help help-lead">
+            Open the live chat <strong>popout</strong>
+            (<code>youtube.com/live_chat?is_popout=1&amp;v=&hellip;</code>) in its
+            own window, then start the capture there with <em>one</em> of the methods
+            below. A small <strong>viewlyt</strong> badge appears in the popout showing
+            connected, captured and sent counts.
+          </p>
 
-      <!-- Group: Capture -->
-      <section class="group" id="group-capture">
-        <button type="button" class="group-header">Capture <span class="caret">&#x25be;</span></button>
-        <div class="group-body">
-          <!-- Console snippet -->
-          <section class="panel full-width snippet-section">
-            <h2>Capture the chat</h2>
-            <p class="hint">
-              Open the live chat <strong>popout</strong>
-              (<code>youtube.com/live_chat?is_popout=1&amp;v=&hellip;</code>) in its
-              own window, then start the capture there with <em>one</em> of the two
-              methods below. A small <strong>viewlyt</strong> badge appears in the
-              popout showing connected / captured / sent counts.
-            </p>
-            <p class="hint">
-              <strong>Browser extension (works in Chrome and Vivaldi, set-and-forget):</strong>
-              <a id="ext-link" href="/viewlyt-extension.zip">Download viewlyt extension (.zip)</a>
-              &mdash; unzip it and load the folder via your browser&rsquo;s Extensions page
-              (Developer mode &rarr; Load unpacked). It auto-runs on every chat popout.
-            </p>
-            <p class="hint">
-              <strong>Bookmark &mdash; set up once, no extension</strong>
-              (bookmarklets are blocked in some browsers like Vivaldi &mdash; use the extension or console there):
-              right-click your bookmarks bar &rarr; <em>Add page&hellip;</em> (or open the
-              Bookmark Manager), name it <code>viewlyt</code>, and paste the code below as
-              its <strong>URL</strong>. Then, on the chat popout, click the
-              <code>viewlyt</code> bookmark.
-            </p>
+          <h4 class="step-title">Browser extension</h4>
+          <p class="help help-lead">
+            Works in Chrome and Vivaldi, set and forget.
+            <a id="ext-link" href="/viewlyt-extension.zip">Download the viewlyt extension (.zip)</a>,
+            unzip it and load the folder from your browser&rsquo;s Extensions page
+            (Developer mode, then Load unpacked). It runs on every chat popout.
+          </p>
+
+          <h4 class="step-title">Bookmark</h4>
+          <p class="help help-lead">
+            Set up once, no extension. Some browsers (Vivaldi) block bookmarklets, so use
+            the extension or the console there. Right-click your bookmarks bar, choose
+            <em>Add page&hellip;</em> (or open the Bookmark Manager), name it <code>viewlyt</code>
+            and paste the code below as its <strong>URL</strong>. Then click the
+            <code>viewlyt</code> bookmark on the chat popout.
+          </p>
+          <div class="code-block">
+            <div class="code-head">
+              <label class="code-title" for="bookmarklet">Bookmark code</label>
+              <button type="button" id="copy-bookmarklet" class="btn-secondary btn-small"><span class="icon" data-icon="copy" aria-hidden="true"></span><span class="btn-label">Copy bookmark code</span></button>
+            </div>
             <textarea id="bookmarklet" readonly rows="3" spellcheck="false"></textarea>
-            <div class="button-row">
-              <button id="copy-bookmarklet" class="btn-primary">Copy bookmark code</button>
+          </div>
+
+          <h4 class="step-title">Console</h4>
+          <p class="help help-lead">
+            On the popout, open DevTools (F12), go to Console, paste the snippet and press
+            Enter. If Chrome blocks the paste, type <code>allow pasting</code> there first.
+          </p>
+          <div class="code-block">
+            <div class="code-head">
+              <label class="code-title" for="snippet">Console snippet</label>
+              <button type="button" id="copy-snippet" class="btn-secondary btn-small"><span class="icon" data-icon="copy" aria-hidden="true"></span><span class="btn-label">Copy Snippet</span></button>
             </div>
-            <p class="hint">
-              <strong>Or paste in the console:</strong> on the popout, open DevTools
-              (F12) &rarr; Console, paste the snippet below, press Enter. If Chrome
-              blocks the paste, type <code>allow pasting</code> there first.
-            </p>
             <textarea id="snippet" readonly rows="6" spellcheck="false"></textarea>
-            <div class="button-row">
-              <button id="copy-snippet" class="btn-secondary">Copy Snippet</button>
-            </div>
-          </section>
-        </div>
-      </section>
-    </main>
+          </div>
+        </section>
+      </div>
+    </dialog>
 
     <!-- Stacking, auto-dismissing notifications (errors announce via role=alert) -->
     <div id="toasts" class="toasts"></div>

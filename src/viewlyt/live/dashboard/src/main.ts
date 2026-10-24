@@ -4,6 +4,72 @@
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 
+// Phosphor (MIT) regular-weight icons, imported raw so only these ship.
+import iconGear from "@phosphor-icons/core/assets/regular/gear.svg?raw";
+import iconSun from "@phosphor-icons/core/assets/regular/sun.svg?raw";
+import iconMoon from "@phosphor-icons/core/assets/regular/moon.svg?raw";
+import iconDesktop from "@phosphor-icons/core/assets/regular/desktop.svg?raw";
+import iconPause from "@phosphor-icons/core/assets/regular/pause.svg?raw";
+import iconSparkle from "@phosphor-icons/core/assets/regular/sparkle.svg?raw";
+import iconGitFork from "@phosphor-icons/core/assets/regular/git-fork.svg?raw";
+import iconPlus from "@phosphor-icons/core/assets/regular/plus.svg?raw";
+import iconCaretDown from "@phosphor-icons/core/assets/regular/caret-down.svg?raw";
+import iconLightning from "@phosphor-icons/core/assets/regular/lightning.svg?raw";
+import iconStop from "@phosphor-icons/core/assets/regular/stop.svg?raw";
+import iconDownload from "@phosphor-icons/core/assets/regular/download-simple.svg?raw";
+import iconX from "@phosphor-icons/core/assets/regular/x.svg?raw";
+import iconCopy from "@phosphor-icons/core/assets/regular/copy.svg?raw";
+import iconChat from "@phosphor-icons/core/assets/regular/chat-circle-text.svg?raw";
+import iconLightbulb from "@phosphor-icons/core/assets/regular/lightbulb.svg?raw";
+import iconCheckCircle from "@phosphor-icons/core/assets/regular/check-circle.svg?raw";
+import iconWarningCircle from "@phosphor-icons/core/assets/regular/warning-circle.svg?raw";
+import iconInfo from "@phosphor-icons/core/assets/regular/info.svg?raw";
+
+const ICONS: Record<string, string> = {
+  gear: iconGear,
+  sun: iconSun,
+  moon: iconMoon,
+  desktop: iconDesktop,
+  pause: iconPause,
+  sparkle: iconSparkle,
+  "git-fork": iconGitFork,
+  plus: iconPlus,
+  "caret-down": iconCaretDown,
+  lightning: iconLightning,
+  stop: iconStop,
+  "download-simple": iconDownload,
+  x: iconX,
+  copy: iconCopy,
+  "chat-circle-text": iconChat,
+  lightbulb: iconLightbulb,
+  "check-circle": iconCheckCircle,
+  "warning-circle": iconWarningCircle,
+  info: iconInfo,
+};
+
+/** Inline SVG markup for an icon (decorative: hidden from assistive tech). */
+function iconSvg(name: string): string {
+  const svg = ICONS[name] ?? "";
+  return svg.replace("<svg ", '<svg aria-hidden="true" focusable="false" ');
+}
+
+/** Fill every `[data-icon]` placeholder under `root` with its SVG. */
+function injectIcons(root: ParentNode = document): void {
+  root.querySelectorAll<HTMLElement>("[data-icon]").forEach((node) => {
+    const name = node.dataset["icon"];
+    if (name && !node.firstElementChild) node.innerHTML = iconSvg(name);
+  });
+}
+
+/** Set a button's visible label without touching its icon (.btn-label child). */
+function setBtnLabel(btn: HTMLElement, text: string): void {
+  (btn.querySelector<HTMLElement>(".btn-label") ?? btn).textContent = text;
+}
+
+function getBtnLabel(btn: HTMLElement): string {
+  return (btn.querySelector<HTMLElement>(".btn-label") ?? btn).textContent ?? "";
+}
+
 // ---------------------------------------------------------------------------
 // Provider table
 // ---------------------------------------------------------------------------
@@ -220,6 +286,8 @@ function setStatus(connected: boolean): void {
   const s = el<HTMLSpanElement>("status");
   s.textContent = connected ? "Connected" : "Disconnected";
   s.className = "status " + (connected ? "connected" : "disconnected");
+  // CSS hook: the Live dot only pulses while running AND connected.
+  document.body.dataset["connected"] = connected ? "1" : "0";
 }
 
 // ---------------------------------------------------------------------------
@@ -264,19 +332,82 @@ function renderMarkdown(src: string): string {
 // Result cards
 // ---------------------------------------------------------------------------
 
-const CATEGORY_COLORS = [
-  "#4c8bf5",
-  "#34a853",
-  "#fbbc04",
-  "#ea4335",
-  "#a142f4",
-  "#24c1e0",
-  "#ff6d00",
-  "#00bfa5",
-];
+// ---------------------------------------------------------------------------
+// Theme + data palette. Every colour lives in CSS custom properties (style.css
+// tokens, per theme). TS reads them back through getComputedStyle as #rrggbb
+// (the per-category edit <input type="color"> only accepts hex) and re-reads
+// them whenever the theme changes. Category colour follows the category's
+// INDEX in the probe's own list, fixed slot order, never cycled: slots 1-8 are
+// the validated palette, 9+ use the neutral "other" gray.
+// ---------------------------------------------------------------------------
+
+const SERIES_SLOTS = 8;
+const SEQ_STOPS = 9;
+let seriesColors: string[] = [];
+let seriesOther = "#808080";
+let seqColors: string[] = [];
+let chartAxisColor = "#808080";
+
+const HEX6 = /^#[0-9a-fA-F]{6}$/;
+
+function readToken(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return HEX6.test(v) ? v.toLowerCase() : fallback;
+}
+
+function readThemeColors(): void {
+  seriesColors = [];
+  for (let i = 1; i <= SERIES_SLOTS; i++) {
+    seriesColors.push(readToken(`--series-${i}`, "#3987e5"));
+  }
+  seriesOther = readToken("--series-other", "#808080");
+  seqColors = [];
+  for (let i = 0; i < SEQ_STOPS; i++) seqColors.push(readToken(`--seq-${i}`, "#3987e5"));
+  chartAxisColor = readToken("--chart-axis", "#808080");
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+function relLuminance(hex: string): number {
+  const lin = hexToRgb(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lin[0]! + 0.7152 * lin[1]! + 0.0722 * lin[2]!;
+}
+
+/** Sequential-ramp colour for t in [0, 1] (linear between the --seq-N stops). */
+function seqColor(t: number): string {
+  const stops = seqColors.length > 1 ? seqColors : ["#1f2a3a", "#6da7ec"];
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const a = hexToRgb(stops[i]!);
+  const b = hexToRgb(stops[i + 1]!);
+  const mix = (k: number): string =>
+    Math.round(a[k]! + (b[k]! - a[k]!) * f)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${mix(0)}${mix(1)}${mix(2)}`;
+}
+
+/** Legible ink for text drawn on `bg`: whichever of near-black / near-white contrasts more. */
+function inkOn(bg: string): string {
+  const L = relLuminance(bg);
+  const dark = (L + 0.05) / (relLuminance("#0b0b0b") + 0.05);
+  const light = (relLuminance("#fdfdfc") + 0.05) / (L + 0.05);
+  return dark >= light ? "#0b0b0b" : "#fdfdfc";
+}
 
 function getCategoryColor(index: number): string {
-  return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+  if (seriesColors.length === 0) readThemeColors();
+  return index < SERIES_SLOTS ? seriesColors[index]! : seriesOther;
 }
 
 /**
@@ -830,7 +961,7 @@ function renderGauge(views: CatView[], probeId: string): Element {
       class: "chart-gauge-track",
       d: arcPath(1),
       fill: "none",
-      stroke: "#2a2f3a",
+      stroke: chartAxisColor,
       "stroke-width": stroke,
       "stroke-linecap": "round",
     }),
@@ -1504,10 +1635,11 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
       cell.className = "descartes-cell";
       if (pct === undefined) {
         cell.classList.add("is-empty");
+        cell.setAttribute("role", "img");
         cell.setAttribute("aria-label", `${x}, ${y}: sem dados`);
       } else {
-        const alpha = 0.12 + 0.88 * (pct / maxPct);
-        cell.style.background = `rgba(76, 139, 245, ${alpha.toFixed(3)})`;
+        const cellFill = seqColor(pct / maxPct);
+        cell.style.background = cellFill;
         if (key === modalKey && modalPct > 0) cell.classList.add("is-modal");
         const abs = Math.round((pct / 100) * n);
         const value =
@@ -1522,10 +1654,12 @@ function renderDescartes(views: CatView[], probeId: string, n: number): HTMLElem
         if (hasValue) {
           const t = document.createElement("span");
           t.className = "descartes-pct";
+          t.style.color = inkOn(cellFill);
           t.textContent = value;
           cell.appendChild(t);
         }
         cell.title = `(${x}, ${y}) — ${value}`;
+        cell.setAttribute("role", "img");
         cell.setAttribute("aria-label", `${x}, ${y}: ${value}`);
       }
       plot.appendChild(cell);
@@ -1786,10 +1920,10 @@ function editorOpen(card: HTMLDivElement): boolean {
   return editor != null && !editor.classList.contains("hidden");
 }
 
-// Two 340px cards + the 0.75rem (12px) grid gap — mirrors the @container
-// (max-width: 691px) breakpoint in style.css that collapses "span 2" back to
+// Two 380px cards + the 16px grid gap: mirrors the @container
+// (max-width: 775px) breakpoint in style.css that collapses "span 2" back to
 // one column when the results column can't actually fit two side by side.
-const TWO_COL_MIN_WIDTH = 692;
+const TWO_COL_MIN_WIDTH = 776;
 
 // ---------------------------------------------------------------------------
 // Drag-and-drop card reordering (native HTML5 DnD). Only the small grip handle
@@ -1940,6 +2074,7 @@ function ensureCard(probeId: string): HTMLDivElement {
 
   const select = document.createElement("select");
   select.className = "chart-select";
+  select.setAttribute("aria-label", "Chart type");
   for (const t of CHART_TYPES) {
     const opt = document.createElement("option");
     opt.value = t;
@@ -2100,6 +2235,7 @@ function ensureCard(probeId: string): HTMLDivElement {
 
   const range = document.createElement("input");
   range.className = "scrub-range";
+  range.setAttribute("aria-label", "Snapshot history");
   range.type = "range";
   range.min = "0";
   range.max = "0";
@@ -2267,6 +2403,65 @@ function syncCardsFromState(): void {
       viewState.delete(pid);
     }
   });
+  const count = probeState.size;
+  const countEl = document.getElementById("probe-count");
+  if (countEl) countEl.textContent = `${count} ${count === 1 ? "probe" : "probes"}`;
+  renderResultsEmpty();
+}
+
+// ---------------------------------------------------------------------------
+// Empty state for the probes grid: a DIRECT child .empty-hint of #results (the
+// contract ensureCard relies on to drop it when the first card appears).
+// ---------------------------------------------------------------------------
+
+const EXAMPLE_PROMPTS = [
+  "How is the crowd feeling?",
+  "What are people complaining about?",
+  "Which player gets the most praise?",
+];
+
+function renderResultsEmpty(): void {
+  const container = el<HTMLDivElement>("results");
+  const hint = container.querySelector<HTMLElement>(":scope > .empty-hint");
+  if (container.querySelector(".result-card[data-probe-id]")) {
+    hint?.remove();
+    return;
+  }
+  if (hint?.classList.contains("empty-state")) return;
+  hint?.remove();
+
+  const box = document.createElement("div");
+  box.className = "empty-hint empty-state";
+  const icon = document.createElement("span");
+  icon.className = "empty-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = iconSvg("lightbulb");
+  const title = document.createElement("h3");
+  title.textContent = "Ask the chat anything";
+  const lead = document.createElement("p");
+  lead.textContent =
+    "Type a question above and viewlyt turns it into a live probe that reads the chat. Try one of these.";
+  const prompts = document.createElement("div");
+  prompts.className = "empty-prompts";
+  for (const text of EXAMPLE_PROMPTS) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "prompt-chip";
+    chip.textContent = text;
+    chip.addEventListener("click", () => {
+      const input = el<HTMLInputElement>("ask-text");
+      input.value = text;
+      input.focus();
+    });
+    prompts.appendChild(chip);
+  }
+  const manual = document.createElement("button");
+  manual.type = "button";
+  manual.className = "link-btn";
+  manual.textContent = "Add a probe manually";
+  manual.addEventListener("click", () => openSettings("probes", manual));
+  box.append(icon, title, lead, prompts, manual);
+  container.appendChild(box);
 }
 
 // ---------------------------------------------------------------------------
@@ -2623,15 +2818,22 @@ function showToast(message: string, kind: ToastKind = "info", ttlMs = 6000): voi
   toast.className = `toast toast-${kind}`;
   // "alert" announces assertively on insert; successes/infos stay polite.
   toast.setAttribute("role", kind === "error" ? "alert" : "status");
+  const toastIcon = document.createElement("span");
+  toastIcon.className = "icon toast-icon";
+  toastIcon.innerHTML = iconSvg(
+    kind === "error" ? "warning-circle" : kind === "success" ? "check-circle" : "info",
+  );
+  toast.appendChild(toastIcon);
   const text = document.createElement("span");
   text.className = "toast-text";
-  text.textContent = (kind === "error" ? "⚠ " : "") + message;
+  text.textContent = message;
   toast.appendChild(text);
   const close = document.createElement("button");
   close.type = "button";
   close.className = "toast-close";
-  close.textContent = "✕";
+  close.innerHTML = '<span class="icon">' + iconSvg("x") + "</span>";
   close.setAttribute("aria-label", "Dismiss notification");
+  close.title = "Dismiss";
   close.addEventListener("click", () => toast.remove());
   toast.appendChild(close);
   container.appendChild(toast);
@@ -2684,6 +2886,7 @@ function jumpFeedToEdge(): void {
 
 function makeFeedLine(author: string, text: string): HTMLDivElement {
   const line = document.createElement("div");
+  line.className = "feed-line";
   const a = document.createElement("span");
   a.className = "feed-author";
   a.textContent = author + ": ";
@@ -2806,24 +3009,28 @@ function setProc(active: boolean, latencyMs?: number | null, avgLatencyMs?: numb
   if (stopBtn) stopBtn.disabled = !active;
   if (active) {
     e.textContent = "analyzing…";
-    e.style.color = "#fbbf24";
+    e.classList.add("is-busy");
   } else {
     e.textContent = latencyMs != null ? `${latencyMs} ms` : "idle";
-    e.style.color = "";
+    e.classList.remove("is-busy");
   }
   const avgEl = document.getElementById("avg-latency");
   if (avgEl && avgLatencyMs != null) avgEl.textContent = `${avgLatencyMs} ms`;
 }
 
-/** Global pause/resume toggle: icon + title show the click's EFFECT (⏸ while
- *  running, ▶ while paused), mirroring the card-span toggle's convention. */
+/** Run-state pill: shows "Live" while running and "Paused" while paused, and
+ *  toggles global pause on click. aria-pressed carries the paused state (the
+ *  click handler reads it); the accessible name starts with the visible text
+ *  and names the click's EFFECT. */
 function setGlobalPause(paused: boolean): void {
   const btn = document.getElementById("global-pause") as HTMLButtonElement | null;
   if (!btn) return;
-  btn.textContent = paused ? "▶" : "⏸";
   btn.title = paused ? "Resume analysis" : "Pause analysis";
+  // Accessible name carries the visible text ("Live" / "Paused") plus the action.
+  btn.setAttribute("aria-label", paused ? "Paused, resume analysis" : "Live, pause analysis");
   btn.classList.toggle("is-paused", paused);
   btn.setAttribute("aria-pressed", String(paused));
+  btn.querySelector(".run-live")?.classList.toggle("hidden", paused);
   document.getElementById("brand-accent")?.classList.toggle("is-paused", paused);
   document.getElementById("paused-badge")?.classList.toggle("hidden", !paused);
 }
@@ -2881,6 +3088,33 @@ function handleCost(msg: CostMsg): void {
   }
 
   delta.textContent = signed(msg.cost_delta, (n) => "$" + n.toFixed(4));
+  updateBudgetMeter();
+}
+
+/** Thin budget meter under the Cost KPI: hidden without a budget; accent while
+ *  under 80%, warning from 80%, critical at 100%. */
+function updateBudgetMeter(): void {
+  const meter = document.getElementById("budget-meter");
+  if (!meter) return;
+  if (currentBudget <= 0) {
+    meter.classList.add("hidden");
+    return;
+  }
+  const spent = lastCost?.cost_total ?? 0;
+  const ratio = Math.min(1, Math.max(0, spent / currentBudget));
+  const pct = Math.round(ratio * 100);
+  meter.classList.remove("hidden");
+  meter.style.setProperty("--meter", String(ratio));
+  meter.setAttribute("aria-valuenow", String(pct));
+  meter.setAttribute("aria-valuetext", `${pct}% of the budget used`);
+  meter.dataset["level"] = ratio >= 1 ? "full" : ratio >= 0.8 ? "near" : "ok";
+}
+
+/** Messages KPI + the live-chat rail counter. */
+function setIngested(n: number): void {
+  el<HTMLSpanElement>("ingested").textContent = String(n);
+  const chat = document.getElementById("chat-count");
+  if (chat) chat.textContent = `${n} ${n === 1 ? "msg" : "msgs"}`;
 }
 
 function handleState(msg: StateMsg): void {
@@ -2907,6 +3141,7 @@ function handleState(msg: StateMsg): void {
   const budgetEl = document.getElementById("budget") as HTMLInputElement | null;
   if (budgetEl) budgetEl.value = String(currentBudget);
   if (lastCost) handleCost(lastCost);
+  updateBudgetMeter();
 
   // Analysis language (header selector)
   const langEl = document.getElementById("language") as HTMLSelectElement | null;
@@ -2925,7 +3160,7 @@ function handleState(msg: StateMsg): void {
 
   // Stats — honor the runtime flags so a dashboard connecting mid-analysis or
   // after spending shows the truth instead of "idle / $0".
-  el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
+  setIngested(msg.ingested);
   setProc(!!msg.processing, msg.latency_ms, msg.avg_latency_ms);
 
   // Budget stop is sticky state, not a transient error: show a persistent header
@@ -3000,7 +3235,7 @@ function connectDashboard(): void {
         upsertResultCard(msg);
         break;
       case "stat":
-        el<HTMLSpanElement>("ingested").textContent = String(msg.ingested);
+        setIngested(msg.ingested);
         el<HTMLSpanElement>("buffer").textContent = String(msg.buffer);
         break;
       case "error":
@@ -3089,7 +3324,7 @@ function setAskPending(pending: boolean): void {
   const btn = document.getElementById("ask-send") as HTMLButtonElement | null;
   if (btn) {
     btn.disabled = pending;
-    btn.textContent = pending ? "Rewriting…" : "Add";
+    setBtnLabel(btn, pending ? "Rewriting…" : "Add");
   }
   if (!pending && askRestoreTimer !== undefined) {
     clearTimeout(askRestoreTimer);
@@ -3108,7 +3343,7 @@ function setSuggestPending(pending: boolean): void {
   const btn = document.getElementById("ask-suggest") as HTMLButtonElement | null;
   if (btn) {
     btn.disabled = pending;
-    btn.textContent = pending ? "Thinking…" : "Suggest";
+    setBtnLabel(btn, pending ? "Thinking…" : "Suggest");
   }
   if (!pending && suggestRestoreTimer !== undefined) {
     clearTimeout(suggestRestoreTimer);
@@ -3126,7 +3361,7 @@ function setSplitPending(pending: boolean): void {
   const btn = document.getElementById("ask-split") as HTMLButtonElement | null;
   if (btn) {
     btn.disabled = pending;
-    btn.textContent = pending ? "Splitting…" : "Split";
+    setBtnLabel(btn, pending ? "Splitting…" : "Split");
   }
   if (!pending && splitRestoreTimer !== undefined) {
     clearTimeout(splitRestoreTimer);
@@ -3213,11 +3448,11 @@ function labelToId(label: string): string {
 /** Swap a button's label for ~1.4s ("Copied ✓") as inline action feedback. */
 function flashButton(btn: HTMLButtonElement, text: string): void {
   if (btn.dataset["flashing"] === "1") return;
-  const original = btn.textContent ?? "";
+  const original = getBtnLabel(btn);
   btn.dataset["flashing"] = "1";
-  btn.textContent = text;
+  setBtnLabel(btn, text);
   window.setTimeout(() => {
-    btn.textContent = original;
+    setBtnLabel(btn, original);
     delete btn.dataset["flashing"];
   }, 1400);
 }
@@ -3317,7 +3552,7 @@ function wireButtons(): void {
     setInputVal("probe-question", "");
     setInputVal("probe-categories", "");
     setInputVal("probe-instruction", "");
-    showToast("Probe added — first analysis runs right away.", "success");
+    showToast("Probe added. First analysis runs right away.", "success");
   });
 
   el("import-json").addEventListener("click", () => {
@@ -3365,6 +3600,12 @@ function wireButtons(): void {
     el<HTMLButtonElement>("ask-auto").classList.toggle("ask-chip-active", kind === "auto");
     el<HTMLButtonElement>("ask-open").classList.toggle("ask-chip-active", kind === "open");
     el<HTMLButtonElement>("ask-classify").classList.toggle("ask-chip-active", kind === "classify");
+    const kinds: AskKind[] = ["auto", "open", "classify"];
+    kinds.forEach((k) =>
+      el<HTMLButtonElement>("ask-" + k).setAttribute("aria-pressed", String(k === kind)),
+    );
+    // Slide the selected-segment indicator (CSS reads --seg-i).
+    document.querySelector<HTMLElement>(".seg")?.style.setProperty("--seg-i", String(kinds.indexOf(kind)));
     const catsEl = el<HTMLInputElement>("ask-categories");
     // Categories only matter for the explicit "classify" kind.
     if (kind === "classify") {
@@ -3515,10 +3756,10 @@ function wireButtons(): void {
     const toggleBtn = el<HTMLButtonElement>("toggle-key");
     if (apiKeyEl.type === "password") {
       apiKeyEl.type = "text";
-      toggleBtn.textContent = "hide";
+      setBtnLabel(toggleBtn, "hide");
     } else {
       apiKeyEl.type = "password";
-      toggleBtn.textContent = "show";
+      setBtnLabel(toggleBtn, "show");
     }
   });
 
@@ -3581,47 +3822,311 @@ function lsSet(key: string, value: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Collapsible group wiring
+// Theme toggle: System -> Light -> Dark. Stored in 'viewlyt.theme' (the
+// 'viewlyt.' prefix matters: Reset purges that prefix). System = no data-theme
+// attribute, so the CSS follows prefers-color-scheme.
 // ---------------------------------------------------------------------------
 
-function wireGroups(): void {
-  const headers = document.querySelectorAll<HTMLButtonElement>(".group-header");
-  headers.forEach((btn) => {
-    const group = btn.closest<HTMLElement>(".group");
-    if (!group) return;
+type ThemePref = "system" | "light" | "dark";
+const THEME_KEY = "viewlyt.theme";
+const THEME_NEXT: Record<ThemePref, ThemePref> = {
+  system: "light",
+  light: "dark",
+  dark: "system",
+};
+const THEME_LABEL: Record<ThemePref, string> = {
+  system: "System",
+  light: "Light",
+  dark: "Dark",
+};
+const THEME_ICON: Record<ThemePref, string> = {
+  system: "desktop",
+  light: "sun",
+  dark: "moon",
+};
 
-    // Restore collapsed state from localStorage when the group has an id.
-    if (group.id) {
-      const stored = lsGet("viewlyt.collapsed." + group.id);
-      if (stored === "1") {
-        group.classList.add("collapsed");
-      } else {
-        // Explicitly remove in case the class was set in HTML — default is expanded.
-        group.classList.remove("collapsed");
-      }
-    }
+function themePref(): ThemePref {
+  const stored = lsGet(THEME_KEY);
+  return stored === "light" || stored === "dark" ? stored : "system";
+}
 
+/** Re-paint every rendered chart so JS-coloured marks follow the new theme. */
+function rerenderAllDisplays(): void {
+  document.querySelectorAll<HTMLDivElement>(".result-card[data-probe-id]").forEach((card) => {
+    const id = card.dataset["probeId"];
+    if (id === undefined) return;
+    const history = resultHistory.get(id);
+    if (!history || history.length === 0) return;
+    const index = viewState.get(id)?.index ?? history.length - 1;
+    renderDisplay(card, id, domKind(card), index);
+  });
+}
+
+function applyTheme(pref: ThemePref): void {
+  const root = document.documentElement;
+  if (pref === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", pref);
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    const next = THEME_NEXT[pref];
+    btn.setAttribute(
+      "aria-label",
+      `Theme: ${THEME_LABEL[pref]}. Switch to ${THEME_LABEL[next]}`,
+    );
+    btn.title = `Theme: ${THEME_LABEL[pref]}. Click for ${THEME_LABEL[next]}`;
+    const holder = btn.querySelector<HTMLElement>(".icon");
+    if (holder) holder.innerHTML = iconSvg(THEME_ICON[pref]);
+  }
+  readThemeColors();
+  rerenderAllDisplays();
+}
+
+function wireTheme(): void {
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
     btn.addEventListener("click", () => {
-      group.classList.toggle("collapsed");
-      // Persist the new state when the group has an id.
-      if (group.id) {
-        lsSet(
-          "viewlyt.collapsed." + group.id,
-          group.classList.contains("collapsed") ? "1" : "0",
-        );
+      const next = THEME_NEXT[themePref()];
+      if (next === "system") {
+        try {
+          localStorage.removeItem(THEME_KEY);
+        } catch {
+          // Storage may be unavailable; the choice just won't persist.
+        }
+      } else {
+        lsSet(THEME_KEY, next);
       }
+      applyTheme(next);
+    });
+  }
+  // Following the OS: repaint JS-coloured marks when the system theme flips.
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", () => {
+      if (themePref() === "system") applyTheme("system");
+    });
+  applyTheme(themePref());
+}
+
+// ---------------------------------------------------------------------------
+// Settings drawer (<dialog>): Window / Model / Probes / Capture tabs.
+// ---------------------------------------------------------------------------
+
+type SettingsTab = "window" | "model" | "probes" | "capture";
+const SETTINGS_TABS: SettingsTab[] = ["window", "model", "probes", "capture"];
+const SETTINGS_TAB_KEY = "viewlyt.settingsTab";
+let drawerOpener: HTMLElement | null = null;
+
+function storedSettingsTab(): SettingsTab {
+  const stored = lsGet(SETTINGS_TAB_KEY);
+  return (SETTINGS_TABS as string[]).includes(stored ?? "") ? (stored as SettingsTab) : "window";
+}
+
+function selectSettingsTab(tab: SettingsTab, focusTab = false): void {
+  for (const t of SETTINGS_TABS) {
+    const btn = el<HTMLButtonElement>("tab-" + t);
+    const on = t === tab;
+    btn.setAttribute("aria-selected", String(on));
+    btn.tabIndex = on ? 0 : -1;
+    el<HTMLElement>("panel-" + t).hidden = !on;
+    if (on && focusTab) btn.focus();
+  }
+  lsSet(SETTINGS_TAB_KEY, tab);
+}
+
+function openSettings(tab?: SettingsTab, opener?: HTMLElement): void {
+  const dlg = el<HTMLDialogElement>("settings-drawer");
+  const active = document.activeElement;
+  drawerOpener =
+    opener ?? (active instanceof HTMLElement && active !== document.body ? active : null);
+  selectSettingsTab(tab ?? storedSettingsTab());
+  if (!dlg.open) dlg.showModal();
+  // Toasts must stay readable above the modal: park the stack inside the dialog
+  // while it is open (the top layer paints over anything left in the page).
+  dlg.appendChild(el("toasts"));
+  const selected = SETTINGS_TABS.find((t) => !el<HTMLElement>("panel-" + t).hidden);
+  if (selected) el<HTMLButtonElement>("tab-" + selected).focus();
+}
+
+function wireSettingsDrawer(): void {
+  const dlg = el<HTMLDialogElement>("settings-drawer");
+  const settingsBtn = el<HTMLButtonElement>("settings-open");
+  settingsBtn.addEventListener("click", () => openSettings(undefined, settingsBtn));
+  el<HTMLButtonElement>("settings-close").addEventListener("click", () => dlg.close());
+
+  // Backdrop click closes, but only when the press STARTED on the backdrop too
+  // (a text-selection drag that ends outside must not dismiss the drawer).
+  let pressOnBackdrop = false;
+  dlg.addEventListener("pointerdown", (e) => {
+    pressOnBackdrop = e.target === dlg;
+  });
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg && pressOnBackdrop) dlg.close();
+    pressOnBackdrop = false;
+  });
+
+  dlg.addEventListener("close", () => {
+    document.body.appendChild(el("toasts"));
+    const back =
+      drawerOpener && drawerOpener.isConnected && !drawerOpener.hasAttribute("disabled")
+        ? drawerOpener
+        : settingsBtn;
+    drawerOpener = null;
+    back.focus();
+  });
+
+  // Tabs: click + roving arrow keys (APG tabs pattern).
+  for (const t of SETTINGS_TABS) {
+    const btn = el<HTMLButtonElement>("tab-" + t);
+    btn.addEventListener("click", () => selectSettingsTab(t));
+    btn.addEventListener("keydown", (e: KeyboardEvent) => {
+      const i = SETTINGS_TABS.indexOf(t);
+      let next = -1;
+      if (e.key === "ArrowRight") next = (i + 1) % SETTINGS_TABS.length;
+      else if (e.key === "ArrowLeft") next = (i - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
+      else if (e.key === "Home") next = 0;
+      else if (e.key === "End") next = SETTINGS_TABS.length - 1;
+      if (next < 0) return;
+      e.preventDefault();
+      selectSettingsTab(SETTINGS_TABS[next]!, true);
+    });
+  }
+  selectSettingsTab(storedSettingsTab());
+
+  // Feed empty state -> Capture tab.
+  const openCapture = document.getElementById("open-capture");
+  if (openCapture) {
+    openCapture.addEventListener("click", () => openSettings("capture", openCapture));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chat rail: sticky column >= 1200px; below that a collapsible panel
+// (remembered; closed by default under 1000px). The feed keeps its own scroll,
+// so reopening snaps to the newest edge instead of leaving a stale offset.
+// ---------------------------------------------------------------------------
+
+const CHAT_OPEN_KEY = "viewlyt.chatOpen";
+
+function wireChatRail(): void {
+  const rail = el<HTMLElement>("chat-rail");
+  const toggle = el<HTMLButtonElement>("chat-toggle");
+  const stored = lsGet(CHAT_OPEN_KEY);
+  let open = stored === null ? window.innerWidth >= 1000 : stored === "1";
+
+  const apply = (): void => {
+    rail.classList.toggle("is-collapsed", !open);
+    toggle.setAttribute("aria-expanded", String(open));
+    const label = toggle.querySelector(".chat-toggle-label");
+    if (label) label.textContent = open ? "Hide" : "Show";
+  };
+  apply();
+
+  toggle.addEventListener("click", () => {
+    open = !open;
+    lsSet(CHAT_OPEN_KEY, open ? "1" : "0");
+    apply();
+    if (open) jumpFeedToEdge();
+  });
+
+  window.matchMedia("(min-width: 1200px)").addEventListener("change", (e) => {
+    if (e.matches) jumpFeedToEdge();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Menu button (Export). Proper menu pattern: aria-haspopup/expanded, arrow keys,
+// Home/End, Esc closes and returns focus, click outside closes.
+// ---------------------------------------------------------------------------
+
+function wireMenu(btn: HTMLButtonElement, menu: HTMLElement): void {
+  const items = (): HTMLElement[] =>
+    Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+  const isOpen = (): boolean => !menu.classList.contains("hidden");
+  const open = (focusIndex: number): void => {
+    menu.classList.remove("hidden");
+    btn.setAttribute("aria-expanded", "true");
+    const list = items();
+    list[(focusIndex + list.length) % list.length]?.focus();
+  };
+  const close = (returnFocus: boolean): void => {
+    if (!isOpen()) return;
+    menu.classList.add("hidden");
+    btn.setAttribute("aria-expanded", "false");
+    if (returnFocus) btn.focus();
+  };
+
+  btn.addEventListener("click", () => (isOpen() ? close(true) : open(0)));
+  btn.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      open(0);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      open(-1);
+    }
+  });
+  menu.addEventListener("keydown", (e: KeyboardEvent) => {
+    const list = items();
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      list[(i + 1) % list.length]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      list[(i - 1 + list.length) % list.length]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      list[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      list[list.length - 1]?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close(true);
+    } else if (e.key === "Tab") {
+      close(false);
+    }
+  });
+  menu.addEventListener("click", () => close(false));
+  document.addEventListener("click", (e) => {
+    const target = e.target as Node;
+    if (isOpen() && !menu.contains(target) && !btn.contains(target)) close(false);
+  });
+}
+
+/** Copy buttons wired by attribute: <button data-copy-target="elementId">. */
+function wireCopyButtons(): void {
+  document.querySelectorAll<HTMLButtonElement>("[data-copy-target]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = document.getElementById(btn.dataset["copyTarget"] ?? "");
+      if (!target) return;
+      const text = target instanceof HTMLTextAreaElement ? target.value : (target.textContent ?? "");
+      navigator.clipboard
+        .writeText(text)
+        .then(() => flashButton(btn, "Copied ✓"))
+        .catch(() => undefined);
     });
   });
+}
+
+function wireShell(): void {
+  wireSettingsDrawer();
+  wireChatRail();
+  wireMenu(el<HTMLButtonElement>("export-menu-btn"), el<HTMLElement>("export-menu"));
+  wireCopyButtons();
 }
 
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
+readThemeColors();
+injectIcons();
+wireTheme();
 updateProbeFieldVisibility();
 wireButtons();
 wireFeed();
-wireGroups();
+wireShell();
 wireCardDragAndDrop();
 connectDashboard();
 connectControl();
