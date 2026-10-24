@@ -269,3 +269,107 @@ def test_llm_client_aclose_closes_the_openai_client() -> None:
         await client.aclose()  # no close/aclose attribute: skipped silently
 
     asyncio.run(go())
+
+
+def test_decider_health_change_is_pushed_to_the_dashboard(tmp_path, monkeypatch) -> None:
+    """A batch that trips the circuit breaker broadcasts a state frame with the new
+    decider_state right away (it is not tied to any control op)."""
+    import asyncio
+    import json
+
+    from viewlyt.live import persistence
+    from viewlyt.live import server as live_server
+    from viewlyt.live.llm import HybridRunner, LLMConfig
+    from viewlyt.live.messages import ChatMessage
+    from viewlyt.live.probes import ClassificationProbe
+    from viewlyt.live.window import WindowConfig
+
+    monkeypatch.setattr(persistence, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(persistence, "STATE_FILE", tmp_path / "live-state.json")
+    monkeypatch.setattr(persistence, "KEY_FILE", tmp_path / "key")
+
+    class Chat:
+        model = "chat"
+        total_tokens = 0
+        total_cost = 0.0
+        _latency_count = 0
+        _latency_sum_ms = 0.0
+
+        async def run(self, probe, messages):
+            return {"labels": ["a"] * len(messages)}
+
+        async def complete_json(self, system, user, schema):
+            return {}
+
+    class DeadDecider:
+        model = "pplx"
+        total_tokens = 0
+        total_cost = 0.0
+        _latency_count = 0
+        _latency_sum_ms = 0.0
+
+        async def classify(self, probe, messages):
+            raise RuntimeError("decider down")
+
+    class WS:
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.frames.append(json.loads(payload))
+
+    srv = live_server.LiveServer(
+        LLMConfig(base_url="https://openrouter.ai/api/v1", decider_model="pplx"), WindowConfig()
+    )
+    srv._client = HybridRunner(Chat(), DeadDecider())  # type: ignore[arg-type]
+    ws = WS()
+    srv.dash.active = {ws}  # type: ignore[assignment]
+    # Three classification probes in one batch = three consecutive decider failures.
+    for i in range(3):
+        p = ClassificationProbe(id=f"c{i}", label=f"c{i}", question="q", categories=["a", "b"])
+        srv.probes[p.id] = p
+    msgs = [ChatMessage(author="u", text="hi", ts=0.0)]
+
+    assert srv.decider_state() == "ok"
+    asyncio.run(live_server.process_window(srv, msgs, 0.0))
+
+    states = [f for f in ws.frames if f.get("type") == "state"]
+    assert states, "no state frame was pushed after the decider's health changed"
+    assert states[-1]["decider_state"] == "open"
+
+
+def test_unchanged_decider_health_pushes_no_extra_state_frame(tmp_path, monkeypatch) -> None:
+    import asyncio
+    import json
+
+    from viewlyt.live import server as live_server
+    from viewlyt.live.llm import LLMConfig
+    from viewlyt.live.messages import ChatMessage
+    from viewlyt.live.probes import OpenSummaryProbe
+    from viewlyt.live.window import WindowConfig
+
+    class Runner:
+        model = "chat"
+        total_tokens = 0
+        total_cost = 0.0
+
+        async def run(self, probe, messages):
+            return {"summary": "ok"}
+
+        async def complete_json(self, system, user, schema):
+            return {}
+
+    class WS:
+        def __init__(self) -> None:
+            self.frames: list[dict] = []
+
+        async def send_text(self, payload: str) -> None:
+            self.frames.append(json.loads(payload))
+
+    srv = live_server.LiveServer(LLMConfig(), WindowConfig())
+    srv._client = Runner()  # type: ignore[assignment]
+    ws = WS()
+    srv.dash.active = {ws}  # type: ignore[assignment]
+    srv.probes["o"] = OpenSummaryProbe(id="o", label="o", instruction="sum")
+    asyncio.run(live_server.process_window(srv, [ChatMessage(author="u", text="x", ts=0.0)], 0.0))
+    assert not [f for f in ws.frames if f.get("type") == "state"]

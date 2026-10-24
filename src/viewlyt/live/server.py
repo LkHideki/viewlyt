@@ -656,6 +656,7 @@ async def process_window(
     c = server.client()
     before_tok = getattr(c, "total_tokens", 0)
     before_cost = getattr(c, "total_cost", 0.0)
+    decider_before = server.decider_state()
     results = await run_probes(c, probes, window[-default_n:], windows)
     for r in results:
         r.ts = now_wall
@@ -702,6 +703,11 @@ async def process_window(
         }
     )
     await broadcast_stat(server, len(window))
+    if server.decider_state() != decider_before:
+        # The decider's health (ok / degraded / open) changes inside a batch, not on a
+        # control op, so push a fresh state frame now; otherwise the dashboard would
+        # keep showing a healthy decider until the next unrelated state frame.
+        await server.dash.broadcast(server.state_message())
 
 
 def export_payload(server: LiveServer) -> dict:
