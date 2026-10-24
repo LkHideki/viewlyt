@@ -566,8 +566,10 @@ flowing, so no LLM spend happens before you look.
   language the analyses are written in (default Português (BR)).
 - Everything is persisted to `~/.viewlyt/live-state.json` (API key
   Fernet-encrypted, files `0600`), so a restart resumes where you left off;
-  **Reset / forget saved** clears it. A key given at launch (`--api-key` /
-  `$OPENROUTER_API_KEY`) always wins over the saved one.
+  **Reset / forget saved** clears it. On later launches the saved provider, base
+  URL and model win over `--provider`/`--base-url`/`--model` (change them in the
+  Model panel, or Reset); a key given at launch (`--api-key` /
+  `$OPENROUTER_API_KEY`) and an explicit `--decider`/`--no-decider` always win.
 - The server binds to loopback only and has **no authentication**; a
   non-loopback `--host` is refused unless you pass `--allow-insecure-bind`.
 
@@ -588,25 +590,49 @@ flowing, so no LLM spend happens before you look.
 ### Decision models for classification (`--decider`)
 
 Classification probes ("how is the crowd feeling? happy / angry / neutral") don't
-need prose — they need one label per message. A **decision model** such as
+need prose, they need one label per message. A **decision model** such as
 [Perplexity's `pplx-decider-flash-v1.2`](https://openrouter.ai/perplexity/pplx-decider-flash-v1.2)
 (the same class of model as TypeSafe's Jev) is built for exactly that: it takes a
 *state* plus typed *questions* and returns **probabilities per option** instead of
-generated text. `--decider [MODEL]` routes every classification probe through it
-(`--decider` alone = `perplexity/pplx-decider-flash-v1.2`; `$LLM_DECIDER` sets the
-default; the dashboard's Model panel has the same field, blank = off). Why bother:
+generated text. `--decider [MODEL]` routes classification probes through it
+(`--decider` alone = `perplexity/pplx-decider-flash-v1.2`; `$LLM_DECIDER` does the
+same; `--no-decider` turns it off; the dashboard's Model panel has the same field,
+blank = off).
 
-- **Cost:** ~$0.01 per million *input* tokens and output is free — the chat path
-  pays for every generated label. A 230-message window is a fraction of a cent.
-- **Speed and robustness:** no JSON to parse and no free-text labels to match —
-  the answer *is* one of your category names, verbatim.
-- **Scope:** only *classification* probes move. Open summaries, probe rewriting
-  and suggestions still use the chat model (a decision model cannot write text),
-  so you still need a chat `--model`. If the decider call fails, that probe falls
-  back to the chat model for that window (logged as a warning).
+```bash
+uv run vl live --decider '<live-url>'                    # OpenRouter (default provider)
+uv run vl live --no-decider '<live-url>'                 # back to the chat model
+# Perplexity's own API (chat + decisions on one key):
+uv run vl live --provider perplexity --api-key pplx-... --model sonar \
+  --decider pplx-decider-flash-latest '<live-url>'
+```
+
+- **Launch choice wins.** An explicit `--decider` / `$LLM_DECIDER` / `--no-decider`
+  overrides the saved choice and is remembered; with none of them the saved choice
+  (or what you set in the Model panel) applies. The startup output prints the
+  effective decider (`decider: ... (classification)`, `off`, or `INACTIVE` with the
+  reason).
+- **Cost:** ~$0.01 per million *input* tokens (the 27B `pplx-decider-v1.2` costs
+  $0.02) and output is free, while the chat path pays for every generated label. A
+  230-message window is a fraction of a cent. OpenRouter reports the cost per
+  response; on Perplexity's API it is estimated from the input tokens, so the budget
+  cap sees it either way.
+- **Robustness:** no JSON to parse and no free-text labels to match; the answer *is*
+  one of your category names, verbatim.
+- **Latency and accuracy:** a window is sent as batches of 32 messages, up to 4
+  batches at a time, each request with its own 20 s deadline. Perplexity reports
+  slightly better accuracy with one question per request; batching is the trade-off
+  that keeps a window under the API's 10 requests/s limit.
+- **Fallback:** only *classification* probes move. Open summaries, probe rewriting
+  and suggestions still use the chat model (a decision model cannot write text), so
+  you still need a chat `--model`. If the decider fails or returns mostly unusable
+  answers, that probe falls back to the chat model for that window; after 3
+  consecutive failures the decider is skipped for 5 minutes (logged once), then
+  retried.
 - **Providers:** the Decisions endpoint exists on **OpenRouter** (alpha) and on
-  **Perplexity**'s own API; with any other `--provider`/`--base-url` the flag is
-  ignored with a warning. Uses the same API key as the chat model.
+  **Perplexity**'s own API (`--provider perplexity`); with any other provider the
+  decider stays configured but **inactive**, and classification uses the chat
+  model. It uses the same API key as the chat model.
 
 ## Chat with your collected data (`vl ask`)
 
