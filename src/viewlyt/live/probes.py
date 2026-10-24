@@ -391,7 +391,7 @@ class OpenSummaryProbe(Probe):
         }
 
     def aggregate(self, parsed: dict, messages: list[ChatMessage]) -> ProbeResult:
-        text = str((parsed or {}).get("summary", "")).strip()
+        text = str((parsed or {}).get("summary") or "").strip()  # null summary -> "", never "None"
         return ProbeResult(
             probe_id=self.id,
             kind=self.kind,

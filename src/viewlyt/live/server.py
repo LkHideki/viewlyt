@@ -101,7 +101,10 @@ def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: 
     except Exception:
         return False
     oh = (u.hostname or "").lower()
-    oport = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        oport = u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:  # non-numeric port ("http://localhost:abc"): reject, don't raise
+        return False
     if u.scheme == "http" and oport == port and oh in {host.lower(), "127.0.0.1", "localhost"}:
         return True
     if (
@@ -352,8 +355,11 @@ async def apply_control(server: LiveServer, data: dict) -> None:
     changing ops (probes/window/model) are also persisted to disk before the
     broadcast; the transient ops (pause/resume/clear) are not.
     """
+    # Resolved BEFORE the try: a non-object frame (list/str/null) must not leave `op`
+    # unbound for the persist check below, which would raise out of apply_control and
+    # tear down the /control socket.
+    op = data.get("op") if isinstance(data, dict) else None
     try:
-        op = data.get("op")
         if op == "upsert_probe":
             p = probe_from_dict(data["probe"])
             is_new = p.id not in server.probes
@@ -442,7 +448,8 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             # broadcast as a 'suggestions' frame — the user picks which chips to add.
             asyncio.create_task(_decompose(server, str(data.get("text") or "")))
         elif op == "clear":
-            server.buffer = WindowBuffer()
+            # Same maxlen as every other reset path (set_window / reset_state / restore).
+            server.buffer = WindowBuffer(maxlen=server.window.capacity)
         elif op == "reset_state":
             server.probes.clear()
             server.history.clear()
