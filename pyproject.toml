@@ -55,7 +55,15 @@ dependencies = [
 # known-vulnerable transitive: fastapi>=0.116 excludes the vulnerable starlette
 # (CVE-2026-48710 BadHost auth bypass, CVE-2025-54121 multipart DoS); cryptography>=46.0.6
 # clears CVE-2024-12797 / CVE-2026-34073. See secperf S5/S6/S10.
-live = ["fastapi>=0.116", "uvicorn[standard]>=0.34", "openai>=1.30", "cryptography>=46.0.6"]
+# httpx>=0.27: used directly by live/decisions.py (decision-model client); it only came in
+# transitively through openai before.
+live = [
+    "fastapi>=0.116",
+    "uvicorn[standard]>=0.34",
+    "openai>=1.30",
+    "cryptography>=46.0.6",
+    "httpx>=0.27",
+]
 # Ephemeral chat over collected out/*.md (the default `vl ask` engine): LLM on OpenRouter.
 ask = ["openai>=1.30"]
 # Token estimate after a scrape + the `vl split` chunker (tiktoken; o200k_base).

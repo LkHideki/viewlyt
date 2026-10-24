@@ -2727,6 +2727,7 @@ ask = [
 live = [
     { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "openai" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2754,6 +2755,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'live'", specifier = ">=46.0.6" },
     { name = "fastapi", marker = "extra == 'live'", specifier = ">=0.116" },
     { name = "fastembed", marker = "extra == 'rag'", specifier = ">=0.3" },
+    { name = "httpx", marker = "extra == 'live'", specifier = ">=0.27" },
     { name = "lightrag-hku", marker = "extra == 'rag'", specifier = ">=1.4.14" },
     { name = "openai", marker = "extra == 'ask'", specifier = ">=1.30" },
     { name = "openai", marker = "extra == 'live'", specifier = ">=1.30" },
