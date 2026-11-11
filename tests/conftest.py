@@ -24,6 +24,35 @@ E2E = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_ytdlp_network(request, monkeypatch):
+    """Keep every test off the network at the yt-dlp I/O BOUNDARIES.
+
+    ``viewlyt.ytdl._extract`` and ``_extract_with_captions`` are the only two places that
+    import ``yt_dlp`` and touch the network, so making them raise guards EVERY caller
+    (``video_transcript``, ``channel_entries*``, ``video_info``, ``scan_window``'s probes,
+    ``fill_dates``...) however ``cli``/``snap`` bind them. Guarding a higher layer instead
+    (e.g. a string-targeted patch of ``cli.ytdl.video_transcript``) would silently stop
+    intercepting the day a caller imports the function differently, with the suite still
+    green and hitting YouTube. Importing ``viewlyt.ytdl`` is cheap and Selenium-free.
+
+    A raise is also what the batch code treats as "yt-dlp failed", so by default it falls
+    back to the (Selenium-mocked) panel, as it did before yt-dlp transcripts existed. A
+    test that patches either function, or ``cli.ytdl.*`` / ``snap.ytdl.*``, overrides this
+    naturally (monkeypatch restores in reverse order). Two cases keep the real functions:
+    opt-in ``e2e`` tests (real on purpose) and tests using the ``fake_yt_dlp`` fixture,
+    which installs a fake ``yt_dlp`` module so the real boundary runs against it."""
+    if request.node.get_closest_marker("e2e") or "fake_yt_dlp" in request.fixturenames:
+        return
+    from viewlyt import ytdl
+
+    def _disabled(*args, **kwargs):
+        raise RuntimeError("network disabled in tests")
+
+    monkeypatch.setattr(ytdl, "_extract", _disabled)
+    monkeypatch.setattr(ytdl, "_extract_with_captions", _disabled)
+
+
 class FakeDriver:
     """Minimal stand-in for a Selenium WebDriver — records that quit() was called."""
 

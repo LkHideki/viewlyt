@@ -2,8 +2,11 @@
 
 > A command-line tool — and a typed Python library — for pulling **text out of
 > YouTube**: a video's **transcript**, its **comments** (with likes, dates and
-> replies), and its **related-videos** sidebar. It drives headless Google Chrome
-> through Selenium, and writes clean, **LLM-ready Markdown** into `out/`.
+> replies), its **related-videos** sidebar, and a channel's **video list** (by
+> count or by date range). Transcripts and channel lists come from `yt-dlp`
+> without a browser; comments and related videos drive headless Google Chrome
+> through Selenium. Everything is written as clean, **LLM-ready Markdown** into
+> `out/`.
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -21,7 +24,7 @@ there's nothing to wire up or extend, just a tool you run and an API you call.
 
 | Command | What you get | Install |
 |---|---|---|
-| `vl '<url>'` | **Scrape** a video → Markdown in `out/` (transcript by default; `-c` comments, `-r` related, `-C` channel listing, `-u` all-in-one) | `uv sync` |
+| `vl '<url>'` | **Scrape** a video → Markdown in `out/` (transcript by default; `-c` comments, `-r` related, `-u` all-in-one). With `-C`/`--since` it lists a channel's videos instead, and scrapes them when a product flag is added | `uv sync` |
 | `vl snap '<url-or-@handle>'` | **Snap** — a quick metadata snapshot (views, likes, duration, description, ...) of a video or channel, via `yt-dlp` | `uv sync` |
 | `vl ask out/*.md '<question>'` | **Ask** — chat / RAG over what you already collected, no re-scraping | `uv sync --extra ask` |
 | `vl live '<live-url>'` | **Live** — real-time live-chat analysis on a local dashboard | `uv sync --extra live` |
@@ -35,7 +38,7 @@ Discover everything from the CLI: `vl --help`, or `vl help ask` / `vl help live`
 # 1. Install — creates the `vl` command inside this project
 uv sync
 
-# 2. Scrape a video's transcript (the DEFAULT) -> out/<title>-<id>.transcript.md
+# 2. Scrape a video's transcript (the DEFAULT, no browser needed) -> out/<title>-<id>.transcript.md
 uv run vl 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # 3. Comments instead? add -c. Both? -c -t. Everything in one file? -u
@@ -50,16 +53,19 @@ repo root run `uv tool install .`, then just `vl '<url>'`.
 - [How the scraper works](#how-the-scraper-works)
 - [Requirements](#requirements) · [Installation](#installation) · [Usage](#usage) · [Options](#options)
 - [Several videos (batch mode)](#several-videos-batch-mode) · [Watch mode](#watch-mode-queue-from-the-clipboard)
-- [Transcript](#transcript) · [Related videos](#related-videos) · [Main-video views](#main-video-views)
-- [Channel listing (`-C`)](#channel-listing--c) · [Unified output](#unified-output)
+- [Transcript](#transcript) ([engines](#transcript-engines)) · [Related videos](#related-videos) · [Main-video views](#main-video-views)
+- [Channel listing (`-C`)](#channel-listing--c) ([date windows](#date-windows), [scraping the listed videos](#scraping-the-listed-videos)) · [Unified output](#unified-output)
 - [Getting past YouTube/Google blocks](#getting-past-youtubegoogle-blocks) · [Output format](#output-format)
 - Optional modes: [`vl live`](#live-mode-real-time) · [`vl ask`](#chat-with-your-collected-data-vl-ask) · [`vl snap`](#quick-metadata-snapshots-vl-snap)
 - [Use as a library](#use-as-a-library) · [Layout](#layout) · [Development](#development)
 
 ## How the scraper works
 
-`vl '<url>'` opens the video page and works in two phases (with `tqdm` progress
-bars) when collecting comments:
+`vl '<url>'` collects up to three products per video. The **transcript** comes
+from YouTube's caption tracks through `yt-dlp`, with no browser (see
+[Transcript](#transcript)). **Comments** and **related videos** need the video
+page, so for those `vl` drives headless Chrome through Selenium, and collecting
+comments works in two phases (with `tqdm` progress bars):
 
 1. **Loading** — repeatedly scrolls to the end (up to **25** scroll steps) to
    lazily load up to **150 top-level comments**, or all of them if there are
@@ -75,7 +81,8 @@ result is written grouped into blocks — a comment followed by its replies,
 blocks separated by a blank line.
 
 **By default** (no selector) `vl` collects the **full transcript** only, into
-`out/<title-slug>-<video_id>.transcript.md`. Pass `-c`/`--comments` to collect
+`out/<title-slug>-<video_id>.transcript.md`, and a transcript-only run builds no
+browser unless yt-dlp fails or finds no captions. Pass `-c`/`--comments` to collect
 the comments instead (`out/<title-slug>-<video_id>.md`), `-c -t` for **both**,
 and `-t`/`--transcript` is the explicit transcript-only form. The transcript is
 written **token-lean by default**: no `[m:ss]` timestamps and **2 segments per
@@ -85,7 +92,10 @@ line** (half the newlines); pass `--ts`/`--timestamps` to keep the stamps.
 
 - `uv` (installs/manages Python; requires **Python ≥ 3.11**, and the
   `.python-version` pins **3.14** for development)
-- Google Chrome (or Chromium) installed. The binary is located automatically:
+- Google Chrome (or Chromium) installed. It is only started when a product needs
+  the page (comments, related videos, the Selenium transcript panel, the channel
+  listing fallback), so the default transcript-only run and a `-C`/`--since`
+  listing work without it unless one of those fallbacks kicks in. The binary is located automatically:
   `$VIEWLYT_CHROME_BINARY` → `/usr/bin/google-chrome` → any `chrome`/`chromium`
   on the `PATH` → Selenium autodetection (default macOS/Windows locations). Set
   `VIEWLYT_CHROME_BINARY` to point to a specific binary (e.g. Brave, or a path
@@ -104,14 +114,15 @@ uv tool install .       # then: vl 'https://youtu.be/dQw4w9WgXcQ'
 
 The optional modes pull heavier dependencies only when you ask for them:
 `uv sync --extra ask` (chat), `--extra rag` (persistent RAG), `--extra live`
-(real-time dashboard), `--extra tokens` (token counts + `vl split`). `vl snap`
-and channel listing (`-C`) need no extra — `yt-dlp` is a **base** dependency,
-imported lazily so `vl --help`/`vl snap --help` stay cheap.
+(real-time dashboard), `--extra tokens` (token counts + `vl split`). `vl snap`,
+channel listing (`-C`/`--since`) and the default transcript need no extra —
+`yt-dlp` is a **base** dependency, imported lazily so `vl --help`/`vl snap --help`
+stay cheap.
 
 ## Usage
 
 ```bash
-# Default: headless, TRANSCRIPT only. Writes out/<title-slug>-dQw4w9WgXcQ.transcript.md
+# Default: TRANSCRIPT only, from yt-dlp (no browser). Writes out/<title-slug>-dQw4w9WgXcQ.transcript.md
 uv run vl 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Also accepts youtu.be, /shorts/, /embed/ and the bare id:
@@ -120,8 +131,8 @@ uv run vl 'https://youtu.be/dQw4w9WgXcQ'
 # Comments only -> out/<title-slug>-<video_id>.md:
 uv run vl -c 'https://youtu.be/dQw4w9WgXcQ'
 
-# Visible browser (more reliable against the bot wall):
-uv run vl --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+# Visible browser (more reliable against the bot wall; only matters when a browser is built):
+uv run vl -c --headed 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
 
 # Comments: at most 50, skipping replies (much faster):
 uv run vl -c --limit-comments 50 --no-replies 'https://youtu.be/dQw4w9WgXcQ'
@@ -141,6 +152,9 @@ uv run vl -t 'https://youtu.be/dQw4w9WgXcQ'
 # Transcript WITH the [m:ss] timestamps (the default strips them):
 uv run vl -t --ts 'https://youtu.be/dQw4w9WgXcQ'
 
+# Transcript from the Selenium panel, as before the yt-dlp engine existed:
+uv run vl -t --transcript-engine selenium 'https://youtu.be/dQw4w9WgXcQ'
+
 # First 17 related (sidebar) videos -> out/<slug>-<id>.related.md:
 uv run vl -r 17 'https://youtu.be/dQw4w9WgXcQ'
 
@@ -149,6 +163,15 @@ uv run vl -C 30 '@veritasium'
 
 # Same, but oldest first (also accepts a channel URL, not just a bare @handle):
 uv run vl -C 30 --order old 'https://www.youtube.com/@veritasium'
+
+# EVERY video of a channel from the last 90 days (a date window, see "Date windows"):
+uv run vl --since 90d '@veritasium'
+uv run vl --since 2025-01-01 --until 2025-12-31 '@veritasium'   # a closed range
+uv run vl --since 90d --dates '@veritasium'                     # every line gets its date
+
+# List a channel's videos, then scrape each one (see "Scraping the listed videos"):
+uv run vl -C 30 -t '@veritasium'              # transcripts of the 30 latest videos
+uv run vl --since 90d -c -t '@veritasium'     # comments + transcript of the last 90 days
 
 # Everything in ONE file out/<slug>-<id>.unified.md (comments + transcript + related):
 uv run vl -u 'https://youtu.be/dQw4w9WgXcQ'        # -u == --unify
@@ -167,7 +190,7 @@ uv run vl '<url1>' '<url2>' '<url3>'
 
 # From a .txt file (one URL per line) or .csv (any column):
 uv run vl --from-file urls.txt
-uv run vl videos.csv -j 4          # 4 browsers in parallel
+uv run vl videos.csv -j 4          # 4 workers in parallel
 ```
 
 ### Options
@@ -177,25 +200,30 @@ uv run vl videos.csv -j 4          # 4 browsers in parallel
 | `inputs…` | — | one or more URLs/ids and/or `.txt`/`.csv` paths (positional) |
 | `-V, --version` | — | shows the version and exits |
 | `-f, --from-file PATH` | — | file with URLs/ids (`.txt` one per line, `.csv` any column); repeatable |
-| `-j, --jobs N` | `min(4, # videos)` | number of concurrent browsers (reused instances) |
+| `-j, --jobs N` | `min(4, # videos)` | number of concurrent workers; each one reuses its own browser when a product needs one |
 | `--limit-comments N` | `150` | Target number of top-level comments to collect (or all, if fewer). `--limit` is a kept alias. |
 | `--max-viewports N` | `25` | Scroll budget (number of scroll-to-end steps) |
 | `--no-replies` | off | Does not expand/collect replies (faster) |
 | `--limit-replies N` | `5` | Maximum replies per comment (`0` disables it). `--max-replies` is a kept alias. |
 | `--no-merge-comments` | off | Does not merge consecutive top-level comments from the same author (merging is the default; `--prevent-comment-group` is an alias) |
 | `-c, --comments` | off | Collects comments → `out/<title-slug>-<video_id>.md`; combine with `-t` for both |
-| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. This is also the **default** when no selector is given; add `-c` for comments too. |
+| `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. This is also the **default** when no selector is given; add `-c` for comments too. See [Transcript](#transcript). |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
 | `--ts, --timestamps` | off | Keeps the `[m:ss]`/`[mm:ss]` timestamps on transcript lines (default: stripped; `h:mm:ss` on long videos is always kept). `--no-ts` is a deprecated no-op. |
+| `--transcript-engine {auto,ytdlp,selenium}` | `auto` | Where the transcript comes from. `auto` = yt-dlp captions first, the Selenium panel as fallback (three yt-dlp failures in a row switch the rest of the run to the panel); `ytdlp` = never open a browser for the transcript; `selenium` = the panel only, as before the yt-dlp engine existed. See [Transcript engines](#transcript-engines). No-op (warns) when no transcript is collected, e.g. with `-c` alone or on a listing-only `-C`/`--since` run. |
 | `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Selects related; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
-| `-C, --channel N` | `0` | Treats every input as a **channel** (bare `@handle`, or a channel/`/c/`/`/user/` URL) and lists its first N videos → `out/<channel-slug>.channel.md` (`0` = off). **Incompatible** with `-c`/`-t`/`-r`/`-u`/`--unify-all` (exit code 2). `yt-dlp` is tried first, falling back to Selenium — see [Channel listing](#channel-listing--c). |
-| `--order {recent,popular,old}` | `recent` | Sort order for `-C`'s video listing. No-op (warns) without `-C`. |
+| `-C, --channel N` | `0` | Treats every input as a **channel** (bare `@handle`, or a channel/`/c/`/`/user/` URL) and lists its first N videos → `out/<channel-slug>.channel.md` (`0` = off). With `--since` it is a ceiling on the windowed list. Alone it only lists; add `-c`/`-t`/`-r`/`-u`/`--unify-all` and every listed video is scraped with those products, see [Scraping the listed videos](#scraping-the-listed-videos). `yt-dlp` is tried first, falling back to Selenium — see [Channel listing](#channel-listing--c). |
+| `--order {recent,popular,old}` | `recent` | Sort order for the `-C`/`--since` video listing. No-op (warns) without them. `popular` is rejected together with `--since`. |
+| `--since SPEC` | — | Lists every video a channel published from `SPEC` (`yyyy-mm-dd`, or relative: `30d`, `12w`, `6m`, `1y`) until today or `--until`, into `out/<channel-slug>.channel.md`. Implies channel mode (no `-C` needed). See [Date windows](#date-windows). |
+| `--until SPEC` | today (UTC) | End of the `--since` window, inclusive; same forms as `--since`, which it requires. |
+| `--dates` | off | With `--since`: puts the publish date on every line (one extra yt-dlp request per undated video, ~1.3 s each) and drops any video whose exact date is outside the window. No-op (warns) without `--since`. |
+| `--scan-cap N` | `5000` | With `--since`: the most channel entries the yt-dlp scan may list (`0` = unlimited). Hitting it warns that the list may be incomplete. No-op (warns) without `--since`. |
 | `-u, --unify` | off | Writes all of a video's products into ONE `out/<slug>-<id>.unified.md` (instead of separate files). Alone it collects everything (comments + transcript + 20 related; override the count with `-r N`); with `-c`/`-t` it unifies only those. |
 | `--unify-all` | off | Like `--unify`, but combines ALL videos into a single `out/unified-all.md` (no per-video files). Mutually exclusive with `--unify`. |
 | `--copy` | off | Also copies the full output (the unified doc, or the produced file's content) to the system clipboard (needs `pbcopy`/`clip`/`xclip`/`xsel`) |
 | `--budget KT` | `128` | Context budget in thousands of tokens for the fit/split verdict printed after a scrape (Claude Sonnet 5 ≈ 200, Gemini ≈ 1000). Split an over-budget file with `vl split <file>`. |
 | `--no-tokens` | off | Don't print the per-file token estimate (the estimate needs `uv sync --extra tokens`; shown by default when installed) |
-| `--headed` | off | Uses a visible browser instead of headless |
+| `--headed` | off | Uses a visible browser instead of headless (only matters when a browser is built) |
 | `--no-fallback` | off | Does not retry in visible mode when a block is detected |
 | `--user-data-dir DIR` | — | Persistent Chrome profile (use one already logged in to get past the bot wall) |
 | `-o, --out-dir DIR` | `out` | Directory for `<title-slug>-<video_id>.md` |
@@ -204,23 +232,26 @@ uv run vl videos.csv -j 4          # 4 browsers in parallel
 ## Several videos (batch mode)
 
 You can pass multiple URLs and/or files. The URLs are deduplicated by video id
-and processed by a **limited pool of reused Chrome instances**: each worker
-keeps **one** browser and processes several videos in sequence (amortizing the
-cost of launching Chrome), with up to `--jobs` browsers in parallel (default
-`min(4, # videos)`). Since the work is I/O-bound, this speeds things up
-considerably.
+and processed by a **limited pool of workers**, up to `--jobs` of them (default
+`min(4, # videos)`). A worker builds a Chrome instance only when a video needs
+the page (comments, related videos, or a transcript yt-dlp couldn't serve), then
+keeps **that one** browser for its next videos (amortizing the cost of launching
+Chrome). A transcript-only run served by yt-dlp builds none. Since the work is
+I/O-bound, this speeds things up considerably.
 
 - Failures are isolated per video (one failing video doesn't bring down the
-  batch); a problematic session is recreated automatically, and each video gets
-  **one automatic retry** on a fresh session before it counts as failed.
-- Workers start **staggered** (a jittered offset each) so N Chromes don't all
-  launch — and hit YouTube — at the same instant.
+  batch), and each video gets **one automatic retry** before it counts as
+  failed. A browser-side failure recreates that worker's session first; a
+  yt-dlp failure leaves the browser alone.
+- Workers start **staggered** (a jittered offset each) so N Chromes (or N
+  yt-dlp requests) don't all start — and hit YouTube — at the same instant.
 - With **one** video, the detailed per-phase bars appear; with **several**, a
   general "videos" bar carries live `ok`/`fail`/`retry` counters and a `✓`/`↻`/`✗`
   line is printed per finished video, plus the final per-video summary.
-- Each video produces its own `out/<title-slug>-<video_id>.md`.
+- Each video produces its own files (`.md`, `.transcript.md`, `.related.md`, or
+  a single `.unified.md`, depending on the products selected).
 
-> Each Chrome instance consumes memory (~300–500 MB). Adjust `--jobs` according to the available RAM.
+> Each Chrome instance consumes memory (~300–500 MB), but only when a browser is built. Adjust `--jobs` according to the available RAM if you collect comments or related videos.
 
 ## Watch mode (queue from the clipboard)
 
@@ -282,11 +313,14 @@ passed straight through to the batch dispatch, unchanged.
 
 ## Transcript
 
-With `-t`/`--transcript` (or `--transcript-only`), the collector expands the
-description, clicks the **"Show transcript"** button and reads the transcript
-panel, writing `out/<title-slug>-<video_id>.transcript.md`. The default output
-is **token-lean**: timestamps stripped and **2 segments joined per line** (half
-the newlines — cheaper to feed an LLM):
+The transcript is the default product; `-t`/`--transcript` (or
+`--transcript-only`) asks for it explicitly. It is written to
+`out/<title-slug>-<video_id>.transcript.md`. By default it is read from
+YouTube's caption tracks through `yt-dlp`, in a second or two per video and
+without starting a browser: the page is only opened when yt-dlp fails or finds
+no usable captions, or when `-c`/`-r` need it anyway. The output is **token-lean** by
+default: timestamps stripped and **2 segments joined per line** (half the
+newlines — cheaper to feed an LLM):
 
 ```
 You're probably using the Cloud wrong. It wasn't made just to answer you,
@@ -298,16 +332,50 @@ With `--ts`/`--timestamps` each segment keeps its stamp (still 2 per line):
 [0:00] You're probably using the Cloud wrong. [0:02] It wasn't made just to answer you,
 ```
 
-- The timestamp (under `--ts`) is YouTube's own, **verbatim** (`m:ss` or
-  `h:mm:ss` on long videos) — never reformatted; `h:mm:ss` stamps survive even
-  the default stripping.
+- The timestamp (under `--ts`) has the same shape on both engines, `m:ss` or
+  `h:mm:ss` on long videos, and `h:mm:ss` stamps survive even the default
+  stripping. The panel's stamps are YouTube's own text, **verbatim**; the
+  caption ones are computed from each caption's start time, floored to the
+  second.
 - **No deduplication**: refrains and markers like `[Music]` repeat on purpose.
-- It is **opt-in** (keeps comment collection fast by default). `-t`/`--transcript-only`
-  (without `-c`) skips the comments and is much faster.
+- In a transcript-only run served by yt-dlp, the title (for the file name) and
+  the exact view count come from the same yt-dlp request.
 - Videos **without a transcript** (many music clips) are skipped gracefully —
   the final summary shows `transcript: unavailable` and no file is created.
 - Library users: `ScrapeResult.transcript_lines(timestamps=True, pair=False)`
-  gives the verbatim one-segment-per-line form.
+  gives the verbatim one-segment-per-line form; see
+  [Use as a library](#use-as-a-library) for which engine the library uses.
+
+### Transcript engines
+
+`--transcript-engine {auto,ytdlp,selenium}` (default `auto`) picks where the
+text comes from:
+
+- **`auto`**: yt-dlp captions first, the Selenium transcript panel when yt-dlp
+  raises or finds no usable track. Three consecutive yt-dlp failures in a run
+  (errors, not "this video has no captions") switch the rest of that run to the
+  panel and log one warning, so a rate limit or a stale extractor costs three
+  failed requests instead of one per video. A success resets the count.
+- **`ytdlp`**: never opens a browser for the transcript. A yt-dlp error fails
+  that video after the usual single retry, a video without captions is
+  `unavailable`, and there is no switch-over since there is nothing to fall
+  back to.
+- **`selenium`**: the panel text only, verbatim; this reproduces the output
+  from before the yt-dlp engine existed.
+
+The track yt-dlp reads is the one the panel shows by default: a human-made
+track in the video's own language, otherwise the original auto-generated track
+of that language. Regional variants count as the same language (`pt` matches
+`pt-BR`), the exact tag first. An auto-translated track is never used. When the
+video's language is unknown, or no track matches it, the language is read off
+the original auto-generated track: a human-made track in that language wins
+over the auto-generated one, and only after that does it take any human-made
+track.
+
+The two engines **segment the text differently**, so a transcript is not
+byte-identical between them: for the same video (`dQw4w9WgXcQ`) yt-dlp gave 61
+caption segments and the panel 24, and the line breaks differ accordingly.
+Pick one engine when you compare or diff transcripts.
 
 ## Related videos
 
@@ -334,13 +402,16 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
 
 ## Main-video views
 
-Every scrape now also reads the **view count of the main video itself** (not
-just its related sidebar), via `scraper.get_video_views` — a cheap read of the
-same page already open for comments/transcript, no extra request.
+Every scrape also reads the **view count of the main video itself** (not
+just its related sidebar), with no extra request. When `vl` opens the page
+(comments, related videos, or a transcript read from the panel) it comes from
+`scraper.get_video_views`, a cheap read of that page. On a transcript-only run
+served by yt-dlp no page is opened: the count is the `view_count` of the
+watch-page extraction that already fetched the captions.
 
-It is the **exact integer**, not the rounded label the page shows you: the
-count comes from the watch page's `interactionCount` microdata, which carries
-the full number (`12345678`, never `12M`). The integer is the source of truth
+Either way it is the **exact integer**, not the rounded label the page shows
+you: the page's `interactionCount` microdata and yt-dlp's `view_count` carry the
+full number (`12345678`, never `12M`). The integer is the source of truth
 everywhere; the `"12,345,678 views"` text is only rendered when writing.
 
 The count surfaces in three places:
@@ -361,7 +432,8 @@ instead treats each one as a **channel** — a bare `@handle`, or a
 `youtube.com/@handle`, `/channel/UC...`, `/c/<name>`, or `/user/<name>` URL —
 and lists that channel's first N videos into
 `out/<channel-slug>.channel.md`, in the same numbered format as
-[related videos](#related-videos) (reusing the same formatter verbatim):
+[related videos](#related-videos) (reusing the same formatter verbatim).
+`--since` lists by date range instead of by count (see [Date windows](#date-windows)):
 
 ```
 1. [4,321,987 views. Why Machines Learn](https://www.youtube.com/watch?v=abc123def45)
@@ -380,24 +452,156 @@ and lists that channel's first N videos into
   falls back to a headless-Chrome pass that clicks the channel's own
   sort chips. The engine actually used (`yt-dlp` or `selenium`) is reported in
   the summary line: `✓ Veritasium  30 videos (recent, yt-dlp) -> out/veritasium.channel.md`.
-- **Incompatible** with `-c`/`-t`/`-r`/`-u`/`--unify-all` (mixing product
-  selectors with `-C` is a usage error, exit code 2) — a channel listing is
-  its own product, not a per-video one.
+- Alone, a listing is its own product. Add a per-video product flag
+  (`-c`/`-t`/`-r`/`-u`/`--unify-all`) and it becomes the first step of a
+  pipeline that scrapes the listed videos: see
+  [Scraping the listed videos](#scraping-the-listed-videos).
 - Several channel refs can be passed at once (positionally, and/or via
   `--from-file`); each gets its own `.channel.md`, processed sequentially
   (unlike per-video batches, `yt-dlp` is fast enough that a worker pool isn't
   worth it here). `--copy` puts all of them, joined, on the clipboard.
 - **Views:** the metric is **views** (like [related videos](#related-videos)),
-  and the precision depends on the engine, because the two sources differ:
-  - **`yt-dlp`** exposes the **exact** count, so you get `1,234,567 views`.
-  - **Selenium** can only read the label YouTube renders in the grid, which is
-    already **rounded** (`1.2M views`). It is kept **verbatim** — a rounded
-    label is never expanded into a fake `1200000`.
+  and what you get depends on the engine:
+  - **`yt-dlp`** reports an integer, but for a channel tab it is already
+    **rounded** by YouTube in practice (a video with 17,320,592 views is listed
+    as `17,000,000`). The exact count is on the video's own page, which any
+    per-video scrape or `vl snap` reads.
+  - **Selenium** reads the label YouTube renders in the grid (`1.2M views`) and
+    keeps it **verbatim** — a rounded label is never expanded into a fake
+    `1200000`.
   - The `old` order may leave views empty for some entries (YouTube's playlist
     payload doesn't always carry a count that far back).
 
-  In the library, items carry `views_int: int | None` (the exact number, `None`
-  when only a rounded label was available) alongside the rendered `views: str`.
+  In the library, items carry `views_int: int | None` (the integer yt-dlp
+  reported, `None` when only a label was available) alongside the rendered
+  `views: str`.
+
+### Date windows
+
+`--since SPEC` lists **every** video the channel published in a date range,
+instead of the first N, into the same `out/<channel-slug>.channel.md`.
+`--since` alone is enough to enter channel mode (no `-C` needed):
+
+```bash
+uv run vl --since 2026-01-01 '@veritasium'                       # from that day until today
+uv run vl --since 90d '@veritasium'                              # the last 90 days
+uv run vl --since 2025-01-01 --until 2025-12-31 '@veritasium'    # a closed range
+uv run vl -C 50 --since 1y '@veritasium'                         # the last year, at most 50 videos
+uv run vl --since 6m --order old '@veritasium'                   # the same window, oldest first
+uv run vl --since 90d --dates '@veritasium'                      # every line carries its date
+```
+
+- `SPEC` is `yyyy-mm-dd` or a relative `Nd`, `Nw`, `Nm`, `Ny`: N days, weeks,
+  months or years before today (a month is 30 days and a year 365, like the
+  comment dates; `0d` is today).
+- `--until SPEC` takes the same forms and defaults to today. It needs
+  `--since`, and both bounds are inclusive. Today, and every yt-dlp date, is
+  UTC, so an upload made near midnight can land a day off from your local date.
+- `-C N` together with a window is a ceiling: the window is collected first,
+  then cut to N (the N newest, or with `--order old` the N oldest).
+- `--order recent` (default) and `old` work with a window. `popular` is
+  rejected, because a popularity sort has no date order to search.
+- Usage errors exit with code 2 and name the flag: `--until` without
+  `--since`, a spec that doesn't parse, `--since` after `--until`,
+  `--order popular`, a negative `--scan-cap`.
+- A window yt-dlp scanned and found empty is a success, not a failure: exit
+  code 0, no file written, and the summary line says so. The Selenium fallback
+  is not tried for it, only for a yt-dlp error or an empty channel tab. If the
+  window does reach the Selenium engine, an empty result can't be told apart
+  from a failed read, so it is reported as a failed listing.
+
+**How the window is found.** The channel tab carries no publish dates, and
+dating one video costs a full request (about 1.3 s), while reading the tab
+itself is cheap (256 entries take about 3 s). Dating every video of a large
+channel would take minutes, so `vl` reads the tab newest first and locates the
+window's two edges with a handful of dated probes (a binary search: about 28
+probes for 3,000 videos). A 120-day window on a channel of roughly 450 videos
+took about 11 s with 8 probes. The consequence is in what the file shows:
+
+- Without `--dates`, only the lines whose date a probe already learned carry
+  it, typically a few lines per list. The rest are listed undated.
+- With `--dates`, every undated line is dated (one request each, four at a
+  time) and then every line is re-checked against the window: a video whose
+  exact date falls outside it is dropped. A line whose date can't be read is
+  kept. The search assumes the tab is newest first, which premieres and VODs
+  can break; when probes contradict that order, `vl` warns that the window
+  edges may be off. `--dates` drops any returned video that is dated outside
+  the window, so it removes extras, but it can't bring back a video the search
+  skipped: widening the window is how to catch those.
+- `--scan-cap N` (default `5000`, `0` = unlimited) bounds how many channel
+  entries the search may list. The tab has no cursor, so every longer read
+  repeats the entries before it. If the cap stops the search while the window is
+  still open, the list may be incomplete and `vl` warns.
+
+**Precision by engine.** yt-dlp dates are exact. If yt-dlp fails, returns an
+empty tab, or gives up on the date search (it has a probe budget and a limit
+on how many videos in a row may lack a readable date; either one raises an
+error instead of returning a window it can't vouch for), `vl` falls back to
+Selenium and logs the reason as a warning, which stays visible under `-q`.
+Selenium only sees the relative age the grid renders (`6d ago`, `5mo ago`,
+`1y ago`). YouTube floors that age, so a label is an interval of possible
+dates: `1y ago` is anything from about 365 to 730 days. A card is kept when its
+interval overlaps the window, and its line shows the newest date it could have.
+Expect a few extra videos at either edge; for a window that reaches back past
+roughly 11 months, where the labels turn yearly, the list can include whole
+yearly buckets, every line of a bucket carrying the same date. On this engine `--dates` changes nothing, and
+`--order old` reverses the newest-first grid instead of clicking the "Oldest"
+chip. A card whose age can't be read is kept without a date, but if most of
+them can't (a non-English YouTube UI, for example through a `--user-data-dir`
+profile, or a changed page layout) the Selenium listing fails with a warning
+instead of returning a made-up window.
+
+`vl` warns, never silently, when the Selenium engine was used (dates and edges
+are approximate; running out of its scroll budget before the window is settled
+gets its own warning), when `--scan-cap` truncated the list, and when
+out-of-order uploads were detected. The summary line shows the window, the
+order, the engine and, for yt-dlp, the number of dated probes:
+
+```
+✓ Veritasium  9 videos (2026-07-14..2026-11-11, recent, yt-dlp, 8 probes) -> out/veritasium.channel.md
+✓ Veritasium  14 videos (2026-07-14..2026-11-11, old, selenium) -> out/veritasium.channel.md
+✓ Veritasium  0 videos (2026-07-01..2026-07-03, recent, yt-dlp, 7 probes) (no videos in the window)
+```
+
+With dates on, a line looks like
+`1. [4,000,000 views. 2026-11-04. Why Machines Learn](https://www.youtube.com/watch?v=abc123def45)`.
+
+### Scraping the listed videos
+
+`-C N` or `--since` on its own only lists. Add a per-video product flag
+(`-c`, `-t`/`--transcript-only`, `-r N`, `-u` or `--unify-all`) and the listed
+videos are then scraped with those products, through the same flow as
+`vl <urls>`:
+
+```bash
+uv run vl -C 30 -t '@veritasium'                 # list 30 videos, then transcribe each
+uv run vl --since 90d -t '@veritasium'           # every video of the last 90 days -> transcripts
+uv run vl -C 10 -c -t '@veritasium'              # comments + transcript of the latest 10
+uv run vl --since 1y --unify-all '@veritasium'   # one unified-all.md for a year of uploads
+uv run vl -C 20 --order popular -u '@veritasium' # one unified file per video, 20 most viewed
+```
+
+- The listing runs exactly as it does alone: same engines and fallback, the
+  `.channel.md` is written, and the per-channel lines and `Done: x/y
+  channel(s) listed` are printed. A log line (`N video(s) from M channel(s)
+  listed -> scraping them now`) marks the hand-off, and the per-video report
+  and token estimate follow.
+- The targets are the listed videos in listing order, channel by channel. A
+  video listed by several channels is scraped once (the first listing wins), so
+  `--unify-all` reads in listing order. Every per-video option applies
+  (`--limit-comments`, `-j`, `--ts`, `--transcript-engine`, `-o`, ...).
+- `-u` and `--unify-all` alone collect everything (comments, transcript, 20
+  related), which needs a browser for every video, so a year of uploads is a
+  long run. A transcript-only pipeline (`-t`) needs none while yt-dlp serves
+  the listing and the captions.
+- `--copy` copies the per-video output only, not the listing, and the token
+  report is the per-video one.
+- A channel that can't be listed is reported on stderr and the run carries on
+  with the videos from the others. If nothing is left to scrape, the exit code
+  is 1 when every channel failed and 0 otherwise (for example when every window
+  was empty, with a log line saying so). In every other case it is the
+  per-video flow's exit code, which is 1 only when every video failed. Usage
+  errors still exit with 2.
 
 ## Unified output
 
@@ -439,7 +643,12 @@ title — renders as a fake heading; treat the file as plain text.)
 
 ## Getting past YouTube/Google blocks
 
-The collector applies several layers to work on a fresh machine:
+The Chrome side (comments, related videos, the transcript panel, the channel
+fallback) applies several layers to work on a fresh machine. The `yt-dlp`
+requests (transcripts, channel listings, `vl snap`) don't use the browser or its
+profile, so `--headed` and `--user-data-dir` don't affect them; if they start
+failing (a rate limit, say), `--transcript-engine auto` switches to the panel
+after three failures in a row.
 
 1. **Consent cookies** — `SOCS`/`CONSENT` are set before navigating, so the
    "Before you continue to YouTube" notice is skipped on fresh profiles. A
@@ -867,7 +1076,10 @@ r.write("out/", unify=True)           # or a single <slug>-<id>.unified.md
 
 `scrape_video` builds and closes its own Chrome and returns a `ScrapeResult`. It
 raises `viewlyt.BlockedError` on the bot wall (try `headless=False` or
-`user_data_dir=` of a logged-in profile).
+`user_data_dir=` of a logged-in profile). With `transcript=True` it reads the
+transcript **panel through Selenium**, like `--transcript-engine selenium`; so
+do `scrape_videos` and `Session` below. The library has no yt-dlp engine switch:
+for a browserless transcript, see [Transcript without a browser](#transcript-without-a-browser).
 
 ### Many videos on one reused browser
 
@@ -896,6 +1108,27 @@ from viewlyt import join_unified
 doc = join_unified([r.unified_lines() for r in results if r])
 ```
 
+### Transcript without a browser
+
+`viewlyt.ytdl.video_transcript(video_id)` is the call the CLI uses for its
+default transcript: one yt-dlp request, no Chrome.
+
+```python
+from viewlyt import format_transcript
+from viewlyt.ytdl import video_transcript
+
+t = video_transcript("dQw4w9WgXcQ")
+print(t["title"], t["views_int"], len(t["segments"]))
+print("\n".join(format_transcript(t["segments"])))   # "[m:ss] text", one segment per line
+```
+
+It returns `{"video_id", "title", "views_int", "segments"}`; `segments` has the
+same `(timestamp, text)` shape as `ScrapeResult.transcript`, so the same
+formatters apply. It does not catch errors: a yt-dlp or network failure raises,
+and a video without a usable caption track returns `segments == []`. The `auto`
+fallback to the panel and its three-failure breaker belong to the `vl` batch
+runner, not to this function.
+
 ### Pure helpers (no Selenium)
 
 The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
@@ -908,8 +1141,9 @@ The pure, dependency-free helpers — `html_to_text`, `format_comment_lines`,
 Selenium-free until you touch a Selenium-backed name; to use only the pure
 helpers, import them straight from the leaf module:
 `from viewlyt.htmltext import html_to_text`. The `yt-dlp`-backed helpers
-(`vl snap`/`-C`'s primary engine) live in `viewlyt.ytdl` and stay
-Selenium-free too — see [`vl snap`](#quick-metadata-snapshots-vl-snap).
+(`vl snap`, the `-C`/`--since` listings, the browserless transcript) live in
+`viewlyt.ytdl` and stay Selenium-free too — see
+[`vl snap`](#quick-metadata-snapshots-vl-snap).
 
 ## Layout
 
@@ -919,11 +1153,11 @@ src/viewlyt/
   __init__.py             public API (scrape_video, helpers) + __version__
   vl.py                   the `vl` command dispatcher (routes ask/live/split/watch; lazy imports)
   api.py                  scrape_video / scrape_videos / Session / ScrapeResult (use as a library)
-  cli.py                  argparse, URL/file collection, instance pool, formatting, output
+  cli.py                  argparse, URL/file collection, worker pool, channel listing and its per-video pipeline, formatting, output
   driver.py               Chrome WebDriver builder with stealth (10s timeout)
-  scraper.py              URL parsing, consent bypass, two-phase collection, transcript, related, main-video views, channel listing (Selenium fallback)
+  scraper.py              URL parsing, consent bypass, two-phase collection, transcript panel, related, main-video views, channel listing incl. date window (Selenium fallback)
   htmltext.py             HTML→text, relative date, slug, flatten, extract_video_id, extract_channel_ref, format_transcript/related/unified/view_count/duration (pure, tested)
-  ytdl.py                 thin yt-dlp wrapper (base dep, import lazy inside functions): channel listing (recent/old) + video/channel metadata for `vl snap`
+  ytdl.py                 thin yt-dlp wrapper (base dep, import lazy inside functions): channel listing (recent/old, date window), browserless transcripts from caption tracks, video/channel metadata for `vl snap`
   tokens.py               token estimate (lazy tiktoken) + pure budget-splitter (opt-in extra 'tokens')
   split.py                `vl split`: token report + interactive clipboard chunker (Selenium-free)
   watch.py                `vl watch`: clipboard-queue + dispatch into cli.main's batch (Selenium-free until dispatch)
@@ -982,6 +1216,10 @@ uv run --python 3.14t vl '<url>'
   reply threads are flat).
 - The comment dates are approximated from YouTube's relative times (see above).
 - A residential IP and a logged-in profile greatly improve reliability.
+- The two transcript engines segment the text differently, so stick to one when
+  you compare transcripts ([Transcript engines](#transcript-engines)).
+- Channel date windows are UTC and exact with yt-dlp, approximate with the
+  Selenium fallback ([Date windows](#date-windows)).
 - The output is `.md`, but the text comes from third parties: when **importing
   into a spreadsheet** (Excel/Sheets), a cell starting with `=`, `+`, `-` or `@`
   may be interpreted as a formula (CSV/formula injection). Treat it as untrusted

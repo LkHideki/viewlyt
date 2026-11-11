@@ -420,6 +420,13 @@ def format_related(items: list[dict]) -> list[str]:
     empty title are skipped (and don't consume a number, so numbering stays
     contiguous).
 
+    An item may also carry an OPTIONAL ``"date"`` (``"yyyy-mm-dd"``, set by the
+    channel-window product, where the publish date is the whole point). When
+    present and non-empty it goes between the views and the title —
+    ``1. [1,234 views. 2026-05-03. Title](url)`` — and stands in for the views
+    when those are missing (``1. [2026-05-03. Title](url)``). Items without it
+    render EXACTLY as before: every other caller's output is byte-identical.
+
     KNOWN LIMITATION: a title containing ``]`` (e.g. "[Official Video]") breaks
     the Markdown link syntactically — kept as-is by design (the text is still
     readable), like the approximate dates elsewhere. Treat the file as plain text.
@@ -435,7 +442,8 @@ def format_related(items: list[dict]) -> list[str]:
         # The exact int is the source of truth; the verbatim string is the
         # fallback for sources that only expose a rounded display value.
         views = format_view_count(it.get("views_int")) or " ".join((it.get("views") or "").split())
-        label = f"{views}. {title}" if views else title
+        published = str(it.get("date") or "").strip()
+        label = ". ".join(p for p in (views, published, title) if p)
         lines.append(f"{n}. [{label}]({url})")
     return lines
 
@@ -463,6 +471,44 @@ def parse_relative_date(text: str, today: date) -> str:
         return text.strip()
     days = int(m.group(1)) * _UNIT_DAYS[m.group(2)]
     return (today - timedelta(days=days)).isoformat()
+
+
+_WINDOW_ABS_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_WINDOW_REL_RE = re.compile(r"([0-9]+)([dwmy])", re.I)
+# Same approximation as `parse_relative_date` (months≈30d, years≈365d), so a
+# "3m" window and a "3 months ago" comment mean the same stretch of days.
+_WINDOW_UNIT_DAYS = {"d": 1, "w": 7, "m": _UNIT_DAYS["month"], "y": _UNIT_DAYS["year"]}
+
+
+def parse_window_spec(text: str, today: date) -> date:
+    """Parse one ``--since``/``--until`` bound into a calendar date.
+
+    Pure/testable. Two forms: an absolute ``yyyy-mm-dd``, or a relative
+    ``Nd``/``Nw``/``Nm``/``Ny`` meaning "N days/weeks/months/years BEFORE
+    ``today``" (months≈30d, years≈365d — an approximation, like
+    :func:`parse_relative_date`). Surrounding whitespace and the unit's case are
+    ignored; ``0d`` is a valid way to say "today".
+
+    Anything else raises ``ValueError`` naming the accepted formats — a bare
+    number (``90``), an unknown unit (``3q``), a sign, or a date the calendar
+    doesn't have (``2026-02-30``). Rejecting loudly matters here: a silently
+    misread bound would window the wrong months and still "succeed".
+    """
+    spec = (text or "").strip()
+    hint = "expected yyyy-mm-dd or a relative window such as 30d, 12w, 6m, 1y"
+    if _WINDOW_ABS_RE.fullmatch(spec):
+        try:
+            return date.fromisoformat(spec)
+        except ValueError:
+            raise ValueError(f"invalid date {text!r} ({hint})") from None
+    m = _WINDOW_REL_RE.fullmatch(spec)
+    if not m:
+        raise ValueError(f"invalid window bound {text!r} ({hint})")
+    days = int(m.group(1)) * _WINDOW_UNIT_DAYS[m.group(2).lower()]
+    try:
+        return today - timedelta(days=days)
+    except OverflowError:  # timedelta/date arithmetic past the calendar's range
+        raise ValueError(f"window bound {text!r} reaches before year 1 ({hint})") from None
 
 
 def slugify(text: str, max_len: int = 80) -> str:

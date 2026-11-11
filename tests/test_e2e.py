@@ -49,10 +49,47 @@ def test_e2e_get_video_views():
         views = get_video_views(driver)
     finally:
         driver.quit()
-    # The exact int, not a rounded "1.2B" label: Rick Astley is well past 1e9.
+    # `get_video_views` returns `int | None`: the exact count, not a rounded "1.2B" label
+    # (the " views" text is only rendered later, by `format_view_count`). Rick Astley is
+    # well past 1e9, which a rounded or mis-parsed value (e.g. 1.2 -> 1) would not reach.
     assert isinstance(views, int)
-    assert views > 1_000_000
-    assert views.endswith(" views")
+    assert views > 1_000_000_000
+
+
+@pytest.mark.e2e
+@E2E
+def test_e2e_ytdlp_video_transcript():
+    """The browserless transcript path: yt-dlp captions, real network, no Chrome."""
+    from viewlyt import ytdl
+
+    r = ytdl.video_transcript("dQw4w9WgXcQ")
+    assert r["video_id"] == "dQw4w9WgXcQ"
+    assert r["title"].strip()
+    assert len(r["segments"]) > 10
+    ts, text = r["segments"][0]
+    assert ts and text.strip()
+    assert isinstance(r["views_int"], int) and r["views_int"] > 1_000_000
+
+
+@pytest.mark.e2e
+@E2E
+def test_e2e_cli_transcript_from_the_selenium_panel(tmp_path):
+    """The Selenium transcript panel, through the CLI.
+
+    The default CLI e2e now gets its transcript from yt-dlp, so without this the panel
+    path (``--transcript-engine selenium``, also the `auto` fallback) has no real-world
+    coverage: this one drives real Chrome through "Show transcript"."""
+    from viewlyt.cli import main
+
+    out = tmp_path / "out_test"
+    rc = main(["-o", str(out), "-q", "--no-tokens", "--transcript-engine", "selenium", "-t", VIDEO])
+    files = list(out.glob("*.transcript.md"))
+    if rc != 0 or not files:
+        pytest.xfail("likely bot/consent wall (no transcript produced)")
+    text = files[0].read_text(encoding="utf-8")
+    assert files[0].stat().st_size > 0
+    assert len(text.splitlines()) > 5  # a real transcript, not a stub
+    assert "[0:" not in text  # default output is the token-lean form: stamps stripped
 
 
 @pytest.mark.e2e
