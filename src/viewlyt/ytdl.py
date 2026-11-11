@@ -38,9 +38,13 @@ Empirical notes from validating this module against a real channel
 
 from __future__ import annotations
 
+import logging
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+
+log = logging.getLogger("viewlyt")
 
 _BASE_OPTS: dict = {
     "quiet": True,
@@ -185,19 +189,65 @@ def channel_entries(ref: str, n: int, order: str = "recent") -> tuple[str, list[
 # ---------------------------------------------------------------------------
 
 
+class WindowScanError(RuntimeError):
+    """The date search gave up instead of returning a window it can't vouch for.
+
+    Raised by :func:`scan_window` when the probe budget is spent or when videos
+    stop being datable altogether. ``cli.run_channel_batch`` already treats any
+    exception from the yt-dlp window listing as "use the other engine".
+    """
+
+
+def _out_of_order(seq: list[date]) -> set[int]:
+    """Positions of ``seq`` that are NOT in every longest non-increasing subsequence.
+
+    Pure. A newest-first list of dates is non-increasing; when two probes
+    contradict each other, the entries whose removal restores the order are the
+    suspects. A lone out-of-place entry comes out alone (its neighbours vouch for
+    the rest); when the evidence ties — either of two adjacent entries could be
+    the odd one — BOTH are returned, because guessing wrong would trust the
+    outlier. Empty for an already ordered sequence. O(n²): ``seq`` holds probes,
+    a few dozen at most.
+    """
+    n = len(seq)
+    ending = [1] * n  # longest non-increasing run ending at i
+    for i in range(n):
+        for j in range(i):
+            if seq[j] >= seq[i] and ending[j] + 1 > ending[i]:
+                ending[i] = ending[j] + 1
+    starting = [1] * n  # ... starting at i
+    for i in range(n - 1, -1, -1):
+        for j in range(i + 1, n):
+            if seq[i] >= seq[j] and starting[j] + 1 > starting[i]:
+                starting[i] = starting[j] + 1
+    best = max(ending, default=0)
+    on_a_best_run = [i for i in range(n) if ending[i] + starting[i] - 1 == best]
+    per_level: dict[int, int] = {}
+    for i in on_a_best_run:
+        per_level[ending[i]] = per_level.get(ending[i], 0) + 1
+    # A run visits each level once, so an entry alone on its level is on EVERY best run.
+    certain = {i for i in on_a_best_run if per_level[ending[i]] == 1}
+    return set(range(n)) - certain
+
+
 class _WindowScan:
     """State of one :func:`scan_window` run; see there for the contract.
 
-    Probes are memoised BY INDEX in ``dates`` (``None`` = undatable). Galloping
-    re-fetches a longer prefix of the same list, so an index keeps meaning the
-    same entry across fetches and no entry is ever dated twice.
+    Probes are memoised BY VIDEO ID in ``known`` (``None`` = undatable), never by
+    list position: the channel keeps publishing while the scan gallops, so a
+    re-fetched list can have a new video at the front or a removed one in the
+    middle, and every index shifts. An id keeps meaning the same video, so no
+    video is dated twice and no entry can be handed another one's date. An entry
+    without an id has nothing to look up and stays undatable.
 
-    ``amb`` is the inclusive hull of indices whose position can't be trusted:
-    the newest-first order is an assumption (premieres/VODs can break it), so
-    every new probe is checked against its nearest trusted neighbours, and a
-    contradiction grows the hull over the pair. Hull entries are dated one by
-    one and judged by their own date; the bisection only ever sees the entries
-    OUTSIDE it, which stay mutually consistent by construction.
+    The newest-first order is an assumption (premieres/VODs can break it), so
+    every fresh probe is checked against its nearest trusted neighbours. A
+    contradiction is resolved locally: the neighbours of the probe and of the
+    entry it contradicts are dated too, and the smallest set of entries whose
+    removal restores the order goes into ``bad`` — judged by their own date from
+    then on, while the bisection sees only the rest. ``bad`` holds ids, so each
+    out-of-place entry (or run of them) is its own island: two distant
+    inversions never fuse into one huge span, and a re-fetch can't misplace them.
     """
 
     def __init__(
@@ -206,8 +256,12 @@ class _WindowScan:
         probe_date: Callable[[dict], date | None],
         since: date,
         until: date,
+        *,
         cap: int,
         first_batch: int,
+        max_probes: int,
+        max_undatable_run: int,
+        skip: Callable[[dict], bool] | None,
     ) -> None:
         self.fetch_flat = fetch_flat
         self.probe_date = probe_date
@@ -215,76 +269,155 @@ class _WindowScan:
         self.until = until
         self.cap = cap
         self.first_batch = first_batch
+        self.max_probes = max_probes
+        self.max_undatable_run = max_undatable_run
+        self.skip = skip
         self.entries: list[dict] = []
-        self.dates: dict[int, date | None] = {}
+        self.ids: list[str] = []
+        self.raw_count = 0  # flat entries in the last fetch, BEFORE `skip`
+        self.known: dict[str, date | None] = {}
+        self.bad: set[str] = set()
+        self.dirty = False  # an inversion was resolved: the running search is void
         self.probes = 0
+        self.undatable_run = 0
         self.flat_requests = 0
         self.truncated = False
-        self.amb: tuple[int, int] | None = None
-        self.amb_grew = False
 
     # -- bookkeeping ---------------------------------------------------------
-
-    def in_amb(self, i: int) -> bool:
-        return self.amb is not None and self.amb[0] <= i <= self.amb[1]
 
     def fetch(self, n: int) -> None:
         # Clip defensively: `n` is the contract (`playlistend`), and a longer
         # reply would break the "short reply == exhausted" test in `gallop`.
-        self.entries = list(self.fetch_flat(n))[:n]
+        raw = list(self.fetch_flat(n))[:n]
         self.flat_requests += 1
+        self.raw_count = len(raw)
+        # `skip` runs AFTER the length is taken, so dropping entries never
+        # reads as "the channel is exhausted".
+        self.entries = [e for e in raw if not (self.skip and self.skip(e))]
+        self.ids = [str(e.get("id") or "") for e in self.entries]
+        # A longer (or shifted) list gives known out-of-place runs new neighbours:
+        # a run cut off by the previous end of the list may continue into them.
+        self._expand_bad()
+
+    def is_bad(self, i: int) -> bool:
+        return self.ids[i] in self.bad
 
     def trusted(self) -> list[tuple[int, date]]:
-        """Datable probes outside the ambiguous hull, as ``(index, date)``."""
-        return [(i, d) for i, d in self.dates.items() if d is not None and not self.in_amb(i)]
+        """Datable probes of entries not in ``bad``, as ``(index, date)`` by index."""
+        out: list[tuple[int, date]] = []
+        for i, vid in enumerate(self.ids):
+            d = self.known.get(vid) if vid and vid not in self.bad else None
+            if d is not None:
+                out.append((i, d))
+        return out
 
-    def date_at(self, i: int) -> date | None:
-        """Publish date of ``entries[i]`` (memoised), guarding the newest-first order."""
-        if i in self.dates:
-            return self.dates[i]
+    def date_at(self, i: int, *, check: bool = True) -> date | None:
+        """Publish date of ``entries[i]`` (memoised by id), guarding the order.
+
+        ``check=False`` is for the evidence probes inside :meth:`_resolve`, which
+        are judged all together right after.
+        """
+        vid = self.ids[i]
+        if not vid:
+            return None  # nothing to look up: undatable, costs no probe
+        if vid in self.known:
+            return self.known[vid]
+        if self.max_probes and self.probes >= self.max_probes:
+            raise WindowScanError(
+                f"gave up after {self.probes} date probes (limit {self.max_probes}): the "
+                "channel's upload order is too irregular to bisect, or dates stopped coming back"
+            )
         d = self.probe_date(self.entries[i])
         self.probes += 1
-        self.dates[i] = d
-        if d is not None and not self.in_amb(i):
-            self._check_order(i, d)
+        self.known[vid] = d
+        if d is None:
+            self.undatable_run += 1
+            if self.max_undatable_run and self.undatable_run > self.max_undatable_run:
+                raise WindowScanError(
+                    f"{self.undatable_run} date probes in a row came back undatable "
+                    f"(limit {self.max_undatable_run}): the lookups are probably being refused"
+                )
+        else:
+            self.undatable_run = 0
+            if check and vid not in self.bad:
+                self._check_order(i, d)
         return d
 
-    def _check_order(self, i: int, d: date) -> None:
-        # The trusted set is monotone (invariant), so a new probe that fits
-        # between its two nearest trusted neighbours fits everywhere.
+    def _neighbours(self, i: int) -> tuple[tuple[int, date] | None, tuple[int, date] | None]:
+        """Nearest trusted ``(index, date)`` before and after ``i``, excluding ``i``."""
         pred: tuple[int, date] | None = None
         succ: tuple[int, date] | None = None
         for j, dj in self.trusted():
-            if j < i and (pred is None or j > pred[0]):
+            if j < i:
                 pred = (j, dj)
-            elif j > i and (succ is None or j < succ[0]):
+            elif j > i:
                 succ = (j, dj)
+                break
+        return pred, succ
+
+    def _check_order(self, i: int, d: date) -> None:
+        # The trusted set is monotone (invariant), so a probe that fits between
+        # its two nearest trusted neighbours fits everywhere.
+        pred, succ = self._neighbours(i)
+        partners = []
         if pred is not None and pred[1] < d:  # an EARLIER index dated OLDER: contradiction
-            self._grow_amb(pred[0], i)
+            partners.append(pred[0])
         if succ is not None and d < succ[1]:
-            self._grow_amb(i, succ[0])
+            partners.append(succ[0])
+        if partners:
+            self._resolve(i, partners)
 
-    def _grow_amb(self, a: int, b: int) -> None:
-        lo, hi = (a, b) if self.amb is None else (min(a, self.amb[0]), max(b, self.amb[1]))
-        self.amb = (lo, hi)
-        self.amb_grew = True
+    def _fits(self, i: int, d: date) -> bool:
+        pred, succ = self._neighbours(i)
+        return (pred is None or pred[1] >= d) and (succ is None or d >= succ[1])
 
-    def date_range(self, a: int, b: int) -> None:
-        """Date every entry in ``[a, b]`` — the linear degrade for the hull."""
-        for i in range(a, b + 1):
-            self.date_at(i)
+    def _resolve(self, k: int, partners: list[int]) -> None:
+        """Classify the inversion exposed by the probe at ``k``.
+
+        Date the immediate neighbours of ``k`` and of the entries it contradicts —
+        a handful of probes — so that a LONE outlier is identifiable (whichever of
+        the pair is out of line with its own neighbours), mark the smallest
+        inconsistent set bad, then grow each bad entry into the run it belongs to.
+        """
+        self.dirty = True
+        for x in (k, *partners):
+            for y in (x - 1, x + 1):
+                if 0 <= y < len(self.ids) and not self.is_bad(y):
+                    self.date_at(y, check=False)
+        pts = self.trusted()
+        for pos in _out_of_order([d for _, d in pts]):
+            self.bad.add(self.ids[pts[pos][0]])
+        self._expand_bad()
+
+    def _expand_bad(self) -> None:
+        """Extend every bad entry outward while its neighbours also break the order.
+
+        A lone outlier stops at once (its neighbours were dated as evidence and
+        fit); a stretch of out-of-place entries is dated entry by entry, which the
+        probe budget bounds.
+        """
+        frontier = [i for i in range(len(self.ids)) if self.is_bad(i)]
+        while frontier:
+            i = frontier.pop()
+            for y in (i - 1, i + 1):
+                if not (0 <= y < len(self.ids)) or self.is_bad(y):
+                    continue
+                d = self.date_at(y, check=False)
+                if d is not None and not self._fits(y, d):
+                    self.bad.add(self.ids[y])
+                    frontier.append(y)
 
     def nearest(self, mid: int, a: int, b: int) -> tuple[int, date] | None:
         """Nearest trusted datable index to ``mid`` inside ``[a, b)``, or ``None``.
 
-        Deterministic outward order (mid, mid+1, mid-1, mid+2, ...). Hull indices
+        Deterministic outward order (mid, mid+1, mid-1, mid+2, ...). Bad entries
         are skipped without a probe: they are judged by their own date later.
         """
         for off in range(b - a):
             for j in (mid,) if off == 0 else (mid + off, mid - off):
-                if a <= j < b and not self.in_amb(j):
+                if a <= j < b and not self.is_bad(j):
                     d = self.date_at(j)
-                    if self.amb_grew:  # the probe exposed an inversion: `run` redoes the search
+                    if self.dirty:  # the probe exposed an inversion: `run` redoes the search
                         return None
                     if d is not None:
                         return j, d
@@ -294,15 +427,11 @@ class _WindowScan:
 
     def oldest_trusted(self) -> date | None:
         """Date of the oldest datable, trusted entry fetched so far (``None`` if none)."""
-        i = len(self.entries) - 1
-        while i >= 0:
-            if self.amb is not None and self.in_amb(i):
-                i = self.amb[0] - 1
-                continue
-            d = self.date_at(i)
-            if d is not None and not self.in_amb(i):
-                return d
-            i -= 1
+        for i in range(len(self.entries) - 1, -1, -1):
+            if not self.is_bad(i):
+                d = self.date_at(i)
+                if d is not None and not self.is_bad(i):
+                    return d
         return None
 
     def gallop(self) -> None:
@@ -313,7 +442,7 @@ class _WindowScan:
         """
         requested = self.first_batch if not self.cap else min(self.first_batch, self.cap)
         self.fetch(requested)
-        while len(self.entries) >= requested:
+        while self.raw_count >= requested:
             oldest = self.oldest_trusted()
             if oldest is not None and oldest < self.since:
                 return
@@ -347,7 +476,7 @@ class _WindowScan:
             else:
                 a = max(a, i + 1)
         probe_edge = edge
-        while a < b and not self.amb_grew:
+        while a < b and not self.dirty:
             hit = self.nearest(a if probe_edge else (a + b) // 2, a, b)
             probe_edge = False
             if hit is None:
@@ -370,20 +499,19 @@ class _WindowScan:
     def run(self) -> tuple[int, int]:
         self.gallop()
         while True:
-            if self.amb is not None:
-                self.date_range(*self.amb)
-            self.amb_grew = False
+            self.dirty = False
             hi, lo = self.bounds()
-            if not self.amb_grew:  # else the hull grew mid-search: redo it without the hull
+            if not self.dirty:  # else an inversion was resolved mid-search: redo it without it
                 return hi, lo
 
     def window(self, hi: int, lo: int) -> list[dict]:
         """Entries inside the window, newest first, each carrying its known ``_date``."""
         out: list[dict] = []
         for k, e in enumerate(self.entries):
-            d = self.dates.get(k)
-            if d is not None and self.in_amb(k):
-                inside = self.since <= d <= self.until  # hull: the actual date decides
+            vid = self.ids[k]
+            d = self.known.get(vid) if vid else None
+            if vid in self.bad and d is not None:
+                inside = self.since <= d <= self.until  # out of line: its own date decides
             else:
                 inside = hi <= k < lo
             if inside:
@@ -401,11 +529,15 @@ def scan_window(
     *,
     cap: int = 5000,
     first_batch: int = 64,
+    max_probes: int = 200,
+    max_undatable_run: int = 24,
+    skip: Callable[[dict], bool] | None = None,
 ) -> tuple[list[dict], dict]:
     """Entries of a newest-first channel list published in ``[since, until]``.
 
     PURE: all I/O is injected (the same idea as ``tokens.split_by_budget`` taking
-    its counter), so the search is testable with plain lists of dates.
+    its counter), so the search is testable with plain lists of dates. Entries are
+    yt-dlp flat entries: dicts whose ``"id"`` is the video id (the memo key).
 
     * ``fetch_flat(n)`` -> the first ``n`` flat entries, newest first; fewer than
       ``n`` means the channel is exhausted.
@@ -415,37 +547,58 @@ def scan_window(
     * ``since``/``until`` are INCLUSIVE: a video published exactly on either
       day is in. ``since > until`` is an empty window and does no I/O.
     * ``cap`` bounds the flat entries ever requested (``0`` = unlimited).
+    * ``skip(entry)`` -> ``True`` drops an entry before the search (e.g. a video
+      not published yet). Applied AFTER the exhaustion test, so dropped entries
+      never make a full reply look short.
+    * ``max_probes`` is a hard budget of ``probe_date`` calls (``0`` = unlimited)
+      and ``max_undatable_run`` the longest tolerated streak of probes in a row
+      that come back ``None`` (``0`` = unlimited). Either tripping raises
+      :class:`WindowScanError` instead of returning a window the search can't
+      vouch for — a streak that long means dates are not coming back at all, and
+      treating "everything is undatable" as "everything is inside" would hand
+      back the whole scan. Small undatable regions (a few removed videos) are
+      well under both and keep working as documented below.
 
     Method: **gallop** — fetch ``first_batch``, date its LAST entry, and double
     the request while that entry is still ``>= since`` (the channel's size is
     unknown up front and the tab has no cursor); then **bisect** the in-memory
     list for the window's two borders. A monotonic channel costs O(log N)
-    probes (~28 for 3000 videos), never one per video.
+    probes (~28 for 3000 videos), never one per video. Probes are memoised by
+    video id, so a list that shifts between fetches (a video published or
+    removed meanwhile) costs nothing extra and can't misattribute a date.
 
     Newest-first order is an assumption, not a guarantee (premieres and VODs
-    can be listed out of place). Probes that contradict it are detected; the
-    span between the contradicting pair is then dated entry by entry and
-    judged by actual date, ``meta["non_monotonic"]`` is set, and the result is
-    correct for everything dated. LIMIT: only inversions between PROBED entries
-    are visible — an out-of-place entry that no other probe contradicts can
-    shift a border or slip through unnoticed, so callers that date the returned
-    items anyway should re-filter them by date.
+    can be listed out of place). A probe that contradicts the order is detected
+    and classified locally: its neighbours are dated, and the smallest set of
+    entries that breaks the order — normally ONE — is judged by its own date
+    instead of its position, at the price of a handful of extra probes.
+    ``meta["non_monotonic"]`` is set and the result is correct for everything
+    dated. LIMIT: only inversions between PROBED entries are visible — an
+    out-of-place entry that no other probe contradicts can shift a border or
+    slip through unnoticed, so callers that date the returned items anyway
+    should re-filter them by date. A long stretch of out-of-order entries is
+    dated one by one, which the ``max_probes`` budget turns into an error.
 
     Undatable entries are routed around (nearest datable neighbour); a region
-    with no datable entry at all is kept INSIDE the window, never dropped.
+    with no datable entry at all is kept INSIDE the window, never dropped. An
+    entry with no ``"id"`` is undatable by construction (no probe is spent).
 
     Every returned entry whose date was learned carries it as ``entry["_date"]``
     (a ``date``) — already paid for, so callers needn't fetch it again.
 
     ``meta``: ``probes`` (``probe_date`` calls), ``flat_requests``, ``scanned``
-    (flat entries in the final fetch), ``truncated_by_cap`` (the cap stopped the
-    gallop while the window was still open — the result may be incomplete) and
-    ``non_monotonic``.
+    (flat entries in the final fetch, before ``skip``), ``truncated_by_cap``
+    (the cap stopped the gallop while the window was still open — the result may
+    be incomplete) and ``non_monotonic``.
     """
     if first_batch < 1:
         raise ValueError(f"first_batch must be >= 1, got {first_batch}")
     if cap < 0:
         raise ValueError(f"cap must be >= 0 (0 = unlimited), got {cap}")
+    if max_probes < 0:
+        raise ValueError(f"max_probes must be >= 0 (0 = unlimited), got {max_probes}")
+    if max_undatable_run < 0:
+        raise ValueError(f"max_undatable_run must be >= 0 (0 = unlimited), got {max_undatable_run}")
     meta = {
         "probes": 0,
         "flat_requests": 0,
@@ -455,15 +608,25 @@ def scan_window(
     }
     if since > until:
         return [], meta
-    scan = _WindowScan(fetch_flat, probe_date, since, until, cap, first_batch)
+    scan = _WindowScan(
+        fetch_flat,
+        probe_date,
+        since,
+        until,
+        cap=cap,
+        first_batch=first_batch,
+        max_probes=max_probes,
+        max_undatable_run=max_undatable_run,
+        skip=skip,
+    )
     hi, lo = scan.run()
     items = scan.window(hi, lo)
     meta.update(
         probes=scan.probes,
         flat_requests=scan.flat_requests,
-        scanned=len(scan.entries),
+        scanned=scan.raw_count,
         truncated_by_cap=scan.truncated,
-        non_monotonic=scan.amb is not None,
+        non_monotonic=bool(scan.bad),
     )
     return items, meta
 
@@ -471,12 +634,30 @@ def scan_window(
 def video_upload_date(video_id: str) -> date | None:
     """Exact publish date of one video (UTC), via a full extraction (~1.3 s).
 
-    yt-dlp reports ``upload_date`` as ``"yyyymmdd"``; ``None`` when it is
-    missing (premieres/upcoming) or unparseable. Does not catch exceptions —
-    a private/removed/network failure surfaces to the caller, who knows
-    whether one bad video should sink the batch (see :func:`fill_dates`).
+    Metadata only, so the extraction runs with ``ignore_no_formats_error``
+    (yt-dlp 2026.07, checked against live videos): without it every video whose
+    formats can't be listed raises — members-only ("available to this channel's
+    members"), age-gated ("Sign in to confirm your age"), private, an
+    unavailable id, an upcoming premiere/live ("This live event will begin in
+    ...") — and with it every one of those returns an info dict instead.
+    Members-only and age-gated videos then carry their real ``upload_date``; a
+    private or removed id has none (-> ``None``).
+
+    ``None`` when there is no usable date: missing/unparseable, or the video is
+    ``is_upcoming`` — its ``upload_date`` is then the day the event page was
+    CREATED, not a publication (1-3 days before the scheduled start in the live
+    check), and an unpublished video belongs to no window.
+
+    Still raises for what the flag can't cover: a network failure, an HTTP
+    error, or any extractor error that isn't about formats. The caller tells a
+    per-video error from a blanket one (see :func:`_is_per_video_error`);
+    :func:`fill_dates` just skips the video.
     """
-    info = _extract(f"https://www.youtube.com/watch?v={video_id}", {})
+    info = _extract(
+        f"https://www.youtube.com/watch?v={video_id}", {"ignore_no_formats_error": True}
+    )
+    if info.get("live_status") == "is_upcoming":
+        return None
     raw = str(info.get("upload_date") or "")
     if len(raw) != 8 or not (raw.isascii() and raw.isdigit()):
         return None
@@ -484,6 +665,39 @@ def video_upload_date(video_id: str) -> date | None:
         return date(int(raw[:4]), int(raw[4:6]), int(raw[6:]))
     except ValueError:
         return None
+
+
+def _is_per_video_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is yt-dlp complaining about THIS video, not about the network.
+
+    yt-dlp wraps the original in a ``DownloadError`` (``exc_info[1]``). Observed
+    on 2026.07: a private, removed, members-only, age-gated or premiere video
+    fails with an ``ExtractorError`` that is ``expected`` and has no ``cause`` —
+    a verdict about that video alone. A refused connection (``ProxyError``) or
+    an HTTP failure (``HTTPError``, 404 on a tab) is a ``yt_dlp.networking``
+    exception, not an ``ExtractorError`` at all, so it says something about
+    every video. Not observed, but possible: an ``expected`` ``ExtractorError``
+    that is really blanket (a bot wall would be one) passes for per-video here;
+    :func:`scan_window`'s undatable-streak guard is what catches that.
+    ``yt_dlp`` is imported lazily, here, only once an exception exists.
+    """
+    try:
+        from yt_dlp.utils import ExtractorError
+    except ImportError:  # pragma: no cover - yt-dlp is a base dependency
+        return False
+    info = getattr(exc, "exc_info", None)
+    inner = info[1] if isinstance(info, tuple) and len(info) > 1 and info[1] is not None else exc
+    return isinstance(inner, ExtractorError) and bool(inner.expected) and inner.cause is None
+
+
+def _is_unpublished(entry: dict) -> bool:
+    """Flat entry of a video that is scheduled but not out yet (premiere / upcoming live)."""
+    return entry.get("live_status") == "is_upcoming"
+
+
+# Consecutive date probes failing for reasons that are not about the video
+# (network, rate limit, ...) before `channel_entries_window` stops and re-raises.
+_PROBE_BREAKER = 3
 
 
 def channel_entries_window(
@@ -508,14 +722,23 @@ def channel_entries_window(
       module docstring); the caller routes it elsewhere.
     * anything else — ``ValueError``. Both are raised before any network call.
 
-    Same error contract as :func:`channel_entries`: exceptions are NOT caught
-    — a raised error is the caller's cue to fall back to Selenium. A returned
-    empty ``items`` is ambiguous on its own: ``meta["scanned"] == 0`` means the
-    tab itself came back empty (fall back), while ``scanned > 0`` means the
-    window genuinely holds no videos. A single failing date probe also
-    propagates rather than being read as "undatable": swallowing a blanket
-    network failure would make every entry look undatable and silently return
-    the whole scan.
+    Videos that are scheduled but not out yet (flat ``live_status`` is
+    ``"is_upcoming"``) are dropped from the scan: not published, so in no window,
+    and they sit exactly at index 0 where the "until = today" search looks first.
+
+    Same error contract as :func:`channel_entries`: a failing listing request
+    is NOT caught — a raised error is the caller's cue to fall back to Selenium,
+    as is :class:`WindowScanError` (the search gave up). A returned empty
+    ``items`` is ambiguous on its own: ``meta["scanned"] == 0`` means the tab
+    itself came back empty (fall back), while ``scanned > 0`` means the window
+    genuinely holds no videos.
+
+    A date probe that fails is judged by what failed (:func:`_is_per_video_error`):
+    an error about that video (private, removed, ...) just makes it undatable,
+    so one unreadable video no longer sinks the scan. Anything else — network,
+    rate limit — is also tolerated for the first two in a row, but the third
+    consecutive one is re-raised: swallowing a blanket outage would make every
+    entry look undatable.
     """
     if order == "popular":
         raise NotImplementedError(
@@ -526,6 +749,7 @@ def channel_entries_window(
         raise ValueError(f"unknown order: {order!r} (expected recent|old)")
 
     name = ""
+    failures = 0  # consecutive probes that failed for a reason that isn't the video's
 
     def fetch_flat(n: int) -> list[dict]:
         nonlocal name
@@ -537,10 +761,24 @@ def channel_entries_window(
         return list(info.get("entries") or [])
 
     def probe(entry: dict) -> date | None:
+        nonlocal failures
         vid = entry.get("id") or ""
-        return video_upload_date(vid) if vid else None
+        if not vid:
+            return None
+        try:
+            d = video_upload_date(vid)
+        except Exception as exc:
+            if not _is_per_video_error(exc):
+                failures += 1
+                if failures >= _PROBE_BREAKER:
+                    raise
+            else:
+                failures = 0  # YouTube answered, about this video only
+            return None
+        failures = 0
+        return d
 
-    entries, meta = scan_window(fetch_flat, probe, since, until, cap=cap)
+    entries, meta = scan_window(fetch_flat, probe, since, until, cap=cap, skip=_is_unpublished)
     items = []
     for e in entries:
         item = _entry_to_item(e)
@@ -559,26 +797,39 @@ def fill_dates(items: list[dict], *, workers: int = 4) -> int:
     the work is network-bound, and ``workers`` stays low (4) as a ceiling
     against YouTube rate-limiting rather than for CPU. One failing video
     (private, removed, transient error) is left undated instead of failing the
-    batch. Items without a ``video_id`` are skipped. ``items`` keeps its order;
-    ``"date"`` is written from the calling thread, never from a worker.
+    batch, but never silently: a single warning (logger ``viewlyt``) gives how
+    many items stayed undated and, when requests failed, the first error — so a
+    total outage reads as one. Items without a ``video_id`` are skipped.
+    ``items`` keeps its order; ``"date"`` is written from the calling thread,
+    never from a worker.
     """
     todo = [it for it in items if not it.get("date") and it.get("video_id")]
     if not todo:
         return 0
 
-    def one(item: dict) -> date | None:
+    def one(item: dict) -> tuple[date | None, Exception | None]:
         try:
-            return video_upload_date(item["video_id"])
-        except Exception:  # one bad video must not sink the rest
-            return None
+            return video_upload_date(item["video_id"]), None
+        except Exception as exc:  # one bad video must not sink the rest
+            return None, exc
 
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(todo)))) as pool:
-        dates = list(pool.map(one, todo))
+        results = list(pool.map(one, todo))
     filled = 0
-    for item, d in zip(todo, dates, strict=True):
+    errors: list[Exception] = []
+    for item, (d, err) in zip(todo, results, strict=True):
+        if err is not None:
+            errors.append(err)
         if d is not None:
             item["date"] = d.isoformat()
             filled += 1
+    if filled < len(todo):
+        why = (
+            f"{len(errors)} request(s) failed, first: {str(errors[0])[:150]}"
+            if errors
+            else "yt-dlp returned no publish date"
+        )
+        log.warning("could not date %d of %d video(s) (%s)", len(todo) - filled, len(todo), why)
     return filled
 
 
@@ -627,7 +878,9 @@ def _json3_to_segments(data: dict) -> list[tuple[str, str]]:
     Skipped events: ``aAppend`` ones (ASR tracks interleave bare ``"\\n"``
     line-break events that are layout, not speech), events without ``segs``
     (window/style housekeeping) and events whose text is empty once collapsed.
-    Never raises: any non-dict/garbage input yields ``[]``.
+    Never raises: any non-dict/garbage input yields ``[]``; a ``utf8`` that
+    isn't a string is ignored, and a ``tStartMs`` that isn't a finite number
+    (``json.loads`` accepts ``NaN``/``Infinity``) just leaves the timestamp empty.
     """
     from .htmltext import format_duration
 
@@ -638,12 +891,18 @@ def _json3_to_segments(data: dict) -> list[tuple[str, str]]:
     for ev in events:
         if not isinstance(ev, dict) or ev.get("aAppend") or not isinstance(ev.get("segs"), list):
             continue
-        raw = "".join(s.get("utf8") or "" for s in ev["segs"] if isinstance(s, dict))
+        raw = "".join(
+            s["utf8"] for s in ev["segs"] if isinstance(s, dict) and isinstance(s.get("utf8"), str)
+        )
         text = " ".join(raw.split())
         if not text:
             continue
         start = ev.get("tStartMs")
-        ts = format_duration(int(start) // 1000) if isinstance(start, (int, float)) else ""
+        ts = ""
+        if isinstance(start, (int, float)) and not isinstance(start, bool):
+            # An int can't be NaN/inf, and math.isfinite() would overflow on a huge one.
+            if isinstance(start, int) or math.isfinite(start):
+                ts = format_duration(int(start) // 1000)
         segments.append((ts, text))
     return segments
 
@@ -658,34 +917,75 @@ def _json3_url(tracks: object) -> str | None:
     return None
 
 
+def _primary(tag: str) -> str:
+    """Primary language subtag, lower-cased: ``pt-BR`` -> ``pt``, ``zh_Hans`` -> ``zh``."""
+    return tag.replace("_", "-").split("-", 1)[0].lower()
+
+
+def _in_language(tracks: dict, language: str, *, suffix: str = "") -> list[object]:
+    """Track lists of ``tracks`` in ``language``, best first, ``live_chat`` never among them.
+
+    The exact key (``language + suffix``) leads, then every key of the same
+    primary language (``pt`` ~ ``pt-BR`` ~ ``pt-PT``) in sorted order — creators
+    file a ``pt-BR`` track under a video YouTube calls plain ``pt``, and the
+    reverse, so an exact match alone would let ASR beat the human track. Sorting
+    makes the choice among regional variants deterministic. ``suffix`` (``"-orig"``)
+    restricts to — and strips from — that kind of key.
+    """
+    primary = _primary(language)
+    keys = sorted(
+        k
+        for k in tracks
+        if isinstance(k, str)
+        and k != "live_chat"
+        and k.endswith(suffix)
+        and k != suffix
+        and _primary(k[: len(k) - len(suffix)]) == primary
+    )
+    exact = language + suffix
+    keys.sort(key=lambda k: k != exact)  # stable: the exact key first, the rest stay sorted
+    return [tracks[k] for k in keys]
+
+
 def _pick_caption_track(info: dict) -> str | None:
     """``json3`` URL of the track the YouTube transcript panel shows by default.
 
     Pure. The panel prefers a human-made track in the video's own language, then
-    the ASR (auto-generated) track of that same language. Priority:
+    the ASR (auto-generated) track of that same language. Languages match by
+    PRIMARY subtag (``pt`` ~ ``pt-BR``), the exact key first and regional
+    variants after it in sorted order. Priority:
 
-    1. manual ``subtitles[language]``;
+    1. manual ``subtitles`` in ``language``;
     2. ASR ``automatic_captions["<language>-orig"]`` (yt-dlp keys the ORIGINAL
        ASR track with ``-orig``; the plain key can be a re-translation);
     3. ASR ``automatic_captions[language]``;
-    4. the first ASR key ending in ``-orig`` (``language`` missing or off);
+    4. ``language`` missing or matching nothing: the language is read off the
+       ASR ``-orig`` key(s) — that IS the video's spoken language — and a manual
+       track in it wins over the ASR track, otherwise the ASR ``-orig`` track;
     5. the first manual track that isn't ``live_chat`` (a replay's chat log is
        filed under ``subtitles`` but is not a caption).
 
-    A track with no ``json3`` entry is skipped (next priority). ``None`` when
+    A track with no ``json3`` entry is skipped (next candidate). ``None`` when
     nothing qualifies — in particular a translated ASR track is NEVER a last
     resort: ASR translations (~150 of them per video) would be machine output
     of machine output, worse than the Selenium panel fallback.
     """
-    subs = info.get("subtitles") or {}
-    auto = info.get("automatic_captions") or {}
+    subs = info.get("subtitles")
+    auto = info.get("automatic_captions")
+    subs = subs if isinstance(subs, dict) else {}
+    auto = auto if isinstance(auto, dict) else {}
     language = info.get("language")
 
     candidates: list[object] = []
-    if language:
-        candidates += [subs.get(language), auto.get(f"{language}-orig"), auto.get(language)]
-    candidates.append(next((v for k, v in auto.items() if k.endswith("-orig")), None))
-    candidates.append(next((v for k, v in subs.items() if k != "live_chat"), None))
+    if language and isinstance(language, str):
+        candidates += _in_language(subs, language)
+        candidates += _in_language(auto, language, suffix="-orig")
+        candidates.append(auto.get(language))
+    for key in auto:
+        if isinstance(key, str) and key.endswith("-orig") and len(key) > len("-orig"):
+            candidates += _in_language(subs, key[: -len("-orig")])
+            candidates.append(auto[key])
+    candidates += [v for k, v in subs.items() if k != "live_chat"]
     for tracks in candidates:
         url = _json3_url(tracks)
         if url:
@@ -702,17 +1002,35 @@ def _extract_with_captions(video_id: str) -> tuple[dict, dict | None]:
     for the json3 file). The payload is ``None`` when the video has no usable
     caption track. Never catches exceptions. Tests patch THIS function, never
     yt-dlp internals.
+
+    The first pass runs with ``ignore_no_formats_error``: captions don't need
+    formats, and an age-gated video fails on its formats yet still lists its
+    caption tracks (live check: 14 manual + 157 ASR on one, where it used to
+    raise). That flag
+    also turns "unavailable", "members-only" and "upcoming" into an empty info
+    dict, which would silently change this function's contract (a removed video
+    must RAISE, so ``--transcript-engine ytdlp`` fails it instead of reporting a
+    fake ``youtube video #id`` title with no segments). So when the first pass
+    found no captions AND no formats, the video is asked again strictly, and
+    whatever that raises is what the caller gets, exactly as before the flag.
     """
     import json
 
     import yt_dlp
 
+    url = f"https://www.youtube.com/watch?v={video_id}"
     opts = {**_BASE_OPTS, "logger": _NullLogger()}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-        info = info or {}
-        url = _pick_caption_track(info)
-        payload = json.loads(ydl.urlopen(url).read()) if url else None
+    with yt_dlp.YoutubeDL({**opts, "ignore_no_formats_error": True}) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+        track = _pick_caption_track(info)
+        if track:
+            return info, json.loads(ydl.urlopen(track).read())
+    if info.get("formats"):  # an ordinary video that simply has no captions
+        return info, None
+    with yt_dlp.YoutubeDL(opts) as ydl:  # the flag may have swallowed a real failure
+        info = ydl.extract_info(url, download=False) or {}
+        track = _pick_caption_track(info)
+        payload = json.loads(ydl.urlopen(track).read()) if track else None
     return info, payload
 
 

@@ -9,12 +9,14 @@ yt-dlp wrappers around it (``video_upload_date``, ``channel_entries_window``,
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from datetime import date, timedelta
 
 import pytest
@@ -456,14 +458,46 @@ def test_scan_undatable_region_at_the_newer_border_is_kept_inside() -> None:
     assert got == list(range(0, 51))  # kept: unknown beats silently dropped
 
 
-def test_scan_all_entries_undatable_keeps_everything_and_never_crashes() -> None:
-    dates: list[date | None] = [None] * 100
-    ch = FakeChannel(dates)
-    got, meta, items = ch.scan(day(50), day(10))
+def test_scan_all_entries_undatable_raises_instead_of_returning_the_whole_scan() -> None:
+    # REWRITTEN (was: "all entries undatable -> the whole scan is returned"). When
+    # dates stop coming back at all, "everything is undatable" must not read as
+    # "everything is inside the window": the streak guard gives up with a clear error.
+    ch = FakeChannel([None] * 100)
+    with pytest.raises(ytdl.WindowScanError, match="in a row"):
+        ch.scan(day(50), day(10))
+    assert len(ch.probed) == 25 == len(set(ch.probed))  # limit 24 + the probe that tripped it
+
+
+def test_scan_all_entries_undatable_with_the_guards_off_keeps_everything() -> None:
+    # The old contract, still available when the caller switches the guards off.
+    ch = FakeChannel([None] * 100)
+    got, meta, items = ch.scan(day(50), day(10), max_probes=0, max_undatable_run=0)
     assert got == list(range(100))
     assert all("_date" not in e for e in items)
     assert len(ch.probed) == len(set(ch.probed))  # still never a repeated probe
     assert meta["non_monotonic"] is False
+
+
+def test_scan_undatable_streak_guard_boundary_is_the_documented_limit() -> None:
+    # 24 undatable probes in a row are tolerated (default limit), the 25th trips it.
+    got, _, _ = FakeChannel([None] * 24).scan(day(50), day(10))
+    assert got == list(range(24))  # kept inside, no error
+    with pytest.raises(ytdl.WindowScanError, match="in a row"):
+        FakeChannel([None] * 25).scan(day(50), day(10))
+    # The same list passes once the caller widens the guard.
+    got, _, _ = FakeChannel([None] * 25).scan(day(50), day(10), max_undatable_run=25)
+    assert got == list(range(25))
+
+
+def test_scan_undatable_streak_guard_is_reset_by_a_datable_probe() -> None:
+    # Undatable entries scattered through a channel are never a streak: a datable
+    # probe in between resets the counter, however many there are in total.
+    dates: list[date | None] = list(daily(300))
+    for i in range(0, 300, 2):
+        dates[i] = None  # every other entry: 150 undatable in total
+    ch = FakeChannel(dates)
+    got, _, _ = ch.scan(day(200), day(0))
+    assert got == expected_with_blind(dates, day(200), day(0))
 
 
 def test_scan_undatable_tail_does_not_stop_the_gallop_early() -> None:
@@ -499,7 +533,7 @@ def test_scan_random_undatable_entries_follow_the_documented_contract() -> None:
 # --- non-monotonic channels ---------------------------------------------------
 
 
-def test_scan_inversion_caught_by_the_gallop_is_dated_linearly() -> None:
+def test_scan_inversion_caught_by_the_gallop_is_judged_by_its_own_date() -> None:
     dates: list[date | None] = list(daily(40))
     dates[15] = NEWEST + timedelta(days=2)  # a premiere/VOD listed far below where it belongs
     ch = FakeChannel(dates)
@@ -511,7 +545,7 @@ def test_scan_inversion_caught_by_the_gallop_is_dated_linearly() -> None:
     assert len(ch.probed) == len(set(ch.probed))
 
 
-def test_scan_inversion_caught_by_the_bisection_is_dated_linearly() -> None:
+def test_scan_inversion_caught_by_the_bisection_is_judged_by_its_own_date() -> None:
     dates: list[date | None] = list(daily(100))
     dates[57] = day(90)  # listed at 57 but dated like entry 90: older than its later neighbours
     ch = FakeChannel(dates)
@@ -663,6 +697,278 @@ def test_scan_random_monotone_channels_match_a_brute_force_filter() -> None:
                 assert e["_date"] == dates[e["idx"]]
 
 
+# --- the list shifts while it is being scanned -----------------------------------
+
+
+class MutatingChannel:
+    """A channel that changes UNDER the scan: ``mutations[k](channel)`` runs just before the
+    k-th flat fetch (0-based) is served, the way a channel keeps publishing (a video at the
+    front) or deleting (one vanishes) while the gallop re-fetches a longer prefix."""
+
+    def __init__(
+        self,
+        items: list[tuple[str, date]],
+        mutations: dict[int, Callable[[MutatingChannel], None]] | None = None,
+    ) -> None:
+        self.items = list(items)
+        self.dates = dict(items)
+        self.mutations = mutations or {}
+        self.requests: list[int] = []
+        self.served: list[str] = []  # ids of the LAST fetch: the list the answer is about
+        self.probed: list[str] = []
+
+    def insert(self, pos: int, item: tuple[str, date]) -> None:
+        self.items.insert(pos, item)
+        self.dates[item[0]] = item[1]
+
+    def remove(self, vid: str) -> None:
+        self.items = [it for it in self.items if it[0] != vid]
+
+    def fetch_flat(self, n: int) -> list[dict]:
+        k = len(self.requests)
+        self.requests.append(n)
+        if k in self.mutations:
+            self.mutations[k](self)
+        out = self.items[:n]
+        self.served = [vid for vid, _ in out]
+        return [{"id": vid} for vid, _ in out]
+
+    def probe_date(self, entry: dict) -> date | None:
+        self.probed.append(entry["id"])
+        return self.dates[entry["id"]]
+
+    def check(self, since: date, until: date, **kw) -> tuple[list[str], dict]:
+        """Scan, then assert the answer equals the brute-force filter of the FINAL list,
+        that no item carries another video's date, and that no video was dated twice."""
+        items, meta = scan_window(self.fetch_flat, self.probe_date, since, until, **kw)
+        ids = [e["id"] for e in items]
+        assert ids == [v for v in self.served if since <= self.dates[v] <= until]
+        for e in items:
+            if "_date" in e:
+                assert e["_date"] == self.dates[e["id"]], e["id"]
+        assert len(self.probed) == len(set(self.probed))
+        return ids, meta
+
+
+def numbered(n: int) -> list[tuple[str, date]]:
+    return [(f"v{i:03d}", day(i)) for i in range(n)]
+
+
+def test_scan_survives_a_video_published_between_two_fetches() -> None:
+    # A new upload lands at the front before the second fetch: every index shifts by one.
+    new = ("new000", NEWEST + timedelta(days=1))
+    ch = MutatingChannel(numbered(400), {1: lambda c: c.insert(0, new)})
+    ids, meta = ch.check(day(150), NEWEST + timedelta(days=5), first_batch=16)
+    assert ids[0] == "new000" and ids[1:] == [f"v{i:03d}" for i in range(151)]
+    assert meta["non_monotonic"] is False
+    assert len(ch.requests) >= 3  # the scenario really did re-fetch more than once
+
+
+def test_scan_survives_a_video_removed_between_two_fetches() -> None:
+    # One removal of a video the scan never dated, one of a video it already had.
+    ch = MutatingChannel(
+        numbered(400),
+        {1: lambda c: c.remove("v010"), 2: lambda c: c.remove("v015")},
+    )
+    ids, _ = ch.check(day(150), NEWEST, first_batch=16)
+    assert "v010" not in ids and "v015" not in ids and "v016" in ids
+
+
+def test_scan_survives_a_video_inserted_mid_list_between_fetches() -> None:
+    # Lands among entries the scan has ALREADY dated (index 10 < the probes at 15 and 31),
+    # on the same day as v009: a tie, so the order stays valid.
+    mid = ("mid009", day(9))
+    ch = MutatingChannel(numbered(400), {2: lambda c: c.insert(10, mid)})
+    ids, _ = ch.check(day(150), day(5), first_batch=16)
+    assert "mid009" in ids and ids.index("mid009") == ids.index("v009") + 1
+
+
+def test_scan_survives_a_shift_that_moves_the_border_itself() -> None:
+    # The entry the older border sits on moves down one place when something is published.
+    ch = MutatingChannel(
+        numbered(300),
+        {
+            1: lambda c: c.insert(0, ("a", NEWEST + timedelta(days=1))),
+            2: lambda c: c.insert(0, ("b", NEWEST + timedelta(days=2))),
+        },
+    )
+    ids, _ = ch.check(day(100), NEWEST + timedelta(days=9), first_batch=8)
+    assert ids[:2] == ["b", "a"] and ids[-1] == "v100"
+
+
+def test_scan_random_mutations_between_fetches_match_a_brute_force_of_the_final_list() -> None:
+    rng = random.Random(20260716)
+    for _ in range(250):
+        n = rng.randint(40, 300)
+        items = [(f"v{i:04d}", day(i)) for i in range(n)]
+        newest = [0]  # how far into the future the next front insert is dated
+
+        def mutate(
+            c: MutatingChannel, rng: random.Random = rng, newest: list[int] = newest
+        ) -> None:
+            roll = rng.random()
+            if roll < 0.4:
+                newest[0] += 1
+                c.insert(0, (f"n{newest[0]:03d}", NEWEST + timedelta(days=newest[0])))
+            elif roll < 0.7 and len(c.items) > 5:
+                c.remove(c.items[rng.randrange(len(c.items))][0])
+            elif len(c.items) > 5:
+                pos = rng.randrange(1, len(c.items))
+                c.insert(pos, (f"m{rng.randrange(10**6)}", c.dates[c.items[pos - 1][0]]))
+
+        ch = MutatingChannel(items, {k: mutate for k in range(1, 6)})
+        since = NEWEST - timedelta(days=rng.randint(0, n))
+        until = NEWEST + timedelta(days=rng.randint(-10, 8))
+        if since > until:
+            since, until = until, since
+        ch.check(since, until, first_batch=rng.randint(2, 24))
+
+
+# --- a lone out-of-place entry is cheap; a stretch hits the budget -------------------
+
+
+def test_scan_lone_newer_outlier_costs_a_handful_of_probes_not_a_linear_scan() -> None:
+    base = daily(3000)
+    since, until = day(2500), NEWEST
+    _, clean, _ = FakeChannel(base).scan(since, until)
+    dates: list[date | None] = list(base)
+    dates[1023] = NEWEST + timedelta(days=3)  # a gallop probe, dated after everything before it
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(since, until)
+    assert meta["non_monotonic"] is True
+    assert got == brute(dates, since, until) and 1023 not in got  # judged by its own date
+    # It used to date every entry between the contradicting pair (~500 probes here).
+    assert meta["probes"] <= clean["probes"] + 8
+    assert len(ch.probed) == len(set(ch.probed))
+
+
+def test_scan_lone_older_outlier_is_the_one_that_gets_classified() -> None:
+    # The OLDER entry of the contradicting pair is the odd one (index 255 dated like 2400,
+    # still inside the window), so the far-away newer probe must NOT be the one distrusted.
+    base = daily(3000)
+    since, until = day(2500), NEWEST
+    _, clean, _ = FakeChannel(base).scan(since, until)
+    dates: list[date | None] = list(base)
+    dates[255] = day(2400)
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(since, until)
+    assert meta["non_monotonic"] is True
+    assert got == brute(dates, since, until)
+    assert meta["probes"] <= clean["probes"] + 8
+
+
+def test_scan_two_distant_outliers_stay_separate_and_cheap() -> None:
+    # Two inversions far apart used to fuse into ONE hull spanning ~1500 entries.
+    base = daily(3000)
+    since, until = day(2500), NEWEST
+    _, clean, _ = FakeChannel(base).scan(since, until)
+    dates: list[date | None] = list(base)
+    dates[511] = NEWEST + timedelta(days=4)
+    dates[2047] = NEWEST + timedelta(days=5)
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(since, until)
+    assert meta["non_monotonic"] is True
+    assert got == brute(dates, since, until) and 511 not in got and 2047 not in got
+    assert meta["probes"] <= clean["probes"] + 12
+    assert len(ch.probed) == len(set(ch.probed))
+
+
+def test_scan_a_short_run_of_outliers_is_grown_into_one_island_and_stays_cheap() -> None:
+    base = daily(3000)
+    since, until = day(2500), NEWEST
+    _, clean, _ = FakeChannel(base).scan(since, until)
+    dates: list[date | None] = list(base)
+    for k in range(1021, 1026):  # five in a row, the gallop probe 1023 among them
+        dates[k] = NEWEST + timedelta(days=3 + k)
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(since, until)
+    assert meta["non_monotonic"] is True
+    assert got == brute(dates, since, until)
+    assert not {1021, 1022, 1023, 1024, 1025} & set(got)  # incl. 1024/1025, past the first fetch
+    assert meta["probes"] <= clean["probes"] + 12
+
+
+def test_scan_detected_lone_outlier_always_costs_a_constant_number_of_extra_probes() -> None:
+    rng = random.Random(11)
+    flagged = 0
+    for trial in range(1500):
+        n = rng.randint(100, 600)
+        dates: list[date | None] = []
+        d = NEWEST
+        for _ in range(n):
+            dates.append(d)
+            d -= timedelta(days=rng.randint(0, 2))
+        since = NEWEST - timedelta(days=rng.randint(0, n))
+        until = since + timedelta(days=rng.randint(0, n))
+        first_batch = rng.randint(4, 80)
+        _, clean, _ = FakeChannel(dates).scan(since, until, first_batch=first_batch)
+        dates[rng.randrange(n)] = NEWEST - timedelta(days=rng.randint(-10, 2 * n))
+        got, meta, _ = FakeChannel(dates).scan(since, until, first_batch=first_batch)
+        if meta["non_monotonic"]:
+            flagged += 1
+            assert got == brute(dates, since, until), trial
+            assert meta["probes"] <= clean["probes"] + 12, (trial, meta, clean)
+    assert flagged >= 30  # the property isn't vacuous
+
+
+def _two_sections() -> list[date | None]:
+    """1500 OLD videos listed first, then 1500 newer ones: a long stretch out of order."""
+    return [day(i + 1500) for i in range(1500)] + [day(i) for i in range(1500)]
+
+
+def test_scan_a_long_stretch_out_of_order_exhausts_the_probe_budget() -> None:
+    dates = _two_sections()
+    ch = FakeChannel(dates)
+    with pytest.raises(ytdl.WindowScanError, match=r"200 date probes"):
+        ch.scan(day(2999), NEWEST)
+    assert len(ch.probed) == 200  # the budget is a hard ceiling, never overshot
+    assert issubclass(ytdl.WindowScanError, RuntimeError)
+
+    ch = FakeChannel(dates)
+    with pytest.raises(ytdl.WindowScanError, match=r"40 date probes"):
+        ch.scan(day(2999), NEWEST, max_probes=40)
+    assert len(ch.probed) == 40
+
+
+def test_scan_probe_budget_zero_means_unlimited_and_still_gets_it_right() -> None:
+    dates = _two_sections()
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(day(2999), NEWEST, max_probes=0)
+    assert got == brute(dates, day(2999), NEWEST)
+    assert meta["non_monotonic"] is True and meta["probes"] > 1000  # one by one, as it says
+
+
+def test_scan_probe_budget_applies_to_an_ordinary_channel_too() -> None:
+    ch = FakeChannel(daily(500))
+    with pytest.raises(ytdl.WindowScanError):
+        ch.scan(day(300), day(100), max_probes=3)
+    assert len(ch.probed) == 3
+    # ... and a budget the search fits in changes nothing.
+    got, _, _ = FakeChannel(daily(500)).scan(day(300), day(100), max_probes=30)
+    assert got == list(range(100, 301))
+
+
+def test_scan_rejects_negative_guard_limits() -> None:
+    ch = FakeChannel(daily(10))
+    with pytest.raises(ValueError, match="max_probes"):
+        ch.scan(day(5), day(1), max_probes=-1)
+    with pytest.raises(ValueError, match="max_undatable_run"):
+        ch.scan(day(5), day(1), max_undatable_run=-1)
+
+
+def test_out_of_order_helper_returns_the_entries_no_best_run_can_do_without() -> None:
+    d = [day(i) for i in range(10)]
+    assert ytdl._out_of_order(d) == set()  # ordered: nothing to distrust
+    assert ytdl._out_of_order([]) == set()
+    lone = list(d)
+    lone[5] = NEWEST + timedelta(days=3)
+    assert ytdl._out_of_order(lone) == {5}  # evidence is unambiguous: just that one
+    swapped = list(d)
+    swapped[4], swapped[5] = swapped[5], swapped[4]
+    assert ytdl._out_of_order(swapped) == {4, 5}  # a tie: both, never a guess
+    assert ytdl._out_of_order([day(1), day(1), day(1)]) == set()  # ties in dates are fine
+
+
 # ---------------------------------------------------------------------------
 # yt-dlp wrappers, through a fake of ytdl._extract
 # ---------------------------------------------------------------------------
@@ -678,10 +984,18 @@ class FakeYt:
         *,
         name: str = "Fake Channel",
         broken: set[str] | None = None,
+        errors: dict[str, Exception] | None = None,
+        entry_fields: dict[str, dict] | None = None,
+        watch_fields: dict[str, dict] | None = None,
+        fail_pattern: Callable[[int], Exception | None] | None = None,
     ) -> None:
         self.uploads = uploads
         self.name = name
         self.broken = broken or set()
+        self.errors = errors or {}  # vid -> the exception its watch page raises
+        self.entry_fields = entry_fields or {}  # vid -> extra keys on its FLAT entry
+        self.watch_fields = watch_fields or {}  # vid -> extra keys on its watch-page info
+        self.fail_pattern = fail_pattern  # watch-call number (0-based) -> exception or None
         self.calls: list[tuple[str, dict]] = []
 
     @property
@@ -702,15 +1016,24 @@ class FakeYt:
                     "title": f"title {vid}",
                     "url": f"https://www.youtube.com/watch?v={vid}",
                     "view_count": 100 + i,
+                    **self.entry_fields.get(vid, {}),
                 }
                 for i, (vid, _) in enumerate(self.uploads[:n])
             ]
             return {"channel": self.name, "entries": entries}
         vid = url.split("v=")[1]
+        n_watch = len(self.watch_calls) - 1  # this call is already recorded
+        if self.fail_pattern is not None and (exc := self.fail_pattern(n_watch)) is not None:
+            raise exc
+        if vid in self.errors:
+            raise self.errors[vid]
         if vid in self.broken:
             raise RuntimeError(f"extraction failed for {vid}")
         d = dict(self.uploads)[vid]
-        return {"upload_date": d.strftime("%Y%m%d") if d else None}
+        return {
+            "upload_date": d.strftime("%Y%m%d") if d else None,
+            **self.watch_fields.get(vid, {}),
+        }
 
 
 def make_uploads(n: int) -> list[tuple[str, date | None]]:
@@ -738,7 +1061,11 @@ def test_video_upload_date_parses_yyyymmdd(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(ytdl, "_extract", fake)
     assert video_upload_date("abcdefghijk") == date(2026, 5, 3)
-    assert seen == [("https://www.youtube.com/watch?v=abcdefghijk", {})]
+    # REWRITTEN (was `{}`): a metadata-only lookup asks yt-dlp not to fail on formats,
+    # which is what made members-only/age-gated/premiere videos raise.
+    assert seen == [
+        ("https://www.youtube.com/watch?v=abcdefghijk", {"ignore_no_formats_error": True})
+    ]
 
 
 @pytest.mark.parametrize(
@@ -798,9 +1125,10 @@ def test_channel_entries_window_recent(fake_yt) -> None:
     url, opts = yt.tab_calls[0]
     assert url == "https://www.youtube.com/@chan/videos"
     assert opts == {"extract_flat": "in_playlist", "playlistend": 64}
-    # Every probe is one watch-page extraction with no options, and none repeats.
+    # Every probe is one watch-page extraction (metadata only: formats may be missing),
+    # and none repeats. REWRITTEN: the options used to be `{}`.
     assert len(yt.watch_calls) == len(set(yt.watch_calls)) == meta["probes"]
-    assert all(c[1] == {} for c in yt.calls if "watch?v=" in c[0])
+    assert all(c[1] == {"ignore_no_formats_error": True} for c in yt.calls if "watch?v=" in c[0])
 
 
 def test_channel_entries_window_dates_only_the_probed_items(fake_yt) -> None:
@@ -1022,6 +1350,271 @@ def test_fill_dates_default_ceiling_is_four(monkeypatch: pytest.MonkeyPatch) -> 
     assert state["peak"] == 4
 
 
+# --- unreadable / unpublished videos must not sink the scan ---------------------------
+
+
+def per_video_error(msg: str = "This video is private") -> Exception:
+    """What yt-dlp raises for a verdict about ONE video: a DownloadError wrapping an
+    ``expected`` ExtractorError with no cause (shape observed on yt-dlp 2026.07)."""
+    from yt_dlp.utils import DownloadError, ExtractorError
+
+    return DownloadError(
+        f"ERROR: {msg}", (ExtractorError, ExtractorError(msg, expected=True), None)
+    )
+
+
+def network_error() -> Exception:
+    """A refused connection as yt-dlp reports it: a DownloadError wrapping a
+    ``yt_dlp.networking`` exception, which is not an ExtractorError at all."""
+    from yt_dlp.networking.exceptions import TransportError
+    from yt_dlp.utils import DownloadError
+
+    inner = TransportError("Unable to connect to proxy")
+    return DownloadError("ERROR: Unable to download API page", (TransportError, inner, None))
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        (per_video_error, True),
+        (lambda: per_video_error("Sign in to confirm your age"), True),
+        (network_error, False),
+        (lambda: RuntimeError("boom"), False),
+        (lambda: ValueError("not yt-dlp at all"), False),
+    ],
+)
+def test_per_video_error_classification(make, expected: bool) -> None:
+    assert ytdl._is_per_video_error(make()) is expected
+
+
+def test_per_video_error_needs_expected_and_no_network_cause() -> None:
+    from yt_dlp.networking.exceptions import TransportError
+    from yt_dlp.utils import DownloadError, ExtractorError
+
+    bare = ExtractorError("This video is unavailable", expected=True)
+    assert ytdl._is_per_video_error(bare) is True  # unwrapped works too
+    unexpected = ExtractorError("something odd")
+    assert ytdl._is_per_video_error(unexpected) is False
+    http = ExtractorError("HTTP Error 429", expected=True, cause=TransportError("x"))
+    assert ytdl._is_per_video_error(http) is False  # a network cause says nothing about THIS video
+    wrapped = DownloadError("ERROR: HTTP Error 429", (ExtractorError, http, None))
+    assert ytdl._is_per_video_error(wrapped) is False
+    assert ytdl._is_per_video_error(DownloadError("no exc_info at all")) is False
+
+
+def test_video_upload_date_of_an_upcoming_video_is_none_even_with_an_upload_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Observed live: an upcoming video's `upload_date` is the day the EVENT PAGE was
+    # created (days before the scheduled start), not a publication.
+    info = {
+        "upload_date": "20261111",
+        "live_status": "is_upcoming",
+        "release_timestamp": 1794680100,
+    }
+    monkeypatch.setattr(ytdl, "_extract", lambda url, opts: info)
+    assert video_upload_date("abcdefghijk") is None
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"live_status": "not_live", "availability": "subscriber_only"},  # members-only
+        {"live_status": "not_live", "availability": "needs_auth"},  # age-gated
+        {"live_status": "is_live"},  # live now: dated by when it started
+        {"live_status": "was_live"},
+        {"live_status": None},
+    ],
+)
+def test_video_upload_date_keeps_the_date_of_every_other_kind_of_video(
+    monkeypatch: pytest.MonkeyPatch, extra: dict
+) -> None:
+    monkeypatch.setattr(ytdl, "_extract", lambda url, opts: {"upload_date": "20261104", **extra})
+    assert video_upload_date("abcdefghijk") == date(2026, 11, 4)
+
+
+def test_an_unreadable_video_at_index_zero_does_not_sink_the_default_until_today_scan(
+    fake_yt,
+) -> None:
+    # `until = today` always probes the newest entry first — exactly where a premiere or
+    # an unreadable video sits. It is undatable (kept inside), and the scan carries on.
+    uploads = make_uploads(200)
+    fake_yt(FakeYt(uploads, errors={"vid000": per_video_error("This video is private")}))
+    _, items, meta = channel_entries_window("@chan", day(30), NEWEST + timedelta(days=30))
+    assert [it["video_id"] for it in items] == [f"vid{i:03d}" for i in range(0, 31)]
+    assert "date" not in items[0]  # nothing to date it by
+    assert meta["scanned"] == 64
+
+
+def test_unreadable_videos_in_the_middle_are_undatable_not_fatal(fake_yt) -> None:
+    uploads = make_uploads(300)
+    bad = {f"vid{i:03d}": per_video_error() for i in (63, 62, 127, 100, 101)}
+    fake_yt(FakeYt(uploads, errors=bad))
+    _, items, _ = channel_entries_window("@chan", day(200), day(10))
+    assert [it["video_id"] for it in items] == [f"vid{i:03d}" for i in range(10, 201)]
+
+
+def test_upcoming_entries_are_skipped_from_the_flat_data_and_never_probed(fake_yt) -> None:
+    uploads = make_uploads(200)
+    upcoming = {"live_status": "is_upcoming"}
+    yt = fake_yt(
+        FakeYt(
+            uploads,
+            entry_fields={"vid000": upcoming, "vid001": upcoming},
+            # What the watch page would say if it WERE probed: a creation date, not a release.
+            watch_fields={"vid000": {"live_status": "is_upcoming"}},
+        )
+    )
+    _, items, meta = channel_entries_window("@chan", day(30), NEWEST + timedelta(days=30))
+    assert [it["video_id"] for it in items] == [f"vid{i:03d}" for i in range(2, 31)]
+    assert "vid000" not in yt.watch_calls and "vid001" not in yt.watch_calls
+    assert meta["scanned"] == 64  # the raw flat count, upcoming entries included
+
+
+def test_dropping_upcoming_entries_never_makes_a_full_reply_look_exhausted(fake_yt) -> None:
+    # 6 upcoming at the front: the first 64-entry reply keeps only 58. That must NOT read
+    # as "the channel ended" — the 6 oldest videos (vid064..vid069) are still to come.
+    uploads = make_uploads(70)
+    upcoming = {"live_status": "is_upcoming"}
+    fields = {f"vid{i:03d}": upcoming for i in range(6)}
+    yt = fake_yt(FakeYt(uploads, entry_fields=fields))
+    _, items, meta = channel_entries_window("@chan", day(69), NEWEST + timedelta(days=30))
+    assert [it["video_id"] for it in items] == [f"vid{i:03d}" for i in range(6, 70)]
+    assert [c[1]["playlistend"] for c in yt.tab_calls] == [64, 128]
+    assert meta["scanned"] == 70
+
+
+def test_window_made_only_of_upcoming_entries_is_empty_but_scanned(fake_yt) -> None:
+    uploads = make_uploads(3)
+    fields = {vid: {"live_status": "is_upcoming"} for vid, _ in uploads}
+    fake_yt(FakeYt(uploads, entry_fields=fields))
+    _, items, meta = channel_entries_window("@chan", day(30), NEWEST)
+    assert items == [] and meta["scanned"] == 3  # an answered, empty window — not a failed tab
+
+
+def test_three_blanket_failures_in_a_row_re_raise_the_last_error(fake_yt) -> None:
+    yt = fake_yt(FakeYt(make_uploads(200), fail_pattern=lambda n: RuntimeError(f"net down #{n}")))
+    with pytest.raises(RuntimeError, match=r"net down #2"):
+        channel_entries_window("@chan", day(60), day(10))
+    assert len(yt.watch_calls) == 3  # the breaker trips on the third, not later
+
+
+def test_a_network_error_counts_toward_the_breaker_too(fake_yt) -> None:
+    yt = fake_yt(FakeYt(make_uploads(200), fail_pattern=lambda n: network_error()))
+    with pytest.raises(Exception, match="Unable to download API page"):
+        channel_entries_window("@chan", day(60), day(10))
+    assert len(yt.watch_calls) == 3
+
+
+def test_two_blanket_failures_then_a_success_do_not_trip_the_breaker(fake_yt) -> None:
+    # fail, fail, ok, fail, fail, ok, ...: never three in a row.
+    yt = fake_yt(
+        FakeYt(
+            make_uploads(300),
+            fail_pattern=lambda n: RuntimeError("blip") if n % 3 != 2 else None,
+        )
+    )
+    _, items, meta = channel_entries_window("@chan", day(150), day(10))
+    assert items and meta["probes"] >= 6
+    assert len(yt.watch_calls) >= 6
+
+
+def test_a_per_video_verdict_resets_the_blanket_failure_count(fake_yt) -> None:
+    # net, net, VIDEO, net, net, ok... YouTube answered at call 2, so the net failures
+    # before and after it are separate blips, not three in a row.
+    script = {
+        0: RuntimeError("blip"),
+        1: RuntimeError("blip"),
+        2: per_video_error(),
+        3: RuntimeError("blip"),
+        4: RuntimeError("blip"),
+    }
+    yt = fake_yt(FakeYt(make_uploads(300), fail_pattern=lambda n: script.get(n)))
+    channel_entries_window("@chan", day(150), day(10))  # must not raise
+    assert len(yt.watch_calls) >= 6
+
+
+def test_every_probe_refused_as_per_video_ends_in_the_streak_guard(fake_yt) -> None:
+    # A bot wall looks per-video (expected ExtractorError); the undatable streak catches it.
+    yt = fake_yt(
+        FakeYt(make_uploads(300), fail_pattern=lambda n: per_video_error("Sign in to confirm"))
+    )
+    with pytest.raises(ytdl.WindowScanError, match="in a row"):
+        channel_entries_window("@chan", day(150), day(10))
+    assert len(yt.watch_calls) == 25
+
+
+def test_window_scan_error_is_what_the_cli_sees_as_an_engine_failure(fake_yt) -> None:
+    # cli.run_channel_batch catches Exception around channel_entries_window and falls
+    # back to Selenium; the dedicated error must be one.
+    fake_yt(FakeYt(make_uploads(300), fail_pattern=lambda n: per_video_error()))
+    with pytest.raises(Exception) as excinfo:
+        channel_entries_window("@chan", day(150), day(10))
+    assert isinstance(excinfo.value, ytdl.WindowScanError)
+
+
+# --- fill_dates: a total outage is no longer silent ----------------------------------
+
+
+def _viewlyt_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == "viewlyt" and r.levelno == logging.WARNING]
+
+
+def test_fill_dates_warns_once_with_the_count_when_everything_fails(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    uploads = make_uploads(10)
+    fake_yt(FakeYt(uploads, broken={vid for vid, _ in uploads}))
+    items = [{"video_id": f"vid{i:03d}"} for i in range(5)]
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(items) == 0
+    (rec,) = _viewlyt_warnings(caplog)  # exactly one record, not one per video
+    msg = rec.getMessage()
+    assert "5 of 5" in msg and "5 request(s) failed" in msg and "extraction failed" in msg
+
+
+def test_fill_dates_warning_counts_only_what_stayed_undated(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_yt(FakeYt(make_uploads(10), broken={"vid003"}))
+    items = [{"video_id": f"vid{i:03d}"} for i in range(1, 6)] + [
+        {"video_id": "vid009", "date": "2026-01-01"}  # already dated: not part of the count
+    ]
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(items) == 4
+    (rec,) = _viewlyt_warnings(caplog)
+    assert "1 of 5" in rec.getMessage() and "1 request(s) failed" in rec.getMessage()
+
+
+def test_fill_dates_warning_for_videos_that_simply_have_no_date(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_yt(FakeYt([("vidaaa", None), ("vidbbb", day(3))]))
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates([{"video_id": "vidaaa"}, {"video_id": "vidbbb"}]) == 1
+    (rec,) = _viewlyt_warnings(caplog)
+    assert "1 of 2" in rec.getMessage() and "no publish date" in rec.getMessage()
+
+
+def test_fill_dates_is_silent_when_everything_was_dated_or_nothing_to_do(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_yt(FakeYt(make_uploads(5)))
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates([{"video_id": "vid001"}, {"video_id": "vid002"}]) == 2
+        assert fill_dates([]) == 0
+        assert fill_dates([{"video_id": "vid001", "date": "2026-01-01"}]) == 0
+    assert _viewlyt_warnings(caplog) == []
+
+
+def test_fill_dates_warning_message_is_bounded(fake_yt, caplog: pytest.LogCaptureFixture) -> None:
+    fake_yt(FakeYt(make_uploads(3), errors={"vid000": RuntimeError("x" * 5000)}))
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        fill_dates([{"video_id": "vid000"}])
+    (rec,) = _viewlyt_warnings(caplog)
+    assert len(rec.getMessage()) < 400
+
+
 # ---------------------------------------------------------------------------
 # lazy-import contract
 # ---------------------------------------------------------------------------
@@ -1050,6 +1643,12 @@ def test_window_code_never_imports_yt_dlp_or_selenium() -> None:
         "undated = sum('date' not in it for it in items)\n"
         "assert undated > 0 and y.fill_dates(items) == undated\n"
         "assert y.video_upload_date('v001') == d0 - timedelta(days=1)\n"
+        "try:\n"
+        "    y.scan_window(lambda n: [{'id': f'x{i}'} for i in range(n)], lambda e: None, d0, d0)\n"
+        "except y.WindowScanError:\n"
+        "    pass\n"
+        "else:\n"
+        "    raise AssertionError('streak guard did not trip')\n"
         "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by the window functions'\n"
         "assert 'selenium' not in sys.modules\n"
         "print('OK')\n"

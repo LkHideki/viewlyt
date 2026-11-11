@@ -141,6 +141,47 @@ def test_json3_garbage_input_is_empty_not_an_error(garbage):
     assert ytdl._json3_to_segments(garbage) == []
 
 
+@pytest.mark.parametrize("bad", [5, 5.5, True, None, [], {}, ["a"], {"x": "y"}])
+def test_json3_non_string_utf8_is_ignored_not_a_crash(bad):
+    # `"".join` over a non-str used to raise TypeError: "never raises" was not true.
+    assert ytdl._json3_to_segments({"events": [{"tStartMs": 0, "segs": [{"utf8": bad}]}]}) == []
+    mixed = {"events": [{"tStartMs": 1000, "segs": [{"utf8": bad}, {"utf8": "ok"}, {"utf8": bad}]}]}
+    assert ytdl._json3_to_segments(mixed) == [("0:01", "ok")]
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_json3_non_finite_start_gives_an_empty_stamp_not_an_error(literal):
+    # json.loads happily parses these into floats; int(nan) / int(inf) used to raise.
+    data = json.loads(f'{{"events": [{{"tStartMs": {literal}, "segs": [{{"utf8": "x"}}]}}]}}')
+    assert ytdl._json3_to_segments(data) == [("", "x")]
+
+
+@pytest.mark.parametrize("start", [None, "5", [], {}, True, False, -1, -1500.5])
+def test_json3_other_unusable_starts_leave_the_stamp_empty(start):
+    data = {"events": [{"tStartMs": start, "segs": [{"utf8": "x"}]}]}
+    assert ytdl._json3_to_segments(data) == [("", "x")]
+
+
+def test_json3_float_and_huge_starts_still_format():
+    seg = [{"utf8": "x"}]
+    assert ytdl._json3_to_segments({"events": [{"tStartMs": 1500.7, "segs": seg}]}) == [
+        ("0:01", "x")
+    ]
+    out = ytdl._json3_to_segments({"events": [{"tStartMs": 10**30, "segs": seg}]})
+    assert len(out) == 1 and out[0][0] != "" and out[0][1] == "x"
+
+
+def test_json3_one_bad_event_does_not_spoil_its_neighbours():
+    data = {
+        "events": [
+            {"tStartMs": 0, "segs": [{"utf8": "a"}]},
+            {"tStartMs": float("nan"), "segs": [{"utf8": 7}, {"utf8": "b"}]},
+            {"tStartMs": 4000, "segs": [{"utf8": "c"}]},
+        ]
+    }
+    assert ytdl._json3_to_segments(data) == [("0:00", "a"), ("", "b"), ("0:04", "c")]
+
+
 def test_json3_output_feeds_format_transcript_unchanged():
     from viewlyt.htmltext import format_transcript
 
@@ -185,14 +226,114 @@ def test_pick_then_plain_asr_for_the_language():
     assert ytdl._pick_caption_track(info) == "asr-en"
 
 
-def test_pick_first_orig_key_when_language_is_missing():
+def test_pick_missing_language_takes_the_asr_original_over_a_manual_track_in_another_language():
+    # REWRITTEN (was `..._first_orig_key_when_language_is_missing`, commented "the ASR original
+    # beats a manual track"). That held for ANY manual track, which let ASR beat a creator's
+    # captions; now it only holds when the manual track is in a DIFFERENT language: the
+    # spoken language is read off the `-orig` key (pt), and a manual `fr` is not pt.
     info = {
         "language": None,
         "subtitles": {"fr": _tracks("manual-fr")},
         "automatic_captions": {"de": _tracks("asr-de"), "pt-orig": _tracks("asr-pt-orig")},
     }
-    # No language: priorities (a)-(c) are skipped, and the ASR original beats a manual track.
     assert ytdl._pick_caption_track(info) == "asr-pt-orig"
+
+
+def test_pick_regional_manual_track_beats_the_asr_original():
+    # language "pt", the creator filed the track under "pt-BR": a human track in the
+    # video's language must win over the ASR, not lose to it for want of an exact key.
+    info = {
+        "language": "pt",
+        "subtitles": {"pt-BR": _tracks("manual-pt-BR")},
+        "automatic_captions": {"pt-orig": _tracks("asr-pt-orig"), "pt": _tracks("asr-pt")},
+    }
+    assert ytdl._pick_caption_track(info) == "manual-pt-BR"
+
+
+def test_pick_missing_language_prefers_a_manual_track_in_the_asr_language():
+    info = {
+        "language": None,
+        "subtitles": {"en": _tracks("manual-en")},
+        "automatic_captions": {"en-orig": _tracks("asr-en-orig"), "en": _tracks("asr-en")},
+    }
+    assert ytdl._pick_caption_track(info) == "manual-en"
+
+
+def test_pick_missing_language_matches_a_regional_manual_track_to_the_orig_language():
+    info = {
+        "subtitles": {"pt-BR": _tracks("manual-pt-BR"), "fr": _tracks("manual-fr")},
+        "automatic_captions": {"pt-orig": _tracks("asr-pt-orig")},
+    }
+    assert ytdl._pick_caption_track(info) == "manual-pt-BR"
+
+
+def test_pick_exact_language_key_beats_a_regional_variant():
+    both = {"pt": _tracks("manual-pt"), "pt-BR": _tracks("manual-pt-BR")}
+    assert ytdl._pick_caption_track({"language": "pt", "subtitles": both}) == "manual-pt"
+    assert ytdl._pick_caption_track({"language": "pt-BR", "subtitles": both}) == "manual-pt-BR"
+
+
+def test_pick_language_with_a_region_finds_the_plain_manual_track():
+    info = {"language": "pt-BR", "subtitles": {"pt": _tracks("manual-pt")}}
+    assert ytdl._pick_caption_track(info) == "manual-pt"
+
+
+def test_pick_regional_variants_are_chosen_deterministically():
+    pt_pt, pt_br = _tracks("manual-pt-PT"), _tracks("manual-pt-BR")
+    forward = {"language": "pt", "subtitles": {"pt-PT": pt_pt, "pt-BR": pt_br}}
+    backward = {"language": "pt", "subtitles": {"pt-BR": pt_br, "pt-PT": pt_pt}}
+    # Sorted key order, whatever the dict's insertion order: pt-BR < pt-PT.
+    assert ytdl._pick_caption_track(forward) == "manual-pt-BR"
+    assert ytdl._pick_caption_track(backward) == "manual-pt-BR"
+
+
+def test_pick_asr_original_matches_by_primary_subtag_too():
+    info = {"language": "pt-BR", "automatic_captions": {"pt-orig": _tracks("asr-pt-orig")}}
+    assert ytdl._pick_caption_track(info) == "asr-pt-orig"
+
+
+def test_pick_a_regional_translated_asr_track_is_never_taken():
+    # `pt-BR` among the ASR keys is a machine TRANSLATION into Brazilian Portuguese of
+    # whatever the video was spoken in: matching it by primary subtag would break the
+    # "never a translated ASR track" rule.
+    info = {
+        "language": "pt",
+        "automatic_captions": {"pt-BR": _tracks("t-pt-BR"), "en": _tracks("t-en")},
+    }
+    assert ytdl._pick_caption_track(info) is None
+
+
+def test_pick_a_manual_track_in_another_language_does_not_beat_the_asr_original():
+    info = {
+        "language": "pt",
+        "subtitles": {"fr": _tracks("manual-fr")},
+        "automatic_captions": {"pt-orig": _tracks("asr-pt-orig")},
+    }
+    assert ytdl._pick_caption_track(info) == "asr-pt-orig"
+
+
+def test_pick_a_regional_variant_without_json3_falls_through_to_the_next_variant():
+    info = {
+        "language": "pt",
+        "subtitles": {
+            "pt-BR": [{"ext": "vtt", "url": "manual-pt-BR.vtt"}],
+            "pt-PT": _tracks("manual-pt-PT"),
+        },
+    }
+    assert ytdl._pick_caption_track(info) == "manual-pt-PT"
+
+
+def test_pick_live_chat_is_never_matched_as_a_language_variant():
+    info = {"language": "live", "subtitles": {"live_chat": _tracks("chat")}}
+    assert ytdl._pick_caption_track(info) is None
+
+
+@pytest.mark.parametrize(
+    ("tag", "primary"),
+    [("pt-BR", "pt"), ("pt_BR", "pt"), ("ZH-Hans", "zh"), ("en", "en"), ("EN-orig", "en")],
+)
+def test_primary_subtag(tag, primary):
+    assert ytdl._primary(tag) == primary
 
 
 def test_pick_first_orig_key_when_language_matches_nothing():
@@ -321,6 +462,10 @@ class _FakeYDL:
     instances: list[_FakeYDL] = []
     info: dict = {}
     raises: Exception | None = None
+    # A STRICT instance is one built WITHOUT ``ignore_no_formats_error``: that is where yt-dlp
+    # raises "unavailable"/"members-only"/"upcoming"; the lenient one returns an empty info.
+    raises_strict: Exception | None = None
+    info_strict: dict | None = None
 
     def __init__(self, opts):
         self.opts = opts
@@ -339,6 +484,11 @@ class _FakeYDL:
         self.extracted.append(url)
         if self.raises:
             raise self.raises
+        if not self.opts.get("ignore_no_formats_error"):
+            if self.raises_strict:
+                raise self.raises_strict
+            if self.info_strict is not None:
+                return self.info_strict
         return self.info
 
     def urlopen(self, url):
@@ -351,6 +501,8 @@ def fake_yt_dlp(monkeypatch):
     _FakeYDL.instances = []
     _FakeYDL.info = {}
     _FakeYDL.raises = None
+    _FakeYDL.raises_strict = None
+    _FakeYDL.info_strict = None
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=_FakeYDL))
     return _FakeYDL
 
@@ -386,6 +538,51 @@ def test_extract_with_captions_propagates_extractor_errors(fake_yt_dlp):
     fake_yt_dlp.raises = RuntimeError("video unavailable")
     with pytest.raises(RuntimeError, match="video unavailable"):
         ytdl._extract_with_captions(VID)
+
+
+def test_extract_with_captions_first_pass_ignores_no_formats_errors(fake_yt_dlp):
+    # An age-gated video fails on its FORMATS yet still lists its caption tracks (live check),
+    # where it used to raise. Captions need no formats, so ask for none.
+    fake_yt_dlp.info = {
+        "title": "T",
+        "language": "en",
+        "subtitles": {"en": _tracks("https://cap/en")},
+    }
+    info, payload = ytdl._extract_with_captions(VID)
+    (ydl,) = fake_yt_dlp.instances  # captions found: still ONE session, no second ask
+    assert ydl.opts["ignore_no_formats_error"] is True
+    assert payload == PAYLOAD and info["title"] == "T"
+
+
+def test_extract_with_captions_ordinary_video_without_captions_is_not_asked_twice(fake_yt_dlp):
+    fake_yt_dlp.info = {"title": "T", "formats": [{"format_id": "18"}]}  # playable, no captions
+    info, payload = ytdl._extract_with_captions(VID)
+    assert payload is None and info["title"] == "T"
+    assert len(fake_yt_dlp.instances) == 1
+
+
+def test_extract_with_captions_no_captions_and_no_formats_asks_again_strictly(fake_yt_dlp):
+    # The flag turns "unavailable"/"members-only"/"upcoming" into an empty info (title
+    # "youtube video #id"). Returning that would make `--transcript-engine ytdlp` report a
+    # fake title with no segments instead of failing the video, so the contract is kept:
+    # whatever the strict ask raises is what the caller gets.
+    fake_yt_dlp.info = {"title": f"youtube video #{VID}"}
+    fake_yt_dlp.raises_strict = RuntimeError("This video is available to this channel's members")
+    with pytest.raises(RuntimeError, match="members"):
+        ytdl._extract_with_captions(VID)
+    lenient, strict = fake_yt_dlp.instances
+    assert lenient.opts["ignore_no_formats_error"] is True
+    assert "ignore_no_formats_error" not in strict.opts
+    assert strict.extracted == [f"https://www.youtube.com/watch?v={VID}"]
+
+
+def test_extract_with_captions_strict_ask_that_succeeds_may_still_find_the_captions(fake_yt_dlp):
+    fake_yt_dlp.info = {"title": "T"}  # lenient pass: nothing (a flaky first answer)
+    fake_yt_dlp.info_strict = {"title": "T", "language": "en", "subtitles": {"en": _tracks("c")}}
+    info, payload = ytdl._extract_with_captions(VID)
+    assert payload == PAYLOAD and info is fake_yt_dlp.info_strict
+    lenient, strict = fake_yt_dlp.instances
+    assert lenient.opened == [] and strict.opened == ["c"]
 
 
 # --------------------------------------------------------------------------- #
