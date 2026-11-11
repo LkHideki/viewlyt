@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import UTC, date, datetime
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from queue import Empty, Queue
@@ -45,6 +45,7 @@ from .htmltext import (
     format_view_count,
     join_unified,
     pair_lines,
+    parse_window_spec,
     slugify,
     strip_timestamps,
 )
@@ -72,6 +73,11 @@ _UNIFY_DEFAULT_RELATED = 20
 
 UNIFIED_ALL_FILENAME = "unified-all.md"  # the single --unify-all output
 
+# --scan-cap default: flat channel entries the window search may list. A channel
+# rarely has more than a few thousand uploads, and the gallop's cost is dominated by
+# re-reading the prefix, so a bounded default keeps a runaway scan from hammering YouTube.
+_DEFAULT_SCAN_CAP = 5000
+
 _EXAMPLES = """\
 examples:
   vl 'https://youtu.be/dQw4w9WgXcQ'               # transcript only (default) -> *.transcript.md
@@ -81,6 +87,10 @@ examples:
   vl -r 17 '<url>'                                 # 17 related videos -> *.related.md
   vl -C 30 '@veritasium'                           # 30 channel videos -> *.channel.md
   vl -C 30 --order old '@veritasium'               # oldest videos first
+  vl --since 90d '@veritasium'                     # EVERY channel video of the last 90 days
+  vl --since 2025-01-01 --until 2025-12-31 '@x'    # a closed date range
+  vl -C 50 --since 1y '@x'                         # the window, capped at 50 videos
+  vl --since 90d --dates '@x'                      # every line carries its publish date
   vl -u '<url>'                                    # all products in one file (--unify)
   vl -u --copy '<url>'                             # unify and copy to the clipboard
   vl --unify-all '<url1>' '<url2>'                 # all videos in a single file
@@ -687,6 +697,76 @@ def run_batch(
 # --------------------------------------------------------------------------- #
 # Channel listing (-C/--channel): yt-dlp primary, Selenium fallback
 # --------------------------------------------------------------------------- #
+def _today_utc() -> date:
+    """Today's date in UTC — the clock yt-dlp's ``upload_date`` uses, so a "last 90d"
+    window lines up with the dates it reports. A single indirection so tests pin the day."""
+    return datetime.now(UTC).date()
+
+
+def _keep_in_window(items: list[dict], since: date, until: date) -> list[dict]:
+    """Drop items whose KNOWN date is outside ``[since, until]``; undated ones stay.
+
+    ``ytdl.scan_window`` bisects a list it assumes newest-first, so an out-of-order
+    upload it never probed can slip past a border. Once every item carries its exact
+    date (``--dates``) that is checkable, so the final say belongs to the date, not
+    to the bisection. An unreadable date is kept: dropping on missing data would
+    silently lose videos the user asked for."""
+    kept: list[dict] = []
+    for it in items:
+        raw = str(it.get("date") or "")
+        if raw:
+            try:
+                if not since <= date.fromisoformat(raw) <= until:
+                    continue
+            except ValueError:
+                pass
+        kept.append(it)
+    return kept
+
+
+def _channel_line(s: dict) -> str:
+    """One summary line (no status mark) for a listed channel; shared by the
+    multi-channel progress line and the final report so the two can't drift.
+
+    Without a window it is the plain ``-C`` line, unchanged. With one, the parenthesis
+    carries the range (and the probe count on the yt-dlp engine, where it is the cost
+    driver), and a 0-video success says so instead of pointing at a file that was
+    never written."""
+    label = s["channel"] or s["ref"]
+    if "since" not in s:
+        return f"{label}  {s['count']} videos ({s['order']}, {s['engine']}) -> {s['channel_file']}"
+    parts = [f"{s['since']}..{s['until']}", s["order"], s["engine"]]
+    if s.get("probes") is not None:
+        parts.append(f"{s['probes']} probes")
+    tail = f"-> {s['channel_file']}" if s["channel_file"] else "(no videos in the window)"
+    return f"{label}  {s['count']} videos ({', '.join(parts)}) {tail}"
+
+
+def _warn_window_caveats(s: dict, *, scan_cap: int, dates: bool) -> None:
+    """Never let a windowed list look more certain than it is: each caveat is a
+    warning (visible even under ``-q``), not a silent property of the result."""
+    label = s["channel"] or s["ref"]
+    if s["truncated_by_cap"]:
+        log.warning(
+            "%s: the scan stopped at --scan-cap %d channel entries while the window was still "
+            "open — the list may be incomplete (raise --scan-cap, or 0 for unlimited)",
+            label,
+            scan_cap,
+        )
+    if s["non_monotonic"]:
+        log.warning(
+            "%s: out-of-order uploads found in the channel list, so the window edges may be off%s",
+            label,
+            "" if dates else " — rerun with --dates for exact edges",
+        )
+    if s["approx_dates"]:
+        log.warning(
+            "%s: dates and window edges are approximate on the Selenium engine "
+            "(YouTube only shows relative ages; yt-dlp dates are exact)",
+            label,
+        )
+
+
 def run_channel_batch(
     refs: list[str],
     *,
@@ -698,6 +778,10 @@ def run_channel_batch(
     user_data_dir: str | None,
     copy: bool = False,
     quiet: bool = False,
+    since: date | None = None,
+    until: date | None = None,
+    dates: bool = False,
+    scan_cap: int = _DEFAULT_SCAN_CAP,
 ) -> list[dict]:
     """List up to ``n`` videos for each channel ``ref``, sorted by ``order``.
 
@@ -716,7 +800,20 @@ def run_channel_batch(
     its summary and no file. Returns one summary dict per ref, in input
     order: ``{"ref", "channel", "count", "order", "engine", "channel_file",
     "error"}``.
+
+    **Window mode** (``since`` given; ``until`` defaults to today UTC): every video
+    published in ``[since, until]`` instead of the first ``n``, via
+    :func:`viewlyt.ytdl.channel_entries_window`; ``n > 0`` then only CEILINGS the
+    result. Differences from the plain flow: an empty window that yt-dlp actually
+    scanned (``meta["scanned"] > 0``) is a SUCCESS with 0 videos — the fallback is for
+    engine failures, and a second engine can't find videos the window doesn't hold —
+    so it writes no file and sets no error. ``dates`` dates every undated item and
+    re-filters by the exact date (see :func:`_keep_in_window`). The summary gains
+    ``since``/``until`` (ISO), ``probes``, ``truncated_by_cap``, ``non_monotonic`` and
+    ``approx_dates`` (the Selenium engine only has relative ages), and each caveat
+    is logged as a warning.
     """
+    window = (since, until or _today_utc()) if since is not None else None
     summaries: list[dict] = []
     copy_docs: list[list[str]] = []
     driver = None
@@ -727,16 +824,36 @@ def run_channel_batch(
         for ref in refs:
             name = ""
             items: list[dict] = []
+            meta: dict = {}
             engine = "yt-dlp"
             error: str | None = None
             try:
-                name, items = ytdl.channel_entries(ref, n, order=order)
+                if window is None:
+                    name, items = ytdl.channel_entries(ref, n, order=order)
+                else:
+                    name, items, meta = ytdl.channel_entries_window(
+                        ref, *window, order=order, cap=scan_cap
+                    )
             except Exception as exc:
                 log.info(
                     "yt-dlp channel listing failed for %s (%s) — falling back to Selenium", ref, exc
                 )
                 items = []
-            if not items:
+                meta = {}
+            # yt-dlp "answered" when it returned videos or, in window mode, scanned a
+            # non-empty tab and the window simply holds none (a success, not a failure).
+            answered = bool(items) or (window is not None and meta.get("scanned", 0) > 0)
+            if answered and window is not None:
+                if dates and items:
+                    undated = sum(1 for it in items if not it.get("date"))
+                    if undated:
+                        log.info("dating %d video(s) of %s (one yt-dlp request each)", undated, ref)
+                    ytdl.fill_dates(items)
+                    items = _keep_in_window(items, *window)
+                if n > 0:
+                    items = items[:n]
+            if not answered:
+                meta = {}
                 if not fallback:
                     error = "yt-dlp returned no videos and the Selenium fallback is disabled"
                 else:
@@ -744,9 +861,21 @@ def run_channel_batch(
                     try:
                         if driver is None:
                             driver = build_primed_driver(headless, user_data_dir)
-                        name, items = collect_channel_videos(
-                            driver, ref, limit=n, order=order, progress=not quiet
-                        )
+                        if window is None:
+                            name, items = collect_channel_videos(
+                                driver, ref, limit=n, order=order, progress=not quiet
+                            )
+                        else:
+                            # limit=n is 0 without -C: the window alone bounds the list.
+                            name, items = collect_channel_videos(
+                                driver,
+                                ref,
+                                limit=n,
+                                order=order,
+                                progress=not quiet,
+                                since=window[0],
+                                until=window[1],
+                            )
                     except Exception as exc:
                         # Isolate this channel; recycle the shared session so one
                         # dead driver doesn't poison every remaining ref.
@@ -776,17 +905,24 @@ def run_channel_batch(
                 "channel_file": channel_file,
                 "error": error,
             }
+            if window is not None:
+                summary.update(
+                    since=window[0].isoformat(),
+                    until=window[1].isoformat(),
+                    probes=meta.get("probes"),  # yt-dlp only; None where nothing was probed
+                    truncated_by_cap=bool(meta.get("truncated_by_cap")),
+                    non_monotonic=bool(meta.get("non_monotonic")),
+                    approx_dates=engine == "selenium",
+                )
+                if not error:
+                    _warn_window_caveats(summary, scan_cap=scan_cap, dates=dates)
             summaries.append(summary)
             bar.update(1)
             if announce:
                 if error:
                     bar.write(f"{_color('✗', '31')} {ref}  {error}")
                 else:
-                    label = name or ref
-                    bar.write(
-                        f"{_color('✓', '32')} {label}  {len(items)} videos "
-                        f"({order}, {engine}) -> {channel_file}"
-                    )
+                    bar.write(f"{_color('✓', '32')} {_channel_line(summary)}")
     finally:
         bar.close()
         _safe_quit(driver)
@@ -925,14 +1061,49 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         metavar="N",
         help="treat the inputs as CHANNELS and list the first N videos each -> "
-        "out/<channel-slug>.channel.md (0 = off). Incompatible with -c/-t/-r/-u/"
-        "--unify-all. yt-dlp is tried first, falling back to Selenium.",
+        "out/<channel-slug>.channel.md (0 = off). With --since/--until it is a CEILING on "
+        "the windowed list instead. Incompatible with -c/-t/-r/-u/--unify-all. yt-dlp is "
+        "tried first, falling back to Selenium.",
     )
     p.add_argument(
         "--order",
         choices=("recent", "popular", "old"),
         default="recent",
-        help="channel video order for -C (default: recent). No-op without -C.",
+        help="channel video order for -C/--since (default: recent). No-op without them; "
+        "'popular' can't be combined with a window (a window needs a date order).",
+    )
+    p.add_argument(
+        "--since",
+        default=None,
+        metavar="SPEC",
+        help="list EVERY video a channel published from SPEC until today (or --until) -> "
+        "out/<channel-slug>.channel.md. SPEC is yyyy-mm-dd or relative: 30d, 12w, 6m, 1y "
+        "(months=30d, years=365d). Implies channel mode (no -C needed; -C N then caps the "
+        "list at N). Same exclusions as -C.",
+    )
+    p.add_argument(
+        "--until",
+        default=None,
+        metavar="SPEC",
+        help="end of the --since window, inclusive (same SPEC forms; default: today, UTC). "
+        "Needs --since.",
+    )
+    p.add_argument(
+        "--dates",
+        action="store_true",
+        help="with --since: put the publish date on every line (one extra yt-dlp request "
+        "per undated video, ~1.3 s each) and drop any video whose exact date falls outside "
+        "the window. Without it only the dates the search already learned are shown. "
+        "No-op without --since.",
+    )
+    p.add_argument(
+        "--scan-cap",
+        type=int,
+        default=_DEFAULT_SCAN_CAP,
+        metavar="N",
+        help="with --since: most channel entries the yt-dlp scan may list "
+        f"(default: {_DEFAULT_SCAN_CAP}; 0 = unlimited). Hitting it warns that the list may "
+        "be incomplete. No-op without --since.",
     )
     unify_group = p.add_mutually_exclusive_group()
     unify_group.add_argument(
@@ -1016,8 +1187,39 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _run_channel_mode(args: argparse.Namespace) -> int:
-    """``-C/--channel N``: list N videos per channel ref instead of scraping
+def _resolve_window(args: argparse.Namespace) -> tuple[date, date] | None:
+    """Validate the window flags and return ``(since, until)``, or ``None`` when no
+    window was asked for. Raises ``ValueError`` (message names the flag) on a usage
+    error; the caller turns it into ``log.error`` + exit 2.
+
+    Specs stay raw strings in argparse and are parsed here, with ONE ``today``, so
+    ``--help`` stays cheap and ``--since 90d --until 30d`` can't straddle midnight."""
+    if args.scan_cap < 0:
+        raise ValueError(f"--scan-cap must be >= 0 (0 = unlimited), got {args.scan_cap}")
+    if args.since is None:
+        if args.until is not None:
+            raise ValueError("--until needs --since (the start of the window)")
+        return None
+    today = _today_utc()
+    try:
+        since = parse_window_spec(args.since, today)
+    except ValueError as exc:
+        raise ValueError(f"--since: {exc}") from None
+    try:
+        until = today if args.until is None else parse_window_spec(args.until, today)
+    except ValueError as exc:
+        raise ValueError(f"--until: {exc}") from None
+    if since > until:
+        raise ValueError(f"--since {since} is after --until {until} — the window is empty")
+    if args.order == "popular":
+        raise ValueError(
+            "--order popular can't be combined with --since/--until (a window needs a date order)"
+        )
+    return since, until
+
+
+def _run_channel_mode(args: argparse.Namespace, window: tuple[date, date] | None = None) -> int:
+    """``-C/--channel N`` / ``--since``: list videos per channel ref instead of scraping
     videos. Split out of :func:`main` so the early branch there stays short."""
     try:
         refs = gather_channel_refs(args.inputs, args.from_file)
@@ -1028,7 +1230,8 @@ def _run_channel_mode(args: argparse.Namespace) -> int:
         log.error("no valid channel handles/URLs given (pass @handle/URLs and/or --from-file)")
         return 2
 
-    log.info("%d channel(s) to list (order=%s, n=%d)", len(refs), args.order, args.channel)
+    span = f", window={window[0]}..{window[1]}" if window else ""
+    log.info("%d channel(s) to list (order=%s, n=%d%s)", len(refs), args.order, args.channel, span)
     summaries = run_channel_batch(
         refs,
         n=args.channel,
@@ -1039,6 +1242,10 @@ def _run_channel_mode(args: argparse.Namespace) -> int:
         user_data_dir=args.user_data_dir,
         copy=args.copy,
         quiet=args.quiet,
+        since=window[0] if window else None,
+        until=window[1] if window else None,
+        dates=args.dates,
+        scan_cap=args.scan_cap,
     )
 
     ok = [s for s in summaries if not s["error"]]
@@ -1048,11 +1255,7 @@ def _run_channel_mode(args: argparse.Namespace) -> int:
         + (f", {len(failed)} failed" if failed else "")
     )
     for s in ok:
-        label = s["channel"] or s["ref"]
-        print(
-            f"  {_color('✓', '32')} {label}  {s['count']} videos "
-            f"({s['order']}, {s['engine']}) -> {s['channel_file']}"
-        )
+        print(f"  {_color('✓', '32')} {_channel_line(s)}")
     for s in failed:
         print(f"  {_color('✗', '31')} {s['ref']}  {s['error']}", file=sys.stderr)
 
@@ -1077,7 +1280,21 @@ def main(argv: list[str] | None = None) -> int:
             "(use --ts to keep them)"
         )
 
-    if args.channel > 0:
+    try:
+        window = _resolve_window(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    if window is None:
+        # Mirrors the --order warning below: harmless flags that only mean something
+        # with a window are called out instead of silently ignored.
+        if args.dates:
+            log.warning("--dates has no effect without --since")
+        if args.scan_cap != _DEFAULT_SCAN_CAP:
+            log.warning("--scan-cap has no effect without --since")
+
+    if args.channel > 0 or window is not None:
         if (
             args.comments
             or args.transcript
@@ -1086,11 +1303,20 @@ def main(argv: list[str] | None = None) -> int:
             or args.unify
             or args.unify_all
         ):
-            log.error("-C/--channel is incompatible with -c/-t/-r/-u/--unify-all")
+            names = [
+                name
+                for name, on in (("-C/--channel", args.channel > 0), ("--since/--until", window))
+                if on
+            ]
+            log.error(
+                "%s %s incompatible with -c/-t/-r/-u/--unify-all",
+                " and ".join(names),
+                "are" if len(names) > 1 else "is",
+            )
             return 2
-        return _run_channel_mode(args)
+        return _run_channel_mode(args, window)
     if args.order != "recent":
-        log.warning("--order has no effect without -C/--channel")
+        log.warning("--order has no effect without -C/--channel or --since")
 
     try:
         targets = gather_urls(args.inputs, args.from_file)

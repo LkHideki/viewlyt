@@ -304,6 +304,30 @@ def test_vl_snap_help_never_imports_yt_dlp():
     assert "OK" in r.stdout
 
 
+def test_vl_help_lists_window_flags_and_never_imports_yt_dlp():
+    """The window flags are parsed lazily (raw strings in argparse, resolved in ``main``),
+    so building the default parser for ``vl --help`` must still not import yt-dlp."""
+    code = (
+        "import io, sys\n"
+        "from contextlib import redirect_stdout\n"
+        "from viewlyt.vl import main\n"
+        "buf = io.StringIO()\n"
+        "try:\n"
+        "    with redirect_stdout(buf):\n"
+        "        main(['--help'])\n"
+        "except SystemExit:\n"
+        "    pass\n"
+        "for flag in ('--since', '--until', '--dates', '--scan-cap'):\n"
+        "    assert flag in buf.getvalue(), f'{flag} missing from vl --help'\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported on vl --help'\n"
+        "print('OK')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": SRC}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "OK" in r.stdout
+
+
 def test_installed_vl_console_script_runs():
     """The packaged `vl` binary itself resolves and answers --version (skips if not installed)."""
     exe = shutil.which("vl")
