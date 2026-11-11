@@ -57,6 +57,21 @@ def test_e2e_get_video_views():
 
 @pytest.mark.e2e
 @E2E
+def test_e2e_ytdlp_video_transcript():
+    """The browserless transcript path: yt-dlp captions, real network, no Chrome."""
+    from viewlyt import ytdl
+
+    r = ytdl.video_transcript("dQw4w9WgXcQ")
+    assert r["video_id"] == "dQw4w9WgXcQ"
+    assert r["title"].strip()
+    assert len(r["segments"]) > 10
+    ts, text = r["segments"][0]
+    assert ts and text.strip()
+    assert isinstance(r["views_int"], int) and r["views_int"] > 1_000_000
+
+
+@pytest.mark.e2e
+@E2E
 def test_e2e_cli_writes_file(tmp_path):
     from viewlyt.cli import main
 

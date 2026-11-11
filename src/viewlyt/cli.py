@@ -383,10 +383,18 @@ def run_batch(
     quiet: bool,
     with_ts: bool = False,
     copy: bool = False,
+    transcript_engine: str = "auto",
 ) -> list[dict]:
     """Process every (video_id, url) using ``jobs`` worker threads, each owning a
     reused, primed driver. Failures are isolated per-video; a poisoned session is
     recycled. Returns a summary dict per target.
+
+    ``transcript_engine`` picks where the transcript comes from: ``auto`` =
+    yt-dlp captions first (no browser at all when the transcript is the only
+    product), Selenium panel as fallback; ``ytdlp`` = never the browser for the
+    transcript (a yt-dlp error fails the video, zero segments is "unavailable");
+    ``selenium`` = the panel text only. Each success summary records the engine
+    that served it under ``"transcript_engine"`` (``None`` without a transcript).
 
     Output modes: by default one file per product; ``unify`` writes one
     ``<slug>-<id>.unified.md`` per video instead; ``unify_all`` writes a single
@@ -453,6 +461,31 @@ def run_batch(
             time.sleep(min(worker_id * random.uniform(0.4, 0.8), 5.0))
         local_headless = headless
         driver = None
+
+        def browse(video_id: str, url: str, **overrides):
+            """``scrape_one`` on this worker's lazily-built driver (a worker that
+            never needs the browser never builds one), with the headed fallback
+            on a consent/bot block. ``overrides`` tweak ``scrape_kw`` per call."""
+            nonlocal driver, local_headless
+            kw = {**scrape_kw, **overrides}
+            if driver is None:
+                driver = build_primed_driver(local_headless, user_data_dir)
+            try:
+                return scrape_one(driver, url, **kw)
+            except BlockedError as exc:
+                if not (local_headless and fallback):
+                    raise
+                log.warning(
+                    "[w%d] blocked (%s) on %s — switching this worker to headed",
+                    worker_id,
+                    exc.kind,
+                    video_id,
+                )
+                _safe_quit(driver)
+                local_headless = False
+                driver = build_primed_driver(local_headless, user_data_dir)
+                return scrape_one(driver, url, **kw)
+
         try:
             while True:
                 try:
@@ -460,28 +493,47 @@ def run_batch(
                 except Empty:
                     break
                 try:
-                    if driver is None:
-                        driver = build_primed_driver(local_headless, user_data_dir)
-                    try:
-                        vid, title, records, transcript, related, views_int = scrape_one(
-                            driver, url, **scrape_kw
-                        )
-                    except BlockedError as exc:
-                        if local_headless and fallback:
-                            log.warning(
-                                "[w%d] blocked (%s) on %s — switching this worker to headed",
-                                worker_id,
-                                exc.kind,
+                    # Transcript from yt-dlp captions first: no browser, ~1.5 s. Any
+                    # failure is just "no segments" here; what that means next depends
+                    # on the engine (auto -> Selenium panel, ytdlp -> the video fails).
+                    yt: dict = {}
+                    yt_error: Exception | None = None
+                    if with_transcript and transcript_engine != "selenium":
+                        try:
+                            yt = ytdl.video_transcript(video_id)
+                        except Exception as exc:
+                            yt_error = exc
+                            log.info(
+                                "yt-dlp transcript failed for %s (%s)%s",
                                 video_id,
+                                exc,
+                                " — falling back to Selenium"
+                                if transcript_engine == "auto"
+                                else "",
                             )
-                            _safe_quit(driver)
-                            local_headless = False
-                            driver = build_primed_driver(local_headless, user_data_dir)
-                            vid, title, records, transcript, related, views_int = scrape_one(
-                                driver, url, **scrape_kw
+                    yt_segments = yt.get("segments") or []
+                    if yt_error is not None and transcript_engine == "ytdlp":
+                        raise yt_error  # per-video failure + retry, never a silent empty
+
+                    if yt_segments or (with_transcript and transcript_engine == "ytdlp"):
+                        # yt-dlp is authoritative for the transcript: it had segments, or
+                        # --transcript-engine ytdlp forbids the browser for it (an
+                        # honest zero-segment answer stays "unavailable").
+                        transcript, t_engine = yt_segments, "yt-dlp"
+                        if with_comments or with_related:  # browser needed anyway
+                            vid, title, records, _, related, views_int = browse(
+                                video_id, url, with_transcript=False
                             )
                         else:
-                            raise
+                            vid, title, records, related = video_id, yt.get("title", ""), [], []
+                            views_int = yt.get("views_int")
+                    else:
+                        vid, title, records, transcript, related, views_int = browse(video_id, url)
+                        t_engine = "selenium" if with_transcript else None
+                    if with_transcript:
+                        log.info(
+                            "%s: transcript via %s (%d segments)", vid, t_engine, len(transcript)
+                        )
                     slug = slugify(title)
                     # Format each selected product once; reused by every output mode.
                     clines = (
@@ -555,6 +607,7 @@ def run_batch(
                             "with_transcript": with_transcript,
                             "transcript_file": transcript_file,
                             "segments": n_seg,
+                            "transcript_engine": t_engine,
                             "with_related": with_related,
                             "related_file": related_file,
                             "related": n_related,
@@ -908,6 +961,15 @@ def build_parser() -> argparse.ArgumentParser:
     # Legacy no-op: stripping is the default now. Hidden, kept so old scripts don't break.
     p.add_argument("--no-ts", dest="legacy_no_ts", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
+        "--transcript-engine",
+        choices=("auto", "ytdlp", "selenium"),
+        default="auto",
+        help="where the transcript comes from (default: auto). auto = yt-dlp captions first "
+        "(no browser needed for a transcript-only run), Selenium transcript panel as fallback; "
+        "ytdlp = never open a browser for the transcript; selenium = the previous behaviour "
+        "(panel text, verbatim)",
+    )
+    p.add_argument(
         "--copy",
         action="store_true",
         help="also copy the full output (the unified doc, or the produced file's content) "
@@ -1080,6 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
         quiet=args.quiet,
         with_ts=args.with_ts,
         copy=args.copy,
+        transcript_engine=args.transcript_engine,
     )
 
     ok = [s for s in summaries if not s["error"]]

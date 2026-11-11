@@ -197,3 +197,131 @@ def channel_info(ref: str, latest: int = 5) -> dict:
         {"extract_flat": "in_playlist", "playlistend": max(latest, 1)},
     )
     return info
+
+
+# --------------------------------------------------------------------------- #
+# Transcript from YouTube's own caption tracks (the default `vl` product)
+# --------------------------------------------------------------------------- #
+def _json3_to_segments(data: dict) -> list[tuple[str, str]]:
+    """YouTube ``json3`` caption payload -> ``[(timestamp, text), ...]``.
+
+    Pure (no I/O). The shape is exactly what ``scraper.fetch_transcript`` returns
+    and ``htmltext.format_transcript`` consumes, so the yt-dlp transcript is a
+    drop-in for the Selenium panel scrape. The timestamp is ``m:ss`` /
+    ``h:mm:ss`` (``format_duration`` of the event start), the text has its
+    whitespace collapsed (manual tracks embed ``\\n`` mid-caption).
+
+    Skipped events: ``aAppend`` ones (ASR tracks interleave bare ``"\\n"``
+    line-break events that are layout, not speech), events without ``segs``
+    (window/style housekeeping) and events whose text is empty once collapsed.
+    Never raises: any non-dict/garbage input yields ``[]``.
+    """
+    from .htmltext import format_duration
+
+    events = data.get("events") if isinstance(data, dict) else None
+    if not isinstance(events, list):
+        return []
+    segments: list[tuple[str, str]] = []
+    for ev in events:
+        if not isinstance(ev, dict) or ev.get("aAppend") or not isinstance(ev.get("segs"), list):
+            continue
+        raw = "".join(s.get("utf8") or "" for s in ev["segs"] if isinstance(s, dict))
+        text = " ".join(raw.split())
+        if not text:
+            continue
+        start = ev.get("tStartMs")
+        ts = format_duration(int(start) // 1000) if isinstance(start, (int, float)) else ""
+        segments.append((ts, text))
+    return segments
+
+
+def _json3_url(tracks: object) -> str | None:
+    """The ``json3`` URL inside one yt-dlp track list (``[{"ext", "url"}, ...]``)."""
+    if not isinstance(tracks, list):
+        return None
+    for fmt in tracks:
+        if isinstance(fmt, dict) and fmt.get("ext") == "json3" and fmt.get("url"):
+            return fmt["url"]
+    return None
+
+
+def _pick_caption_track(info: dict) -> str | None:
+    """``json3`` URL of the track the YouTube transcript panel shows by default.
+
+    Pure. The panel prefers a human-made track in the video's own language, then
+    the ASR (auto-generated) track of that same language. Priority:
+
+    1. manual ``subtitles[language]``;
+    2. ASR ``automatic_captions["<language>-orig"]`` (yt-dlp keys the ORIGINAL
+       ASR track with ``-orig``; the plain key can be a re-translation);
+    3. ASR ``automatic_captions[language]``;
+    4. the first ASR key ending in ``-orig`` (``language`` missing or off);
+    5. the first manual track that isn't ``live_chat`` (a replay's chat log is
+       filed under ``subtitles`` but is not a caption).
+
+    A track with no ``json3`` entry is skipped (next priority). ``None`` when
+    nothing qualifies — in particular a translated ASR track is NEVER a last
+    resort: ASR translations (~150 of them per video) would be machine output
+    of machine output, worse than the Selenium panel fallback.
+    """
+    subs = info.get("subtitles") or {}
+    auto = info.get("automatic_captions") or {}
+    language = info.get("language")
+
+    candidates: list[object] = []
+    if language:
+        candidates += [subs.get(language), auto.get(f"{language}-orig"), auto.get(language)]
+    candidates.append(next((v for k, v in auto.items() if k.endswith("-orig")), None))
+    candidates.append(next((v for k, v in subs.items() if k != "live_chat"), None))
+    for tracks in candidates:
+        url = _json3_url(tracks)
+        if url:
+            return url
+    return None
+
+
+def _extract_with_captions(video_id: str) -> tuple[dict, dict | None]:
+    """``(info, json3_payload_or_None)`` for one video, in a single yt-dlp session.
+
+    The module's second I/O boundary (next to :func:`_extract`): ``yt_dlp`` is
+    imported HERE, lazily. One ``YoutubeDL`` does both ``extract_info`` and the
+    caption download (``ydl.urlopen`` reuses its cookies/headers/proxy, ~0.2 s
+    for the json3 file). The payload is ``None`` when the video has no usable
+    caption track. Never catches exceptions. Tests patch THIS function, never
+    yt-dlp internals.
+    """
+    import json
+
+    import yt_dlp
+
+    opts = {**_BASE_OPTS, "logger": _NullLogger()}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        info = info or {}
+        url = _pick_caption_track(info)
+        payload = json.loads(ydl.urlopen(url).read()) if url else None
+    return info, payload
+
+
+def video_transcript(video_id: str) -> dict:
+    """Transcript + title + exact views of one video, WITHOUT a browser.
+
+    Returns ``{"video_id", "title", "views_int", "segments"}``: ``segments`` is the
+    :func:`_json3_to_segments` shape (``[]`` when the video has no caption
+    track), ``views_int`` the exact ``view_count`` (``None`` when absent or not
+    positive — same normalisation as :func:`_entry_to_item`).
+
+    Does **not** catch exceptions — a raised ``yt_dlp.utils.DownloadError`` /
+    network error or an empty ``segments`` is the caller's signal to fall back
+    to the Selenium transcript panel (see ``cli.run_batch``), the same contract
+    as :func:`channel_entries`.
+    """
+    info, payload = _extract_with_captions(video_id)
+    raw = info.get("view_count")
+    views_int = int(raw) if isinstance(raw, (int, float)) and raw > 0 else None
+    return {
+        "video_id": video_id,
+        "title": info.get("title") or "",
+        "views_int": views_int,
+        "segments": _json3_to_segments(payload) if payload else [],
+    }

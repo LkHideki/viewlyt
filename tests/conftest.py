@@ -24,6 +24,22 @@ E2E = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_ytdlp_transcript(request, monkeypatch):
+    """Keep every test off the network: ``cli.run_batch`` tries yt-dlp captions first,
+    so by default that attempt raises -> the (Selenium-mocked) fallback path runs, as
+    it did before yt-dlp transcripts existed. A test exercising the yt-dlp path
+    overrides ``viewlyt.cli.ytdl.video_transcript`` itself. Opt-in e2e tests are real
+    on purpose and keep the genuine function."""
+    if request.node.get_closest_marker("e2e"):
+        return
+
+    def _disabled(video_id: str) -> dict:
+        raise RuntimeError("yt-dlp disabled in tests")
+
+    monkeypatch.setattr("viewlyt.cli.ytdl.video_transcript", _disabled)
+
+
 class FakeDriver:
     """Minimal stand-in for a Selenium WebDriver — records that quit() was called."""
 
