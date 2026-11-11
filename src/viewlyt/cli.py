@@ -370,6 +370,45 @@ def _write_channel(slug: str, lines: list[str], out_dir: str) -> Path:
     return out_path
 
 
+# Consecutive yt-dlp transcript failures (exceptions) after which `--transcript-engine auto`
+# stops asking yt-dlp for the rest of the run. A rate limit or a stale extractor fails every
+# video the same way, and each failed extraction burns up to the socket timeout before the
+# Selenium fallback even starts — three in a row is a pattern, not a flaky video.
+_YTDLP_BREAKER_LIMIT = 3
+
+
+class _FailureBreaker:
+    """Opens after ``limit`` CONSECUTIVE failures; a success resets the streak.
+
+    Shared by every worker thread of one ``run_batch`` call, hence the lock. Once open it
+    stays open for the run (a late success from a request already in flight doesn't close
+    it). :meth:`failure` returns True exactly once — on the call that opens the breaker — so
+    the caller can log a single warning however many threads fail together."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._streak = 0
+        self._open = False
+        self._lock = threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._open
+
+    def success(self) -> None:
+        with self._lock:
+            self._streak = 0
+
+    def failure(self) -> bool:
+        with self._lock:
+            self._streak += 1
+            if self._open or self._streak < self._limit:
+                return False
+            self._open = True
+            return True
+
+
 # --------------------------------------------------------------------------- #
 # Batch runner: bounded pool of reused browser instances
 # --------------------------------------------------------------------------- #
@@ -408,6 +447,9 @@ def run_batch(
     transcript (a yt-dlp error fails the video, zero segments is "unavailable");
     ``selenium`` = the panel text only. Each success summary records the engine
     that served it under ``"transcript_engine"`` (``None`` without a transcript).
+    In ``auto``, ``_YTDLP_BREAKER_LIMIT`` consecutive yt-dlp EXCEPTIONS (shared across
+    workers) switch the rest of the run to the Selenium panel with one warning; a
+    yt-dlp failure never recycles a worker's (healthy) browser.
 
     Output modes: by default one file per product; ``unify`` writes one
     ``<slug>-<id>.unified.md`` per video instead; ``unify_all`` writes a single
@@ -432,6 +474,7 @@ def run_batch(
     copy_docs: dict[str, list[str]] = {}
     cp_lock = threading.Lock()
     s_lock = threading.Lock()
+    yt_breaker = _FailureBreaker(_YTDLP_BREAKER_LIMIT)  # `auto` only; see the worker
     bar = tqdm(
         total=len(targets), desc="videos", unit="video", disable=(len(targets) == 1 or quiet)
     )
@@ -505,13 +548,19 @@ def run_batch(
                     video_id, url, attempt = q.get_nowait()
                 except Empty:
                     break
+                # Set only when a yt-dlp failure is raised BEFORE the browser was touched for
+                # this video: the worker's driver is healthy, so the handler must keep it.
+                yt_origin = False
                 try:
                     # Transcript from yt-dlp captions first: no browser, ~1.5 s. Any
                     # failure is just "no segments" here; what that means next depends
                     # on the engine (auto -> Selenium panel, ytdlp -> the video fails).
                     yt: dict = {}
                     yt_error: Exception | None = None
-                    if with_transcript and transcript_engine != "selenium":
+                    ask_ytdlp = with_transcript and transcript_engine != "selenium"
+                    if transcript_engine == "auto" and yt_breaker.is_open:
+                        ask_ytdlp = False  # breaker open: straight to the panel
+                    if ask_ytdlp:
                         try:
                             yt = ytdl.video_transcript(video_id)
                         except Exception as exc:
@@ -524,8 +573,20 @@ def run_batch(
                                 if transcript_engine == "auto"
                                 else "",
                             )
+                            # No fallback in `ytdlp`: each video fails on its own there.
+                            if transcript_engine == "auto" and yt_breaker.failure():
+                                log.warning(
+                                    "yt-dlp failed %d transcripts in a row — transcripts now "
+                                    "come from the Selenium panel for the rest of this run",
+                                    _YTDLP_BREAKER_LIMIT,
+                                )
+                        else:
+                            # An empty answer ("no captions") is yt-dlp WORKING; only
+                            # exceptions count towards the breaker.
+                            yt_breaker.success()
                     yt_segments = yt.get("segments") or []
                     if yt_error is not None and transcript_engine == "ytdlp":
+                        yt_origin = True
                         raise yt_error  # per-video failure + retry, never a silent empty
 
                     if yt_segments or (with_transcript and transcript_engine == "ytdlp"):
@@ -639,8 +700,9 @@ def run_batch(
                     announce_line(f"{_color('✓', '32')} {vid}  {title[:48]}  ({', '.join(done)})")
                 except Exception as exc:  # isolate this video; recycle the session
                     err = str(exc) or type(exc).__name__
-                    _safe_quit(driver)
-                    driver = None
+                    if not yt_origin:  # a browser-side failure poisons the session
+                        _safe_quit(driver)
+                        driver = None
                     if attempt == 0:
                         # One automatic retry on a fresh session: transient network
                         # / stale-session / block hiccups shouldn't cost the video.
@@ -1353,7 +1415,9 @@ def _run_video_batch(args: argparse.Namespace, targets: list[tuple[str, str]]) -
     jobs = max(1, min(jobs, len(targets)))
     inner_progress = len(targets) == 1 and not args.quiet
 
-    log.info("%d video(s) to scrape with %d browser instance(s)", len(targets), jobs)
+    # "up to": a browser is only built when a product needs the page (a yt-dlp-served
+    # transcript-only run builds none), so these are workers, not Chromes.
+    log.info("%d video(s) to scrape with up to %d worker(s)", len(targets), jobs)
     summaries = run_batch(
         targets,
         jobs=jobs,
@@ -1452,6 +1516,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.scan_cap != _DEFAULT_SCAN_CAP:
             log.warning("--scan-cap has no effect without --since")
 
+    if (
+        (args.channel > 0 or window is not None)
+        and not _has_video_selector(args)
+        and args.transcript_engine != "auto"
+    ):
+        log.warning(
+            "--transcript-engine has no effect on a listing-only run "
+            "(add -t/-c/-r/-u/--unify-all to scrape the listed videos)"
+        )
     if args.channel > 0 or window is not None:
         return _run_channel_mode(args, window)
     if args.order != "recent":
