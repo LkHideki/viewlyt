@@ -14,6 +14,7 @@ The labels used here are the ones the real grid renders (measured on live channe
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -66,12 +67,16 @@ def _age(video_id: str) -> int:
 class _GridDriver:
     """Fake driver for the channel ``/videos`` grid.
 
-    Renders ``page`` cards, then ``grow`` more per ``window.scrollBy`` (the real grid's
-    lazy continuation), out of the full ``cards`` list. ``_count`` answers ``2 *
-    rendered`` on purpose: the real selector list matches every card twice (the
-    rich-item and its nested lockup), which is why window mode counts distinct cards
-    itself. The scripts are recognised by the scraper's own constants, so a renamed JS
-    string can't silently desynchronise fake and code.
+    Renders ``page`` cards, then ``grow`` more per continuation (the real grid's lazy
+    loading), out of the full ``cards`` list. A continuation fires once the page has been
+    scrolled to its bottom: after ``steps_to_bottom`` jumps since the last growth the probe
+    reports ``at_bottom`` and the next page arrives ``latency`` probes later (0 = right
+    away, like the real grid on a fast link). The spinner (``more``) is up while cards
+    remain unless ``spinner`` forces it (``spinner_seq`` scripts it per probe). ``_count`` answers ``2 * rendered`` on purpose: the
+    real selector list matches every card twice (the rich-item and its nested lockup),
+    which is why window mode counts distinct cards itself. The scripts are recognised by
+    the scraper's own constants, so a renamed JS string can't silently desynchronise fake
+    and code.
     """
 
     def __init__(
@@ -83,11 +88,21 @@ class _GridDriver:
         has_chip: bool = True,
         raise_after: int | None = None,
         probe_result: object = None,
+        steps_to_bottom: int = 1,
+        latency: int = 0,
+        spinner: bool | None = None,
+        spinner_seq: list[bool] | None = None,
         name: str = "Someone",
     ) -> None:
         self.cards = cards
         self.rendered = min(page, len(cards))
         self.grow = grow
+        self.steps_to_bottom = steps_to_bottom
+        self.latency = latency
+        self.spinner = spinner
+        self.spinner_seq = spinner_seq  # probe k (1-based) shows spinner_seq[k - 1], if any
+        self.since_growth = 0  # jumps since the last growth
+        self.pending: int | None = None  # probes left until an in-flight page lands
         self.has_chip = has_chip
         self.raise_after = raise_after
         self.probe_result = probe_result
@@ -97,6 +112,7 @@ class _GridDriver:
         self.get_calls: list[str] = []
         self.script_calls = 0
         self.scrolls = 0
+        self.nudges = 0  # plain-mode scrollBy steps
         self.probes = 0
         self.harvests = 0
         self.legacy_harvests = 0
@@ -105,6 +121,11 @@ class _GridDriver:
 
     def get(self, url: str) -> None:
         self.get_calls.append(url)
+
+    def _grow(self) -> None:
+        self.rendered = min(len(self.cards), self.rendered + self.grow)
+        self.since_growth = 0
+        self.pending = None
 
     def execute_script(self, script: str, *args):
         self.script_calls += 1
@@ -118,7 +139,15 @@ class _GridDriver:
             self.probes += 1
             if self.probe_result is not None:
                 return self.probe_result
-            return [text for _, text in self.cards[: self.rendered]]
+            if self.pending is not None:
+                self.pending -= 1
+                if self.pending <= 0:
+                    self._grow()
+            more = self.rendered < len(self.cards) if self.spinner is None else self.spinner
+            if self.spinner_seq is not None and self.probes <= len(self.spinner_seq):
+                more = self.spinner_seq[self.probes - 1]
+            at_bottom = self.since_growth >= self.steps_to_bottom
+            return [[text for _, text in self.cards[: self.rendered]], at_bottom, more]
         if script == scraper._CHANNEL_WINDOW_JS:
             self.harvests += 1
             if self.probe_result is not None:
@@ -133,8 +162,23 @@ class _GridDriver:
                 }
                 for vid, text in self.cards[: self.rendered]
             ]
-        if script == "window.scrollBy(0, 1200);":
+        if script == scraper._CHANNEL_SCROLL_BOTTOM_JS:  # window mode: one jump per step
             self.scrolls += 1
+            self.since_growth += 1
+            if (
+                self.since_growth >= self.steps_to_bottom
+                and self.grow > 0
+                and self.rendered < len(self.cards)
+                and self.pending is None
+            ):
+                if self.latency <= 0:
+                    self._grow()
+                else:
+                    self.pending = self.latency
+            return None
+        if script == "window.scrollBy(0, 1200);":  # plain mode: 1200 px nudges
+            self.scrolls += 1
+            self.nudges += 1
             self.rendered = min(len(self.cards), self.rendered + self.grow)
             return None
         if "SELS[s]" in script:  # _CLICK_CHANNEL_CHIP_JS
@@ -598,10 +642,115 @@ def test_no_incomplete_warning_when_the_scan_ends_normally(caplog) -> None:
 
 
 def test_stagnant_grid_stops_after_the_stale_tolerance() -> None:
+    # The true end: at the bottom, nothing new, no loading spinner.
     drv = _GridDriver(_grid([1, 2, 3, 4]), page=4, grow=0)
     _, items = _run(drv, since=_ago(5))
     assert drv.scrolls == scraper._CHANNEL_WINDOW_STALE
     assert len(items) == 4
+
+
+# --------------------------------------------------------------------------- #
+# The walk: when is "no growth" really the end of the grid?
+# --------------------------------------------------------------------------- #
+def _walk(drv: _GridDriver, since=None, until=None, limit: int = 0):
+    return scraper._scroll_channel_window(
+        drv, "sel", "recent", since or _ago(14), until, limit, TODAY
+    )
+
+
+@pytest.mark.parametrize("spinner", [None, False])
+def test_steps_not_at_the_bottom_never_count_as_idle(spinner, caplog) -> None:
+    # A page taller than one scroll: 8 jumps' worth of no growth before the bottom is hit
+    # (more than the stale tolerance). Counting them ended the walk after 6 cards, silently.
+    # It must hold even if the spinner element is ever renamed away (`spinner=False`).
+    cards = _grid(list(range(1, 100)))
+    drv = _GridDriver(cards, page=6, grow=6, steps_to_bottom=8, spinner=spinner)
+    assert 8 > scraper._CHANNEL_WINDOW_STALE
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        _, items = _run(drv, since=_ago(14))
+    assert set(_age(i) for i in _ids(items)) == set(range(1, 21))  # everything "2w ago" or newer
+    assert drv.scrolls == 24  # three pages of 8 jumps, until a "3w ago" card showed up
+    assert "incomplete" not in caplog.text
+
+
+def test_a_slow_continuation_with_the_spinner_up_is_waited_out(caplog) -> None:
+    # At the bottom, the spinner up, the next page 12 probes away: "no growth" here is a
+    # request in flight, not the end (5 such probes used to end the walk).
+    cards = _grid(list(range(1, 100)))
+    drv = _GridDriver(cards, page=6, grow=6, latency=12)
+    assert 12 > scraper._CHANNEL_WINDOW_STALE
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        _, items = _run(drv, since=_ago(14))
+    assert set(_age(i) for i in _ids(items)) == set(range(1, 21))
+    assert "incomplete" not in caplog.text
+
+
+def test_the_end_needs_no_spinner_at_the_bottom() -> None:
+    # Fully rendered, nothing pending: the end, after the idle tolerance.
+    drv = _GridDriver(_grid([1, 2, 3, 4]), page=4, grow=0)
+    assert _walk(drv, since=_ago(5)) == ("stagnant", 4)
+    # A grid that still shows its spinner is NOT at its end however long it stays quiet
+    # (up to the pending limit).
+    drv = _GridDriver(_grid([1, 2, 3, 4]), page=4, grow=0, spinner=True)
+    why, _ = _walk(drv, since=_ago(5))
+    assert why == "stuck"
+    assert drv.scrolls >= scraper._CHANNEL_WINDOW_PENDING_STEPS - 1
+
+
+def test_a_continuation_that_never_arrives_ends_stuck_and_warns(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(scraper, "_CHANNEL_WINDOW_PENDING_STEPS", 7)
+    drv = _GridDriver(_grid(list(range(1, 100))), page=6, grow=6, latency=500)
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        name, items = _run(drv, since=_ago(14))
+    assert name == "Someone"
+    assert [_age(i) for i in _ids(items)] == [1, 2, 3, 4, 5, 6]  # what loaded is returned
+    assert drv.scrolls == 7  # 7 probes at the bottom with the spinner up, then give up
+    assert "@someone" in caplog.text and "never loaded" in caplog.text
+    assert "incomplete" in caplog.text and "6 cards" in caplog.text
+
+
+def test_idle_at_the_bottom_resets_when_the_grid_grows() -> None:
+    # Two slow pages in a row: each wait is shorter than the pending limit, so the counter
+    # must restart on growth or the second wait would inherit the first one's.
+    drv = _GridDriver(_grid(list(range(1, 100))), page=6, grow=6, latency=20)
+    why, _ = _walk(drv, since=_ago(14))
+    assert why == "done"
+    assert drv.probes > 2 * 20  # a long walk, never "stuck"
+
+
+def test_a_returning_spinner_restarts_the_end_of_grid_count() -> None:
+    # No spinner for 3 probes, the spinner back for one, no spinner again: the end needs
+    # STALE CONSECUTIVE quiet probes, so the earlier three don't carry over.
+    seq = [False, False, False, False, True, False, False, False]
+    drv = _GridDriver(_grid([1, 2, 3, 4]), page=4, grow=0, spinner_seq=seq)
+    assert _walk(drv, since=_ago(5)) == ("stagnant", 4)
+    assert drv.probes == len(seq) + 2  # the count restarted at probe 5; 5 more quiet probes
+
+
+def test_a_spinner_that_blinks_off_while_a_page_is_in_flight_is_not_the_end() -> None:
+    # YouTube may swap the continuation row while fetching: one probe without it, then the
+    # page lands. A single quiet probe must not be taken for the end of the grid.
+    cards = _grid(list(range(1, 100)))
+    drv = _GridDriver(cards, page=6, grow=6, latency=3, spinner_seq=[True, False, True])
+    assert scraper._CHANNEL_WINDOW_STALE > 1
+    why, reached = _walk(drv, since=_ago(14))
+    assert why == "done" and reached > 6
+
+
+def test_each_step_is_one_probe_round_trip_plus_one_jump_to_the_bottom() -> None:
+    drv = _GridDriver(_grid(list(range(1, 100))), page=6, grow=6)
+    why, _ = _walk(drv)
+    assert why == "done"
+    assert drv.script_calls == drv.probes + drv.scrolls  # nothing else per step
+    assert drv.nudges == 0  # every step is the jump, never a 1200 px nudge
+    assert drv.probes == drv.scrolls + 1  # the last probe ends the walk without a scroll
+
+
+def test_unreadable_probe_payloads_degrade_to_the_end_of_the_grid() -> None:
+    for payload in ("junk", [], [[1], True], [["1d ago"]], 7):
+        assert scraper._read_probe(payload) == ([], True, False), payload
+    assert scraper._read_probe([["1d ago", None], 1, 0]) == (["1d ago", ""], True, False)
+    assert scraper._read_probe((["2w ago"], False, True)) == (["2w ago"], False, True)
 
 
 @pytest.mark.parametrize("raise_after", [0, 1, 2, 3, 4, 5, 6, 8, 12])
@@ -662,8 +811,11 @@ def test_date_selectors_are_exact_tokens_no_class_substring() -> None:
         scraper._CHANNEL_CARD_DATE_JS,
         scraper._CHANNEL_DATES_JS,
         scraper._CHANNEL_WINDOW_JS,
+        scraper._CHANNEL_SCROLL_BOTTOM_JS,
     ):
         assert forbidden not in js
+    # the spinner selector is a bare tag name: no class, attribute or structure to drift
+    assert re.fullmatch(r"[a-z]+(-[a-z]+)+", scraper.CHANNEL_MORE_SELECTOR)
     assert forbidden not in Path(scraper.__file__).read_text(encoding="utf-8")
 
 
@@ -736,12 +888,26 @@ def test_e2e_window_js_against_a_synthetic_grid() -> None:
         date_sels = list(scraper.CHANNEL_DATE_SELECTORS)
         # 8 elements match the grid selector list; the probe counts the 4 distinct cards.
         assert scraper._count(driver, sel) == 8
-        assert driver.execute_script(scraper._CHANNEL_DATES_JS, sel, date_sels) == [
-            "6d ago",
-            "5mo ago",
-            "3 weeks ago",
-            "",
-        ]
+
+        def probe():
+            return driver.execute_script(
+                scraper._CHANNEL_DATES_JS, sel, date_sels, scraper.CHANNEL_MORE_SELECTOR
+            )
+
+        texts = ["6d ago", "5mo ago", "3 weeks ago", ""]
+        # A short page and no spinner: the viewport already touches the bottom and nothing
+        # more is coming — the end of a grid.
+        assert probe() == [texts, True, False]
+        # A tall page with the continuation spinner row: not at the bottom until the jump,
+        # and the spinner is up throughout (a slow next page, not an end).
+        driver.execute_script(
+            "document.getElementById('contents').insertAdjacentHTML('beforeend',"
+            "'<ytd-continuation-item-renderer></ytd-continuation-item-renderer>');"
+            "document.body.insertAdjacentHTML('beforeend','<div style=\"height:6000px\"></div>');"
+        )
+        assert probe() == [texts, False, True]
+        driver.execute_script(scraper._CHANNEL_SCROLL_BOTTOM_JS)
+        assert probe() == [texts, True, True]
         raw = driver.execute_script(
             scraper._CHANNEL_WINDOW_JS, sel, list(scraper.RELATED_TITLE_SELECTORS), date_sels
         )

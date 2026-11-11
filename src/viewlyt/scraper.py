@@ -160,13 +160,23 @@ CHANNEL_DATE_SELECTORS = (
     "yt-content-metadata-view-model .ytContentMetadataViewModelMetadataTextLastPart",
     "yt-content-metadata-view-model span[role=text]",
 )
-# Window mode (--since/--until) scroll budget. The plain-count loop below stops
-# after 12 steps (a few dozen cards), which would silently truncate a long window
-# on a busy channel; here the date-based early stop is the normal exit and these
-# are only the runaway guards (a stale tolerance a bit wider than the count loop's
-# 3, since a wrong stop would silently drop in-window videos).
+# The spinner row YouTube keeps at the foot of the grid while another page of videos can be
+# fetched. Probed live (@veritasium, @3blue1brown, @kurzgesagt, @claude): present on EVERY
+# probe of a walk (even while the next page is slow), and gone the moment the last card
+# renders. So "at the bottom, no growth, no spinner" is the true end of the grid, while "at
+# the bottom, no growth, spinner" is a continuation still in flight. Exact tag, no class.
+CHANNEL_MORE_SELECTOR = "ytd-continuation-item-renderer"
+# Window mode (--since/--until) walk guards. The plain-count loop below stops after 12
+# steps (a few dozen cards), which would silently truncate a long window on a busy channel;
+# here the date-based early stop is the normal exit and these only bound the walk. Steps
+# that are not at the bottom of the page never count as idle (the page may simply be taller
+# than one scroll), and every non-date ending but the true end warns.
 _CHANNEL_WINDOW_MAX_STEPS = 150
+# Consecutive probes at the bottom with no growth AND no spinner: the end of the grid.
 _CHANNEL_WINDOW_STALE = 5
+# Consecutive probes at the bottom with no growth but the spinner still up: a continuation
+# that is slow (a 1.5 s latency spans ~4 steps) or never arrives (~11 s at this limit).
+_CHANNEL_WINDOW_PENDING_STEPS = 30
 # Window mode needs the age labels to be readable: with at least this many cards
 # rendered and MORE THAN HALF unreadable, the date source is unusable (non-English
 # UI, renamed DOM) and the call fails instead of passing off a whole channel as a window.
@@ -1020,14 +1030,16 @@ function cardDate(card, SELS){
 }
 """
 
-# The scroll loop's probe: ONE light round-trip per step returning just the date text
-# of every DISTINCT card (ids de-duplicated — the grid selector list matches each card
-# twice, as the <ytd-rich-item-renderer> and its nested lockup), in DOM order. Python
-# derives both the count and the early-stop condition from it.
+# The scroll loop's probe: ONE light round-trip per step returning
+# ``[date texts, at_bottom, more]``: the date text of every DISTINCT card (ids de-duplicated —
+# the grid selector list matches each card twice, as the <ytd-rich-item-renderer> and its
+# nested lockup) in DOM order, whether the viewport already touches the bottom of the page,
+# and whether the continuation spinner is up. Python derives the count, the early-stop
+# condition and the end-of-grid test from it.
 _CHANNEL_DATES_JS = (
     _CHANNEL_CARD_DATE_JS
     + r"""
-var ITEM=arguments[0], DATE=arguments[1];
+var ITEM=arguments[0], DATE=arguments[1], MORE=arguments[2];
 var items=document.querySelectorAll(ITEM), out=[], seen={};
 for(var i=0;i<items.length;i++){
   var a=items[i].querySelector("a[href*='/watch?v=']");
@@ -1037,9 +1049,17 @@ for(var i=0;i<items.length;i++){
   seen[m[1]]=1;
   out.push(cardDate(items[i],DATE));
 }
-return out;
+var de=document.documentElement;
+return [out, (window.innerHeight+window.scrollY)>=(de.scrollHeight-2),
+        !!document.querySelector(MORE)];
 """
 )
+
+# One jump to the bottom per step: the page's own sentinel fires the next page the moment
+# the bottom is reached. Measured on @veritasium (453 videos): the 1200 px nudges took 3
+# steps per 30-card page (45 steps, 16 s), the jump 1 (15 steps, 5 s) with the same final
+# 453 cards.
+_CHANNEL_SCROLL_BOTTOM_JS = "window.scrollTo(0, document.documentElement.scrollHeight);"
 
 # Window-mode harvest: _RELATED_JS plus the raw date text, and NO cap — filtering by
 # date happens in Python afterwards, so a JS-side LIMIT would count out-of-window cards.
@@ -1175,6 +1195,16 @@ def _window_scroll_done(
     return limit > 0 and sum(_overlaps(s, since, until) for s in spans) >= limit
 
 
+def _read_probe(payload) -> tuple[list[str], bool, bool]:
+    """``(date texts, at_bottom, spinner_up)`` from :data:`_CHANNEL_DATES_JS`'s payload.
+
+    An unreadable payload degrades to "no cards, at the bottom, no spinner": the walk then
+    ends as stagnant after the idle tolerance instead of scrolling the whole budget blind."""
+    if isinstance(payload, (list, tuple)) and len(payload) == 3 and isinstance(payload[0], list):
+        return [str(t or "") for t in payload[0]], bool(payload[1]), bool(payload[2])
+    return [], True, False
+
+
 def _scroll_channel_window(
     driver,
     sel: str,
@@ -1184,36 +1214,51 @@ def _scroll_channel_window(
     limit: int,
     today: date,
 ) -> tuple[str, int]:
-    """Nudge-scroll the channel grid until the window is settled. The stop checks share
-    the round-trip that reads the cards. Returns ``(why, cards)``: ``why`` is
+    """Walk the channel grid down until the window is settled, one probe + one jump to the
+    bottom per step. The stop checks share the probe's round-trip. Returns
+    ``(why, cards)``: ``why`` is
 
     * ``"undated"`` — most cards have no readable age (checked on every probe, so the
       very first one aborts before any scrolling);
     * ``"done"`` — :func:`_window_scroll_done`;
-    * ``"stagnant"`` — the grid stopped growing (``_CHANNEL_WINDOW_STALE`` steps): its end;
-    * ``"budget"`` — ``_CHANNEL_WINDOW_MAX_STEPS`` ran out first: the listing may be
-      incomplete, and the caller says so.
+    * ``"stagnant"`` — the TRUE end of the grid: ``_CHANNEL_WINDOW_STALE`` probes in a row
+      at the bottom of the page, with no new card and no continuation spinner;
+    * ``"stuck"`` — the spinner stayed up with no growth for ``_CHANNEL_WINDOW_PENDING_STEPS``
+      probes at the bottom: the next page never arrived (the listing may be incomplete);
+    * ``"budget"`` — ``_CHANNEL_WINDOW_MAX_STEPS`` ran out first (likewise incomplete).
 
-    ``cards`` is the distinct-card count at the last probe.
+    Only a probe AT THE BOTTOM with no growth is idle: a no-growth probe higher up just means
+    the page is taller than one scroll, and, while the next page loads, the cards already
+    rendered don't grow either — counting those truncated windows silently. The caller warns
+    on ``"stuck"`` and ``"budget"``. ``cards`` is the distinct-card count at the last probe.
     """
     date_sels = list(CHANNEL_DATE_SELECTORS)
-    prev, stale, n = -1, 0, 0
+    prev, n = -1, 0
+    end_idle = wait_idle = 0
     for _ in range(_CHANNEL_WINDOW_MAX_STEPS):
-        texts = driver.execute_script(_CHANNEL_DATES_JS, sel, date_sels)
-        spans = [_card_span(str(t or ""), today) for t in texts] if isinstance(texts, list) else []
+        texts, at_bottom, more = _read_probe(
+            driver.execute_script(_CHANNEL_DATES_JS, sel, date_sels, CHANNEL_MORE_SELECTOR)
+        )
+        spans = [_card_span(t, today) for t in texts]
         n = len(spans)
         if n >= _CHANNEL_WINDOW_MIN_CARDS and 2 * sum(s is None for s in spans) > n:
             return "undated", n
         if _window_scroll_done(spans, scan_order, since, until, limit):
             return "done", n
-        if n == prev:
-            stale += 1
-            if stale >= _CHANNEL_WINDOW_STALE:
-                return "stagnant", n
-        else:
-            stale = 0
+        if n > prev:
+            end_idle = wait_idle = 0
+        elif at_bottom:
+            if more:
+                wait_idle += 1
+                end_idle = 0
+                if wait_idle >= _CHANNEL_WINDOW_PENDING_STEPS:
+                    return "stuck", n
+            else:
+                end_idle += 1
+                if end_idle >= _CHANNEL_WINDOW_STALE:
+                    return "stagnant", n
         prev = n
-        driver.execute_script("window.scrollBy(0, 1200);")
+        driver.execute_script(_CHANNEL_SCROLL_BOTTOM_JS)
         _sleep_jitter(0.35)
     return "budget", n
 
@@ -1269,8 +1314,10 @@ def collect_channel_videos(
     doesn't re-sort, would leave a newest-first grid mislabelled oldest-first, and the
     window would sit at the far end of the real one): it reverses the filtered list, so
     ``limit`` then means the N OLDEST videos of the window. ``"popular"`` still clicks
-    its chip and only filters. Runaway scrolling is bounded by a step budget (a warning
-    says when it runs out mid-window) and a stagnation guard. Without a window the
+    its chip and only filters. The walk jumps to the bottom of the page each step and ends
+    on the date stop, on the grid's true end (at the bottom, no new card, no continuation
+    spinner), or — each with a warning that the listing may be incomplete — when the next
+    page never arrives or the step budget runs out mid-window. Without a window the
     behaviour and items are exactly the plain ones (no ``"date"`` key).
     """
     windowed = since is not None or until is not None
@@ -1349,6 +1396,15 @@ def collect_channel_videos(
                     ref,
                     _CHANNEL_WINDOW_MAX_STEPS,
                     reached,
+                )
+            elif why == "stuck":
+                log.warning(
+                    "channel %s: the next page of videos never loaded (%d cards, %d probes at "
+                    "the bottom with the loading spinner still up) — the listing may be "
+                    "incomplete",
+                    ref,
+                    reached,
+                    _CHANNEL_WINDOW_PENDING_STEPS,
                 )
             raw = (
                 driver.execute_script(
