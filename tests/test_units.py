@@ -24,10 +24,13 @@ from viewlyt.cli import (  # noqa: E402
 )
 from viewlyt.htmltext import (  # noqa: E402
     convert_batch,
+    extract_channel_ref,
     flatten_inline,
+    format_duration,
     format_related,
     format_transcript,
     format_unified,
+    format_view_count,
     group_consecutive_comments,
     html_to_text,
     join_unified,
@@ -37,6 +40,12 @@ from viewlyt.htmltext import (  # noqa: E402
     strip_timestamps,
 )
 from viewlyt.scraper import extract_video_id  # noqa: E402
+from viewlyt.snap import (  # noqa: E402
+    detect_target,
+    format_channel_snapshot,
+    format_video_snapshot,
+)
+from viewlyt.ytdl import _entry_to_item  # noqa: E402
 
 ID = "dQw4w9WgXcQ"
 TODAY = date(2026, 6, 6)
@@ -538,6 +547,176 @@ def test_collect_related_resilience() -> None:
     print("ok: collect_related_resilience")
 
 
+class _ChannelStubDriver:
+    """Fake driver good enough to drive collect_channel_videos end to end:
+    consent scan, block detection, grid-count polling, a sort-chip click, and
+    the shared _RELATED_JS harvest — all via one execute_script dispatcher
+    keyed on a recognizable substring of the script text."""
+
+    def __init__(
+        self,
+        items: list[dict],
+        *,
+        has_chip: bool = True,
+        block: str | None = None,
+        raise_exc: bool = False,
+        name: str = "Someone",
+    ) -> None:
+        self._items = items
+        self._has_chip = has_chip
+        self._block = block
+        self._raise = raise_exc
+        self._name = name
+        self.current_url = "https://www.youtube.com/@someone/videos"
+        self.page_source = "" if block != "botwall" else "sign in to confirm"
+        self.get_calls: list[str] = []
+        self.chip_clicked = False
+
+    def get(self, url: str) -> None:
+        if self._raise:
+            raise WebDriverException("boom")
+        self.get_calls.append(url)
+        if self._block == "consent":
+            self.current_url = "https://consent.youtube.com/"
+
+    def execute_script(self, script: str, *args):
+        if self._raise:
+            raise WebDriverException("boom")
+        if "var LABELS=arguments[0];" in script:  # _CONSENT_SCAN_JS: no dialog
+            return None
+        if 'meta[property="og:title"]' in script:  # _CHANNEL_NAME_JS
+            return self._name
+        if "SELS[s]" in script:  # _CLICK_CHANNEL_CHIP_JS
+            if self._has_chip:
+                self.chip_clicked = True
+                return True
+            return False
+        if "for(var i=0;i<items.length;i++)" in script:  # _FIRST_CHANNEL_VIDEO_ID_JS
+            return (
+                self._items[0]["video_id"] if (self.chip_clicked or not self._has_chip) else "OLDID"
+            )
+        if "document.querySelectorAll(arguments[0]).length" in script:  # _count
+            return len(self._items)
+        if "out.push({video_id:id" in script:  # _RELATED_JS harvest
+            return self._items
+        return None
+
+
+def test_get_video_views_returns_exact_int() -> None:
+    # The microdata/player payload carries the FULL integer, so get_video_views
+    # must hand back the number itself — not a rendered string, and never a
+    # rounded one. Formatting happens at write time.
+    from viewlyt.scraper import get_video_views
+
+    class _ViewsDriver:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def execute_script(self, script, *args):
+            return self._raw
+
+    assert get_video_views(_ViewsDriver("1234567")) == 1234567
+    # The microdata value is a string of digits; commas/spaces are stripped.
+    assert get_video_views(_ViewsDriver("1,234,567")) == 1234567
+    assert get_video_views(_ViewsDriver(4321987)) == 4321987
+    # Nothing found / driver failure -> None (never raises, never 0-as-unknown).
+    assert get_video_views(_ViewsDriver("")) is None
+    assert get_video_views(_ViewsDriver(None)) is None
+
+    class _BoomDriver:
+        def execute_script(self, script, *args):
+            raise WebDriverException("boom")
+
+    assert get_video_views(_BoomDriver()) is None
+    print("ok: get_video_views_returns_exact_int")
+
+
+def test_collect_channel_videos_exact_views_when_available() -> None:
+    # The channel grid renders an ABBREVIATED count. collect_channel_videos must
+    # attach views_int only when the text is exact, and None otherwise — so
+    # format_related falls back to the verbatim string instead of a fake number.
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [
+        {"video_id": "abc12345678", "title": "A", "views": "1,234,567 views", "url": "u1"},
+        {"video_id": "def12345678", "title": "B", "views": "1.2M views", "url": "u2"},
+    ]
+    _, out = collect_channel_videos(
+        _ChannelStubDriver(items), "@someone", limit=2, order="recent", progress=False
+    )
+    assert out[0]["views_int"] == 1234567
+    assert out[1]["views_int"] is None  # rounded: no precision to recover
+    print("ok: collect_channel_videos_exact_views_when_available")
+
+
+def test_collect_channel_videos_resilience() -> None:
+    # limit<=0 short-circuits before touching the driver at all (works with the
+    # bare _StubDriver, which has no .get); any WebDriver error (incl. on
+    # navigation) returns [] rather than raising.
+    from viewlyt.scraper import collect_channel_videos
+
+    assert collect_channel_videos(_StubDriver(), "@x", limit=0) == ("", [])
+    assert collect_channel_videos(_ChannelStubDriver([], raise_exc=True), "@x", limit=5) == ("", [])
+    print("ok: collect_channel_videos_resilience")
+
+
+def test_collect_channel_videos_happy_path() -> None:
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [
+        {"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"},
+        {"video_id": "def12345678", "title": "B", "views": "2 views", "url": "u2"},
+    ]
+    drv = _ChannelStubDriver(items, name="Someone Official")
+    name, out = collect_channel_videos(drv, "@someone", limit=2, order="recent", progress=False)
+    assert out == items
+    # The display name reaches the caller: it drives the ✓ line and the output
+    # slug, which would silently degrade to the raw @handle if it were dropped.
+    assert name == "Someone Official"
+    assert drv.get_calls == ["https://www.youtube.com/@someone/videos"]
+    print("ok: collect_channel_videos_happy_path")
+
+
+def test_collect_channel_videos_popular_clicks_chip() -> None:
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, has_chip=True)
+    _, out = collect_channel_videos(drv, "@someone", limit=1, order="popular", progress=False)
+    assert out == items
+    assert drv.chip_clicked is True
+    print("ok: collect_channel_videos_popular_clicks_chip")
+
+
+def test_collect_channel_videos_no_chip_degrades_gracefully() -> None:
+    # No matching sort chip found: falls through to harvesting whatever is
+    # loaded (best-effort degrade) instead of failing outright.
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, has_chip=False)
+    _, out = collect_channel_videos(drv, "@someone", limit=1, order="old", progress=False)
+    assert out == items
+    assert drv.chip_clicked is False
+    print("ok: collect_channel_videos_no_chip_degrades_gracefully")
+
+
+def test_collect_channel_videos_blocked() -> None:
+    # Non-empty items so the grid-count wait would succeed if the block check
+    # were skipped — [] must only be reachable via detect_block, not via the
+    # grid-render wait timing out on an empty stub (that made the assertion a
+    # tautology: it passed even with `if block:` disabled).
+    from viewlyt.scraper import collect_channel_videos
+
+    items = [{"video_id": "abc12345678", "title": "A", "views": "1 views", "url": "u1"}]
+    drv = _ChannelStubDriver(items, block="botwall")
+    assert collect_channel_videos(drv, "@someone", limit=5, progress=False) == ("", [])
+
+    drv2 = _ChannelStubDriver(items, block="consent")
+    assert collect_channel_videos(drv2, "@someone", limit=5, progress=False) == ("", [])
+    print("ok: collect_channel_videos_blocked")
+
+
 def test_fetch_transcript_never_raises() -> None:
     # fetch_transcript must swallow ANY WebDriver error (incl. during the
     # reload-and-retry path) and return [] — a transcript failure can't abort
@@ -671,6 +850,29 @@ def test_lazy_import_no_selenium() -> None:
     print("ok: lazy_import_no_selenium")
 
 
+def test_format_related_prefers_exact_int_over_rounded_string() -> None:
+    # views_int is the source of truth: when present it WINS over the verbatim
+    # string, so a channel listing shows the exact 1,234,567 instead of the
+    # rounded "1.2M views" the grid rendered. Without it, the verbatim string
+    # is still used (the related sidebar exposes nothing better).
+    from viewlyt.htmltext import format_related
+
+    exact = [{"title": "T", "views": "1.2M views", "views_int": 1234567, "url": "u"}]
+    assert format_related(exact) == ["1. [1,234,567 views. T](u)"]
+
+    # views_int=None (abbreviation that couldn't be parsed) -> keep verbatim.
+    rounded = [{"title": "T", "views": "1.2M views", "views_int": None, "url": "u"}]
+    assert format_related(rounded) == ["1. [1.2M views. T](u)"]
+
+    # No views_int key at all (the related product's shape) -> unchanged.
+    legacy = [{"title": "T", "views": "1.2B views", "url": "u"}]
+    assert format_related(legacy) == ["1. [1.2B views. T](u)"]
+
+    # Neither -> no count prefix.
+    assert format_related([{"title": "T", "views": "", "url": "u"}]) == ["1. [T](u)"]
+    print("ok: format_related_prefers_exact_int_over_rounded_string")
+
+
 def test_format_related() -> None:
     items = [
         {
@@ -717,6 +919,475 @@ def test_format_unified() -> None:
     assert format_unified("T", [("Comments", []), ("Transcript", [])]) == ["# T"]
     assert format_unified("", []) == []
     print("ok: format_unified")
+
+
+def test_format_unified_subtitle() -> None:
+    out = format_unified(
+        "Meu Vídeo",
+        [("Comments", ["c1"])],
+        subtitle="1,234,567 views",
+    )
+    assert out == [
+        "# Meu Vídeo",
+        "",
+        "1,234,567 views",
+        "",
+        "## Comments",
+        "",
+        "c1",
+    ], out
+    # empty subtitle (the default) -> unchanged regression vs. no-subtitle form
+    assert format_unified("T", [("Comments", ["c1"])], subtitle="") == format_unified(
+        "T", [("Comments", ["c1"])]
+    )
+    # subtitle alone, no sections
+    assert format_unified("T", [], subtitle="42 views") == ["# T", "", "42 views"]
+    # subtitle with no title still emits (no leading blank line since out is empty)
+    assert format_unified("", [], subtitle="42 views") == ["42 views"]
+    print("ok: format_unified_subtitle")
+
+
+def test_extract_channel_ref() -> None:
+    # bare handles
+    assert extract_channel_ref("@veritasium") == "@veritasium"
+    assert extract_channel_ref("  @a.b-c_9  ") == "@a.b-c_9"
+    # handle URLs, with/without trailing segments
+    assert extract_channel_ref("https://www.youtube.com/@veritasium") == "@veritasium"
+    assert extract_channel_ref("https://www.youtube.com/@veritasium/videos") == "@veritasium"
+    assert extract_channel_ref("youtube.com/@veritasium") == "@veritasium"
+    # /channel/UC...
+    cid = "UC" + "a" * 22
+    assert extract_channel_ref(f"https://www.youtube.com/channel/{cid}") == f"channel/{cid}"
+    assert extract_channel_ref(f"https://www.youtube.com/channel/{cid}/videos") == f"channel/{cid}"
+    # /c/<name> and /user/<name>
+    assert extract_channel_ref("https://www.youtube.com/c/SomeName") == "c/SomeName"
+    assert extract_channel_ref("https://www.youtube.com/user/SomeUser") == "user/SomeUser"
+
+    # rejections: watch URLs, youtu.be, bare video ids, prose
+    for bad in (
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://youtu.be/dQw4w9WgXcQ",
+        "dQw4w9WgXcQ",  # 11-char video id: must NOT be swallowed as a channel
+        "just some prose about a channel",
+        "",
+        "   ",
+        "@ab",  # too short (min 3)
+        "https://example.com/@veritasium",  # not a youtube host
+    ):
+        try:
+            extract_channel_ref(bad)
+            raise AssertionError(f"expected ValueError for {bad!r}")
+        except ValueError:
+            pass
+
+    print("ok: extract_channel_ref")
+
+
+def test_format_view_count() -> None:
+    assert format_view_count(1234567) == "1,234,567 views"
+    assert format_view_count(1) == "1 views"
+    assert format_view_count(0) == ""
+    assert format_view_count(None) == ""
+    print("ok: format_view_count")
+
+
+def test_parse_view_count() -> None:
+    from viewlyt.htmltext import parse_view_count
+
+    # Exact text -> the exact int (round-trips with format_view_count).
+    assert parse_view_count("1,234,567 views") == 1234567
+    assert parse_view_count(format_view_count(987)) == 987
+    assert parse_view_count("5 views") == 5
+    # ABBREVIATED text -> None, never a fabricated number. "1.2M" is not
+    # 1200000: YouTube rounded it, and inventing the zeros would invent
+    # precision. Callers needing an exact count must read it from a source
+    # that exposes one (yt-dlp view_count / the interactionCount microdata).
+    for rounded in (
+        "1.2M views",
+        "20M views",
+        "1.2B views",
+        "850K views",
+        "3,4 mi de visualizações",
+    ):
+        assert parse_view_count(rounded) is None, rounded
+    # No digits / empty -> None.
+    assert parse_view_count("") is None
+    assert parse_view_count("views") is None
+    assert parse_view_count(None) is None  # type: ignore[arg-type]
+    print("ok: parse_view_count")
+
+
+def test_format_duration() -> None:
+    assert format_duration(754) == "12:34"
+    assert format_duration(3723) == "1:02:03"
+    assert format_duration(0) == "0:00"
+    assert format_duration(None) == ""
+    assert format_duration(-1) == ""
+    assert format_duration(59) == "0:59"
+    assert format_duration(3600) == "1:00:00"
+    print("ok: format_duration")
+
+
+def test_ytdl_entry_to_item() -> None:
+    # normal flat entry (shape yt-dlp returns from extract_flat="in_playlist")
+    e = {
+        "id": "abc123def45",
+        "title": "Some Title",
+        "url": "https://www.youtube.com/watch?v=abc123def45",
+        "view_count": 1234567,
+        "duration": 754,
+    }
+    assert _entry_to_item(e) == {
+        "video_id": "abc123def45",
+        "title": "Some Title",
+        # The exact int is the source of truth; "views" is its rendered form.
+        "views": "1,234,567 views",
+        "views_int": 1234567,
+        "url": "https://www.youtube.com/watch?v=abc123def45",
+    }
+    # view_count None (common on the "old" uploads-playlist entries) -> "" not "None views"
+    e2 = {
+        "id": "xyz",
+        "title": "T",
+        "url": "https://www.youtube.com/watch?v=xyz",
+        "view_count": None,
+    }
+    got = _entry_to_item(e2)
+    assert got["views"] == "", got
+    # missing url falls back to a constructed watch URL from the id
+    e3 = {"id": "qqq", "title": "T"}
+    got3 = _entry_to_item(e3)
+    assert got3["url"] == "https://www.youtube.com/watch?v=qqq", got3
+    # completely empty entry never raises
+    assert _entry_to_item({}) == {
+        "video_id": "",
+        "title": "",
+        "views": "",
+        "views_int": None,
+        "url": "",
+    }
+    print("ok: ytdl_entry_to_item")
+
+
+def _patch_ytdl_extract(fake):
+    """Manual monkeypatch of ytdl._extract (no pytest fixture: this file also runs
+    standalone via `python tests/test_units.py`). Returns a restore callable."""
+    from viewlyt import ytdl
+
+    original = ytdl._extract
+    ytdl._extract = fake
+    return ytdl, original
+
+
+def test_ytdl_channel_entries_recent_uses_extract() -> None:
+    """channel_entries(order='recent') calls _extract once and shapes the result."""
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        return {
+            "channel": "Some Channel",
+            "entries": [
+                {
+                    "id": "a",
+                    "title": "A",
+                    "url": "https://www.youtube.com/watch?v=a",
+                    "view_count": 10,
+                },
+                {
+                    "id": "b",
+                    "title": "B",
+                    "url": "https://www.youtube.com/watch?v=b",
+                    "view_count": 20,
+                },
+            ],
+        }
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 2, order="recent")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert [it["video_id"] for it in items] == ["a", "b"]
+    assert len(calls) == 1
+    url, opts = calls[0]
+    assert url == "https://www.youtube.com/@someone/videos"
+    assert opts["extract_flat"] == "in_playlist"
+    assert opts["playlistend"] == 2
+    print("ok: ytdl_channel_entries_recent_uses_extract")
+
+
+def test_ytdl_channel_entries_popular_not_implemented() -> None:
+    """order='popular' always raises, without even calling _extract (YouTube rejects PU...)."""
+
+    def boom(url, opts):
+        raise AssertionError("popular must not call _extract at all")
+
+    ytdl, original = _patch_ytdl_extract(boom)
+    try:
+        try:
+            ytdl.channel_entries("@someone", 5, order="popular")
+            raise AssertionError("expected NotImplementedError")
+        except NotImplementedError:
+            pass
+    finally:
+        ytdl._extract = original
+    print("ok: ytdl_channel_entries_popular_not_implemented")
+
+
+def test_ytdl_channel_entries_old_reverses_tail_slice() -> None:
+    """order='old' fetches the tail via playlist_items=-n: and reverses it (oldest first)."""
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        if "playlist?list=" in url:
+            # yt-dlp returns the tail slice in ascending-index order (least-old first,
+            # absolute-oldest last) -- channel_entries must reverse this.
+            return {
+                "entries": [
+                    {"id": "less_old", "title": "Less old", "url": "u1", "view_count": None},
+                    {"id": "oldest", "title": "Oldest", "url": "u2", "view_count": None},
+                ]
+            }
+        return {"channel": "Some Channel", "channel_id": "UCabcdefghijklmnopqrstuv"}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 2, order="old")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert [it["video_id"] for it in items] == ["oldest", "less_old"], items
+    # two calls: one to resolve channel_id, one to fetch the playlist tail
+    assert len(calls) == 2
+    playlist_call = calls[1]
+    assert "playlist?list=UULFabcdefghijklmnopqrstuv" in playlist_call[0]
+    assert playlist_call[1]["playlist_items"] == "-2:"
+    print("ok: ytdl_channel_entries_old_reverses_tail_slice")
+
+
+def test_ytdl_channel_entries_old_empty_channel_id() -> None:
+    """order='old' returns an empty list (not a crash) when channel_id can't be resolved."""
+
+    def fake_extract(url, opts):
+        return {"channel": "Some Channel", "channel_id": ""}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        name, items = ytdl.channel_entries("@someone", 5, order="old")
+    finally:
+        ytdl._extract = original
+    assert name == "Some Channel"
+    assert items == []
+    print("ok: ytdl_channel_entries_old_empty_channel_id")
+
+
+def test_ytdl_channel_entries_unknown_order() -> None:
+    from viewlyt import ytdl
+
+    try:
+        ytdl.channel_entries("@someone", 5, order="bogus")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    print("ok: ytdl_channel_entries_unknown_order")
+
+
+def test_ytdl_video_info_and_channel_info() -> None:
+    calls = []
+
+    def fake_extract(url, opts):
+        calls.append((url, opts))
+        return {"title": "T", "id": "vid123"}
+
+    ytdl, original = _patch_ytdl_extract(fake_extract)
+    try:
+        info = ytdl.video_info("vid123")
+        assert info == {"title": "T", "id": "vid123"}
+        assert calls[-1][0] == "https://www.youtube.com/watch?v=vid123"
+        assert calls[-1][1] == {}
+
+        def fake_extract_channel(url, opts):
+            calls.append((url, opts))
+            return {"channel": "C", "entries": []}
+
+        ytdl._extract = fake_extract_channel
+        cinfo = ytdl.channel_info("@someone", latest=3)
+        assert cinfo["channel"] == "C"
+        assert calls[-1][0] == "https://www.youtube.com/@someone/videos"
+        assert calls[-1][1]["playlistend"] == 3
+    finally:
+        ytdl._extract = original
+    print("ok: ytdl_video_info_and_channel_info")
+
+
+def test_ytdl_lazy_import_no_yt_dlp() -> None:
+    """`import viewlyt.ytdl` (and the module's pure helper) must NOT import yt_dlp."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    code = (
+        "import sys\n"
+        "from viewlyt import ytdl\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by `from viewlyt import ytdl`'\n"
+        "ytdl._entry_to_item({})\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by a pure helper'\n"
+    )
+    result = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    print("ok: ytdl_lazy_import_no_yt_dlp")
+
+
+def test_snap_detect_target() -> None:
+    # channel wins over video-id extraction (tried first)
+    assert detect_target("@veritasium") == ("channel", "@veritasium")
+    assert detect_target("https://www.youtube.com/@veritasium") == ("channel", "@veritasium")
+    cid = "UC" + "a" * 22
+    assert detect_target(f"https://www.youtube.com/channel/{cid}") == ("channel", f"channel/{cid}")
+    # video forms
+    assert detect_target("https://youtu.be/dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    assert detect_target("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == (
+        "video",
+        "dQw4w9WgXcQ",
+    )
+    assert detect_target("dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    # neither -> ValueError
+    for bad in ("", "   ", "just some prose"):
+        try:
+            detect_target(bad)
+            raise AssertionError(f"expected ValueError for {bad!r}")
+        except ValueError:
+            pass
+    print("ok: snap_detect_target")
+
+
+def test_snap_format_video_snapshot() -> None:
+    info = {
+        "title": "Why Machines Learn",
+        "channel": "Veritasium",
+        "channel_url": "https://www.youtube.com/@veritasium",
+        "upload_date": "20260503",
+        "duration": 1447,
+        "view_count": 4321987,
+        "like_count": 187654,
+        "comment_count": 9812,
+        "description": "A deep dive into ML.",
+        "chapters": [
+            {"start_time": 0, "title": "Intro"},
+            {"start_time": 90, "title": "The math"},
+        ],
+        "tags": ["machine learning", "ai"],
+    }
+    out = format_video_snapshot(info)
+    assert out == [
+        "# Why Machines Learn",
+        "",
+        "- Channel: Veritasium (https://www.youtube.com/@veritasium)",
+        "- Published: 2026-05-03",
+        "- Duration: 24:07",
+        "- Views: 4,321,987",
+        "- Likes: 187,654",
+        "- Comments: 9,812",
+        "",
+        "## Description",
+        "A deep dive into ML.",
+        "",
+        "## Chapters",
+        "1. [0:00] Intro",
+        "2. [1:30] The math",
+        "",
+        "## Tags",
+        "machine learning, ai",
+    ], out
+    print("ok: snap_format_video_snapshot")
+
+
+def test_snap_format_video_snapshot_missing_fields() -> None:
+    # sparse dict: no crash, absent sections/metrics simply omitted
+    out = format_video_snapshot({"title": "Bare Video"})
+    assert out == ["# Bare Video"], out
+    # completely empty dict never raises
+    assert format_video_snapshot({}) == []
+    # falsy metrics (0/None) are omitted, not rendered as "0"/"None"
+    out2 = format_video_snapshot(
+        {
+            "title": "T",
+            "view_count": 0,
+            "like_count": None,
+            "comment_count": None,
+            "chapters": None,
+            "tags": None,
+        }
+    )
+    assert out2 == ["# T"], out2
+    print("ok: snap_format_video_snapshot_missing_fields")
+
+
+def test_snap_format_channel_snapshot() -> None:
+    info = {
+        "channel": "Veritasium",
+        "uploader_id": "@veritasium",
+        "channel_url": "https://www.youtube.com/@veritasium",
+        "channel_follower_count": 15000000,
+        "channel_id": "UC" + "a" * 22,
+        "description": "Science videos.",
+        "entries": [
+            {
+                "id": "abc123def45",
+                "title": "Video A",
+                "url": "https://www.youtube.com/watch?v=abc123def45",
+                "view_count": 100,
+            },
+        ],
+    }
+    out = format_channel_snapshot(info)
+    assert out == [
+        "# Veritasium",
+        "",
+        "- Handle: @veritasium (https://www.youtube.com/@veritasium)",
+        "- Subscribers: 15,000,000",
+        f"- Channel id: UC{'a' * 22}",
+        "",
+        "## Description",
+        "Science videos.",
+        "",
+        "## Latest videos",
+        "1. [100 views. Video A](https://www.youtube.com/watch?v=abc123def45)",
+    ], out
+    print("ok: snap_format_channel_snapshot")
+
+
+def test_snap_format_channel_snapshot_missing_fields() -> None:
+    assert format_channel_snapshot({}) == []
+    out = format_channel_snapshot({"channel": "Bare Channel"})
+    assert out == ["# Bare Channel"], out
+    print("ok: snap_format_channel_snapshot_missing_fields")
+
+
+def test_snap_lazy_import_no_yt_dlp() -> None:
+    """`import viewlyt.snap` (and its pure helpers) must NOT import yt_dlp/selenium."""
+    import os
+    import subprocess
+    import sys as _sys
+
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    code = (
+        "import sys\n"
+        "from viewlyt import snap\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by `from viewlyt import snap`'\n"
+        "assert 'selenium' not in sys.modules, 'selenium imported by `from viewlyt import snap`'\n"
+        "snap.detect_target('@veritasium')\n"
+        "snap.format_video_snapshot({})\n"
+        "snap.format_channel_snapshot({})\n"
+        "assert 'yt_dlp' not in sys.modules, 'yt_dlp imported by a pure helper'\n"
+    )
+    result = subprocess.run([_sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    print("ok: snap_lazy_import_no_yt_dlp")
 
 
 def test_join_unified() -> None:
@@ -1015,11 +1686,38 @@ if __name__ == "__main__":
     test_comments_disabled()
     test_harvest_thread_fallback()
     test_collect_related_resilience()
+    test_get_video_views_returns_exact_int()
+    test_collect_channel_videos_exact_views_when_available()
+    test_collect_channel_videos_resilience()
+    test_collect_channel_videos_happy_path()
+    test_collect_channel_videos_popular_clicks_chip()
+    test_collect_channel_videos_no_chip_degrades_gracefully()
+    test_collect_channel_videos_blocked()
     test_fetch_transcript_never_raises()
     test_pick_user_agent_coherent()
     test_transcript_timestamp_exact_token()
     test_format_related()
     test_format_unified()
+    test_format_unified_subtitle()
+    test_extract_channel_ref()
+    test_format_view_count()
+    test_parse_view_count()
+    test_format_related_prefers_exact_int_over_rounded_string()
+    test_format_duration()
+    test_ytdl_entry_to_item()
+    test_ytdl_channel_entries_recent_uses_extract()
+    test_ytdl_channel_entries_popular_not_implemented()
+    test_ytdl_channel_entries_old_reverses_tail_slice()
+    test_ytdl_channel_entries_old_empty_channel_id()
+    test_ytdl_channel_entries_unknown_order()
+    test_ytdl_video_info_and_channel_info()
+    test_ytdl_lazy_import_no_yt_dlp()
+    test_snap_detect_target()
+    test_snap_format_video_snapshot()
+    test_snap_format_video_snapshot_missing_fields()
+    test_snap_format_channel_snapshot()
+    test_snap_format_channel_snapshot_missing_fields()
+    test_snap_lazy_import_no_yt_dlp()
     test_join_unified()
     test_format_transcript()
     test_strip_timestamps()

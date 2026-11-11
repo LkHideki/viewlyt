@@ -55,7 +55,7 @@ def make_reply(
 
 def make_scrape_one(table: dict):
     """Return a ``cli.scrape_one`` replacement mapping
-    url -> (vid, title, records, transcript, related)."""
+    url -> (vid, title, records, transcript, related, views)."""
 
     def _scrape_one(driver, url, **kwargs):
         return table[url]

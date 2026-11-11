@@ -140,6 +140,102 @@ def extract_video_id(url: str) -> str:
     raise ValueError(f"Could not extract a YouTube video id from: {url!r}")
 
 
+_HANDLE_RE = re.compile(r"^@[\w.-]{3,30}$")
+_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+
+
+def extract_channel_ref(text: str) -> str:
+    """Extract a canonical channel reference (path) from a handle or URL.
+
+    Accepts a bare handle (``@name``, 3-30 chars of ``[\\w.-]``), or a
+    ``youtube.com`` URL of the form ``/@handle[/videos]``,
+    ``/channel/UC...`` (a 24-char channel id starting with ``UC``), ``/c/<name>``,
+    or ``/user/<name>``. Returns the canonical path (e.g. ``"@veritasium"``,
+    ``"channel/UC..."``, ``"c/name"``, ``"user/name"``) with no leading slash and
+    no trailing segments (``/videos`` etc. are stripped).
+
+    Rejects watch URLs, youtu.be links, and ordinary prose by raising
+    ``ValueError`` — this NEVER delegates to :func:`extract_video_id`, whose
+    last-resort "any 11-char run" fallback would otherwise misidentify a
+    24-char channel id (e.g. ``UCHnyfMqiRRG1u-2MsSQLbXA``) or handle as a video.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    if _HANDLE_RE.match(raw):
+        return raw
+
+    parsed = urlparse(raw if "//" in raw else "https://" + raw)
+    host = (parsed.hostname or "").lower()
+    if "youtube" not in host or host.endswith("youtu.be"):
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts:
+        raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+    head = parts[0]
+    if head.startswith("@") and _HANDLE_RE.match(head):
+        return head
+    if head == "channel" and len(parts) > 1 and _CHANNEL_ID_RE.match(parts[1]):
+        return f"channel/{parts[1]}"
+    if head in ("c", "user") and len(parts) > 1 and parts[1]:
+        return f"{head}/{parts[1]}"
+
+    raise ValueError(f"Could not extract a channel reference from: {text!r}")
+
+
+def format_view_count(n: int | None) -> str:
+    """Format an integer view count as YouTube-style text, e.g. ``1234567 ->
+    "1,234,567 views"``. Returns ``""`` for ``None`` or ``0`` (matches the
+    convention elsewhere: no count -> no line prefix, see :func:`format_related`).
+
+    This is a PRESENTATION layer only: the exact integer is the source of truth
+    (``views_int`` on item dicts, ``ScrapeResult.views_int``), and this renders
+    it at write time. Never parse this back into a number — read the int.
+    """
+    if not n:
+        return ""
+    return f"{n:,} views"
+
+
+def parse_view_count(text: str) -> int | None:
+    """Parse YouTube's own view text into an exact integer, when it is exact.
+
+    ``"1,234,567 views" -> 1234567``. Returns ``None`` when the text carries no
+    digits OR when it is ABBREVIATED (``"1.2M views"``, ``"1,2 mi"``): a rounded
+    display string cannot be turned back into the true count, and inventing
+    ``1200000`` would fabricate precision YouTube never gave us. Callers that
+    need an exact number must get it from a source that exposes one (yt-dlp's
+    ``view_count``, the watch page's ``interactionCount`` microdata).
+    """
+    s = (text or "").strip()
+    if not s:
+        return None
+    # An abbreviation suffix (1.2M / 3,4 mi / 850K) means the number is rounded.
+    if re.search(r"\d\s*[.,]?\d*\s*(?:[KMBT]\b|mil\b|mi\b|bi\b|tn\b)", s, re.I):
+        return None
+    digits = re.sub(r"\D", "", s)
+    return int(digits) if digits else None
+
+
+def format_duration(seconds: int | float | None) -> str:
+    """Format a duration in seconds as ``m:ss`` (or ``h:mm:ss`` past an hour).
+
+    ``754 -> "12:34"``, ``3723 -> "1:02:03"``. Returns ``""`` for ``None`` or a
+    negative value.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 _YOUTUBE_HOST_RE = re.compile(r"youtube\.com|youtu\.be", re.I)
 
 
@@ -309,13 +405,17 @@ def format_related(items: list[dict]) -> list[str]:
     """Format related-video records as a 1-based numbered Markdown list.
 
     Each item is ``{"title": str, "views": str, "url": str}`` (the shape
-    :func:`viewlyt.scraper.collect_related` returns). Produces lines like::
+    :func:`viewlyt.scraper.collect_related` returns), optionally carrying an
+    exact ``"views_int"``. Produces lines like::
 
         1. [1.2B views. Video Title](https://www.youtube.com/watch?v=ID)
 
-    ``views`` is YouTube's own sidebar text kept VERBATIM — it already includes
-    the word "views"/"visualizações", so nothing is appended (avoids a double
-    "views views"). When ``views`` is empty the count prefix is dropped:
+    ``views_int`` WINS when present: it is the exact count (from yt-dlp), and it
+    is rendered via :func:`format_view_count` as "1,234,567 views". Otherwise
+    ``views`` is YouTube's own text kept VERBATIM — it already includes the word
+    "views"/"visualizações", so nothing is appended (avoids a double "views
+    views"), and it may be abbreviated ("1.2B views") because that is all the
+    sidebar/grid exposes. When neither is present the count prefix is dropped:
     ``1. [Title](url)``. The title is flattened to a single line; items with an
     empty title are skipped (and don't consume a number, so numbering stays
     contiguous).
@@ -332,7 +432,9 @@ def format_related(items: list[dict]) -> list[str]:
             continue
         n += 1
         url = (it.get("url") or "").strip()
-        views = " ".join((it.get("views") or "").split())
+        # The exact int is the source of truth; the verbatim string is the
+        # fallback for sources that only expose a rounded display value.
+        views = format_view_count(it.get("views_int")) or " ".join((it.get("views") or "").split())
         label = f"{views}. {title}" if views else title
         lines.append(f"{n}. [{label}]({url})")
     return lines
@@ -454,16 +556,23 @@ def format_comment_lines(
     return out
 
 
-def format_unified(title: str, sections: list[tuple[str, list[str]]]) -> list[str]:
+def format_unified(
+    title: str, sections: list[tuple[str, list[str]]], *, subtitle: str = ""
+) -> list[str]:
     """Combine a video's product sections into one document under a title and
     per-section Markdown headers.
 
     PRODUCT-AGNOSTIC: pass ``[(header, lines), ...]`` in the desired order; an
     empty section is skipped entirely (no header), consistent with the "no 0-byte
     files" rule. A future product type flows in by just adding a ``(header, lines)``
-    pair — no other change. Layout::
+    pair — no other change. ``subtitle`` (keyword-only, default ``""``) is an
+    optional line right after the title (e.g. the main video's view count) —
+    when non-empty it's separated from the title by a blank line; existing
+    callers that don't pass it are unaffected. Layout::
 
         # <title>
+
+        <subtitle>
 
         ## Comments
         <comment lines>
@@ -474,6 +583,10 @@ def format_unified(title: str, sections: list[tuple[str, list[str]]]) -> list[st
     out: list[str] = []
     if title:
         out.append(f"# {title}")
+    if subtitle:
+        if out:
+            out.append("")
+        out.append(subtitle)
     for header, lines in sections:
         if not lines:
             continue

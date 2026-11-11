@@ -33,11 +33,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import persistence
+from .decisions import decisions_url
 from .llm import (
     PROVIDERS,
-    LLMClient,
+    HybridRunner,
     LLMConfig,
     LLMRunner,
+    build_runner,
     decompose_probe,
     rewrite_probe_spec,
     run_probes,
@@ -56,6 +58,9 @@ _SEND_TIMEOUT = 5.0
 
 # Snapshots kept per probe, server-side, for reconnect backfill and export.
 _HISTORY_CAP = 120
+
+# Max seconds a replaced LLM client waits for the in-flight batch before it is closed.
+_CLOSE_GRACE_S = 120.0
 
 
 def _is_youtube_origin(origin: str | None) -> bool:
@@ -96,7 +101,10 @@ def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: 
     except Exception:
         return False
     oh = (u.hostname or "").lower()
-    oport = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        oport = u.port or (443 if u.scheme == "https" else 80)
+    except ValueError:  # non-numeric port ("http://localhost:abc"): reject, don't raise
+        return False
     if u.scheme == "http" and oport == port and oh in {host.lower(), "127.0.0.1", "localhost"}:
         return True
     if (
@@ -106,6 +114,31 @@ def _origin_allowed(origin: str | None, host: str, port: int, *, allow_youtube: 
     ):
         return True
     return False
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_allowed(host_header: str | None, allowed: frozenset[str] | None) -> bool:
+    """Decide whether a request's ``Host`` header names this server (anti-DNS-rebinding).
+
+    The Origin allow-list alone can't stop DNS rebinding: a page on
+    ``http://evil.test:8000`` whose DNS flips to 127.0.0.1 is *same-origin* with
+    itself, so its Origin matches the (attacker-chosen) Host and both checks pass
+    — letting it read ``/export.*`` and drive ``/control`` (CWE-350). Pinning the
+    Host to the names the server is actually bound to closes that. ``allowed=None``
+    disables the check (only for an explicit ``--allow-insecure-bind`` on a
+    wildcard address, where the reachable names can't be known).
+    """
+    if allowed is None:
+        return True
+    if not host_header:
+        return False
+    try:
+        hostname = urlsplit("//" + host_header).hostname
+    except ValueError:
+        return False
+    return (hostname or "").lower() in allowed
 
 
 class ConnectionManager:
@@ -186,11 +219,58 @@ class LiveServer:
         # loses the session's analysis history.
         self.history: dict[str, deque[dict]] = {}
         self._client: LLMRunner | None = None
+        # Strong refs to fire-and-forget tasks (retiring old clients) so the loop's
+        # weak task set can't garbage-collect them mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def decider_state(self) -> str:
+        """Health of the decision-model backend for the dashboard.
+
+        ``"off"`` (none configured), ``"inactive"`` (configured but the provider has no
+        decisions endpoint, so it is ignored), else the runner's own ``"ok"`` /
+        ``"degraded"`` / ``"open"`` once a hybrid runner exists (``"ok"`` before the
+        first window has built one). Never builds the client as a side effect.
+        """
+        if not self.llm_cfg.decider_model:
+            return "off"
+        if decisions_url(self.llm_cfg.base_url) is None:
+            return "inactive"
+        if isinstance(self._client, HybridRunner):
+            return self._client.decider_state
+        return "ok"
+
+    def retire_client(self) -> None:
+        """Drop the cached runner and close the old one in the background.
+
+        Called when a control op replaces the config. The close waits for an in-flight
+        batch (which still holds the old runner) so a model swap never aborts a window
+        mid-request, and any error is swallowed: it must never reach the control op.
+        """
+        old, self._client = self._client, None
+        closer = getattr(old, "aclose", None)
+        if closer is None:
+            return
+        batch = self.current_batch_task
+
+        async def _close() -> None:
+            try:
+                if batch is not None and not batch.done():
+                    await asyncio.wait({batch}, timeout=_CLOSE_GRACE_S)
+                await closer()
+            except Exception:
+                logger.debug("error closing the replaced LLM client", exc_info=True)
+
+        try:
+            task = asyncio.get_running_loop().create_task(_close())
+        except RuntimeError:  # no running loop (sync caller): nothing to await on
+            return
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def client(self) -> LLMRunner:
         """Lazily build (and cache) the LLM client for the current config."""
         if self._client is None:
-            self._client = LLMClient(self.llm_cfg)
+            self._client = build_runner(self.llm_cfg)
         return self._client
 
     def state_message(self) -> dict:
@@ -204,6 +284,7 @@ class LiveServer:
             "type": "state",
             "window": self.window.to_dict(),
             "model": self.llm_cfg.to_public_dict(),
+            "decider_state": self.decider_state(),
             "paused": self.paused,
             "processing": self.processing,
             "budget_blocked": self.budget_blocked,
@@ -236,6 +317,19 @@ def resolve_launch_api_key(provided: str, persisted: str) -> str:
     return provided or persisted
 
 
+def describe_decider(cfg: LLMConfig) -> str:
+    """One startup line with the EFFECTIVE decider (after merging launch + saved state)."""
+    if not cfg.decider_model:
+        return "decider:      off"
+    if decisions_url(cfg.base_url) is None:
+        return (
+            f"decider:      {cfg.decider_model} INACTIVE: base_url {cfg.base_url!r} has no "
+            "decisions endpoint (OpenRouter or Perplexity only); classification stays on "
+            "the chat model"
+        )
+    return f"decider:      {cfg.decider_model} (classification)"
+
+
 async def persist(server: LiveServer) -> None:
     """Snapshot the server's persisted state to disk off the event loop."""
     await asyncio.to_thread(
@@ -247,6 +341,7 @@ async def persist(server: LiveServer) -> None:
             "api_key": server.llm_cfg.api_key,
             "budget": server.llm_cfg.budget_usd,
             "language": server.llm_cfg.language,
+            "decider_model": server.llm_cfg.decider_model,
         },
         [p.to_dict() for p in server.probes.values()],
     )
@@ -260,8 +355,11 @@ async def apply_control(server: LiveServer, data: dict) -> None:
     changing ops (probes/window/model) are also persisted to disk before the
     broadcast; the transient ops (pause/resume/clear) are not.
     """
+    # Resolved BEFORE the try: a non-object frame (list/str/null) must not leave `op`
+    # unbound for the persist check below, which would raise out of apply_control and
+    # tear down the /control socket.
+    op = data.get("op") if isinstance(data, dict) else None
     try:
-        op = data.get("op")
         if op == "upsert_probe":
             p = probe_from_dict(data["probe"])
             is_new = p.id not in server.probes
@@ -315,8 +413,16 @@ async def apply_control(server: LiveServer, data: dict) -> None:
                 model=data.get("model") or server.llm_cfg.model,
                 budget_usd=float(data.get("budget", server.llm_cfg.budget_usd)),
                 language=str(data.get("language") or server.llm_cfg.language),
+                # A str (even "") is explicit: "" clears the decider. Any other type
+                # (None / number / dict) is ignored — str() would turn it into the model
+                # name "None"/"123" and silently switch the decider on.
+                decider_model=(
+                    data["decider_model"].strip()
+                    if isinstance(data.get("decider_model"), str)
+                    else server.llm_cfg.decider_model
+                ),
             )
-            server._client = None
+            server.retire_client()
         elif op == "pause":
             server.paused = True
         elif op == "resume":
@@ -342,7 +448,8 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             # broadcast as a 'suggestions' frame — the user picks which chips to add.
             asyncio.create_task(_decompose(server, str(data.get("text") or "")))
         elif op == "clear":
-            server.buffer = WindowBuffer()
+            # Same maxlen as every other reset path (set_window / reset_state / restore).
+            server.buffer = WindowBuffer(maxlen=server.window.capacity)
         elif op == "reset_state":
             server.probes.clear()
             server.history.clear()
@@ -350,7 +457,7 @@ async def apply_control(server: LiveServer, data: dict) -> None:
             server.window = WindowConfig()
             server.llm_cfg = LLMConfig()
             server.buffer = WindowBuffer(maxlen=server.window.capacity)
-            server._client = None
+            server.retire_client()
             server.total_tokens = 0
             server.total_cost = 0.0
             server.budget_blocked = False
@@ -549,6 +656,7 @@ async def process_window(
     c = server.client()
     before_tok = getattr(c, "total_tokens", 0)
     before_cost = getattr(c, "total_cost", 0.0)
+    decider_before = server.decider_state()
     results = await run_probes(c, probes, window[-default_n:], windows)
     for r in results:
         r.ts = now_wall
@@ -595,6 +703,11 @@ async def process_window(
         }
     )
     await broadcast_stat(server, len(window))
+    if server.decider_state() != decider_before:
+        # The decider's health (ok / degraded / open) changes inside a batch, not on a
+        # control op, so push a fresh state frame now; otherwise the dashboard would
+        # keep showing a healthy decider until the next unrelated state frame.
+        await server.dash.broadcast(server.state_message())
 
 
 def export_payload(server: LiveServer) -> dict:
@@ -693,8 +806,12 @@ async def worker(server: LiveServer) -> None:
     last_analyzed = -1
     while True:
         try:
+            # asyncio.timeout, not wait_for: on Python 3.11 wait_for can swallow a
+            # cancellation that lands while queue.get() completes (fixed in 3.12), so a
+            # cancelled worker would keep looping forever instead of stopping.
             try:
-                msg = await asyncio.wait_for(server.queue.get(), timeout=0.25)
+                async with asyncio.timeout(0.25):
+                    msg = await server.queue.get()
                 got = True
             except TimeoutError:
                 got = False
@@ -917,13 +1034,21 @@ def _parse_ingest_batch(items: list) -> list:
     return out
 
 
-def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
+def create_app(
+    server: LiveServer,
+    capture: object | None = None,
+    *,
+    allowed_hosts: frozenset[str] | None = _LOOPBACK_HOSTS,
+) -> FastAPI:
     """Build the FastAPI app: lifespan-managed worker, routes, then the static mount.
 
     ``capture`` is an optional :class:`~viewlyt.live.capture.BrowserCapture`: the
     lifespan starts/stops it alongside the worker, making the user's browser
     optional — the only route that works with Safari (WebKit blocks insecure
     ws:// from https pages for every host, loopback included).
+
+    ``allowed_hosts`` are the ``Host`` header names accepted on every HTTP route
+    and WebSocket (see :func:`_host_allowed`); anything else gets a 421/1008.
     """
 
     @asynccontextmanager
@@ -948,6 +1073,8 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
         # youtube Origin, echoing that exact origin. A blanket
         # `Access-Control-Allow-Origin: *` (the old behavior) let ANY website the
         # operator visits read /export.* off their loopback (CWE-942).
+        if not _host_allowed(request.headers.get("host"), allowed_hosts):
+            return Response("Misdirected Request", status_code=421)
         origin = request.headers.get("origin")
         yt = _is_youtube_origin(origin)
         if request.method == "OPTIONS":
@@ -961,6 +1088,17 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
             resp.headers["Access-Control-Allow-Headers"] = "*"
             resp.headers["Vary"] = "Origin"
         return resp
+
+    def _ws_allowed(ws: WebSocket, *, allow_youtube: bool) -> bool:
+        # Host first (anti-DNS-rebinding), then Origin (anti-CSWSH): with the Host
+        # pinned, the same-origin branch of _origin_allowed can't be satisfied by
+        # an attacker-controlled hostname.
+        return _host_allowed(ws.headers.get("host"), allowed_hosts) and _origin_allowed(
+            ws.headers.get("origin"),
+            ws.url.hostname or "127.0.0.1",
+            ws.url.port or 8000,
+            allow_youtube=allow_youtube,
+        )
 
     @app.get("/snippet.js")
     async def snippet_js(request: Request) -> Response:
@@ -1009,12 +1147,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/ingest")
     async def ingest(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=True,
-        ):
+        if not _ws_allowed(ws, allow_youtube=True):
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -1040,12 +1173,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/dashboard")
     async def dashboard(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=False,
-        ):
+        if not _ws_allowed(ws, allow_youtube=False):
             await ws.close(code=1008)
             return
         await server.dash.connect(ws)
@@ -1064,12 +1192,7 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
 
     @app.websocket("/control")
     async def control(ws: WebSocket) -> None:
-        if not _origin_allowed(
-            ws.headers.get("origin"),
-            ws.url.hostname or "127.0.0.1",
-            ws.url.port or 8000,
-            allow_youtube=False,
-        ):
+        if not _ws_allowed(ws, allow_youtube=False):
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -1086,9 +1209,6 @@ def create_app(server: LiveServer, capture: object | None = None) -> FastAPI:
     return app
 
 
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-
-
 def run(
     host: str = "127.0.0.1",
     port: int = 8000,
@@ -1098,8 +1218,15 @@ def run(
     open_browser: bool = False,
     capture_url: str | None = None,
     allow_insecure_bind: bool = False,
+    decider_override: str | None = None,
 ) -> None:
     """Build the app and serve it with uvicorn (blocking).
+
+    ``decider_override`` is the decision model chosen at launch (``--decider`` /
+    ``$LLM_DECIDER``; ``""`` = ``--no-decider``). ``None`` means "not given": the
+    persisted choice is kept. Like the API key, an explicit launch choice wins over
+    the saved state — otherwise the first launch's seeded state would pin the decider
+    forever and it could never be turned off from the CLI.
 
     ``capture_url`` switches on the server-side capture: a managed headless
     Chrome opens that video's chat popout and runs the snippet, so no user
@@ -1133,8 +1260,28 @@ def run(
             model=m["model"],
             budget_usd=float(m.get("budget", 0.0)),
             language=str(m.get("language") or "Portuguese (Brazil)"),
+            decider_model=(
+                decider_override
+                if decider_override is not None
+                else str(m.get("decider_model") or "")
+            ),
         )
         server._client = None
+        if server.llm_cfg.decider_model != str(m.get("decider_model") or ""):
+            # Persist the explicit launch choice so a later launch without the flag
+            # keeps it (and `--no-decider` stays off) instead of reverting.
+            persistence.save_state(
+                server.window.to_dict(),
+                {
+                    "base_url": server.llm_cfg.base_url,
+                    "model": server.llm_cfg.model,
+                    "api_key": server.llm_cfg.api_key,
+                    "budget": server.llm_cfg.budget_usd,
+                    "language": server.llm_cfg.language,
+                    "decider_model": server.llm_cfg.decider_model,
+                },
+                list(st.get("probes", [])),
+            )
         for pd in st.get("probes", []):
             try:
                 p = probe_from_dict(pd)
@@ -1143,6 +1290,8 @@ def run(
                 logger.warning("skipping unrestorable saved probe: %r", pd, exc_info=True)
     else:
         # No saved state yet: seed the file with the current config.
+        if decider_override is not None:
+            server.llm_cfg = replace(server.llm_cfg, decider_model=decider_override)
         persistence.save_state(
             server.window.to_dict(),
             {
@@ -1151,15 +1300,23 @@ def run(
                 "api_key": server.llm_cfg.api_key,
                 "budget": server.llm_cfg.budget_usd,
                 "language": server.llm_cfg.language,
+                "decider_model": server.llm_cfg.decider_model,
             },
             [p.to_dict() for p in server.probes.values()],
         )
+    print(describe_decider(server.llm_cfg))
     capture = None
     if capture_url:
         from .capture import BrowserCapture, popout_url
 
         capture = BrowserCapture(popout_url(capture_url), render_snippet(host, port))
-    app = create_app(server, capture=capture)
+    if host in {"0.0.0.0", "::", ""}:
+        # Wildcard bind (only via --allow-insecure-bind): the names clients will
+        # use to reach us are unknowable, so the Host pin can't be enforced.
+        allowed_hosts: frozenset[str] | None = None
+    else:
+        allowed_hosts = _LOOPBACK_HOSTS | {host.lower()}
+    app = create_app(server, capture=capture, allowed_hosts=allowed_hosts)
     if host not in _LOOPBACK_HOSTS:
         # Reached only with allow_insecure_bind=True (else run() already refused).
         logger.warning(

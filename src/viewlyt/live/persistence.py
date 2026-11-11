@@ -52,7 +52,10 @@ def _fernet() -> Fernet:
     cached = _FERNETS.get(KEY_FILE)
     if cached is not None:
         return cached
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # 0700: the key and the state file are already 0600, but a listable dir still
+    # leaks their presence/mtimes to other local users; tighten a legacy 0755 too.
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    STATE_DIR.chmod(0o700)
     if not KEY_FILE.exists():
         _write_private(KEY_FILE, Fernet.generate_key())
     f = Fernet(KEY_FILE.read_bytes())
@@ -70,6 +73,7 @@ def save_state(window: dict, model: dict, probes: list[dict]) -> None:
                 "model": model["model"],
                 "budget": float(model.get("budget", 0.0)),
                 "language": str(model.get("language") or "Portuguese (Brazil)"),
+                "decider_model": str(model.get("decider_model") or ""),
                 "api_key_enc": _fernet().encrypt(str(model.get("api_key") or "").encode()).decode(),
             },
             "probes": probes,
@@ -94,6 +98,7 @@ def load_state() -> dict | None:
                 "model": model["model"],
                 "budget": float(model.get("budget", 0.0)),
                 "language": str(model.get("language") or "Portuguese (Brazil)"),
+                "decider_model": str(model.get("decider_model") or ""),
                 "api_key": api_key,
             },
             "probes": list(payload.get("probes", [])),

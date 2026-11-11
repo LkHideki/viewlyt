@@ -98,10 +98,14 @@ def test_dashboard_full_flow_on_webkit(live_url: str) -> None:
         assert page.locator("#feed .empty-hint").count() == 0
 
         # 3. Add a probe through the UI: success toast + card appear...
+        #    (the manual form lives on the Probes tab of the Settings drawer)
+        page.click("#settings-open")
+        page.click("#tab-probes")
         page.fill("#probe-label", "Mood")
         page.fill("#probe-instruction", "Summarize the mood.")
         page.click("#add-probe")
         pw_sync.expect(page.locator(".toast-success")).to_be_visible(timeout=5_000)
+        page.keyboard.press("Escape")  # close the drawer; the page is live behind it
         pw_sync.expect(page.locator('.result-card[data-probe-id="mood"]')).to_be_visible()
 
         # ...and since the LLM endpoint is a dead port, the forced first analysis

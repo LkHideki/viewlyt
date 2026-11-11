@@ -1,4 +1,213 @@
-/* viewlyt.live — Control Panel dark theme */
+/* viewlyt.live control panel.
+   Design tokens, app shell (top bar, composer, workspace, chat rail, settings
+   drawer, toasts, empty states) first; probe cards and chart renderers follow. */
+
+/* -------------------------------------------------------------------------
+   Tokens
+   Theme = html[data-theme="light"|"dark"]; absent follows prefers-color-scheme.
+   Light is the :root base; dark is declared for the attribute AND for the
+   media query (guarded so an explicit Light choice always wins).
+   ------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+
+  --page: #f3f3f1;
+  --surface-1: #fcfcfb;
+  --surface-2: #f6f6f3;
+  --surface-hover: #eeeeea;
+  --border: rgba(11, 11, 11, 0.09);
+  --border-strong: rgba(11, 11, 11, 0.16);
+  --control-border: #8a8983;
+
+  --text: #0b0b0b;
+  --text-2: #4a4946;
+  --text-muted: #4f4e4a;
+
+  --accent: #2a78d6;
+  --accent-text: #184f95;
+  --accent-strong: #184f95;
+  --on-accent: #fdfdfc;
+  --accent-soft: #cde2fb;
+  --accent-soft-text: #0d366b;
+  --focus: #184f95;
+
+  --good: #0ca30c;
+  --good-text: #005200;
+  --good-soft: rgba(12, 163, 12, 0.07);
+  --warning: #fab219;
+  --warning-text: #5e3d00;
+  --warning-soft: rgba(250, 178, 25, 0.2);
+  --critical: #d03b3b;
+  --critical-text: #8f2020;
+  --critical-soft: rgba(208, 59, 59, 0.06);
+
+  --shadow-overlay: 0 16px 48px rgba(30, 30, 28, 0.16);
+  --scrim: rgba(20, 20, 18, 0.4);
+  --topbar-bg: rgba(243, 243, 241, 0.92);
+  --track: rgba(11, 11, 11, 0.07);
+
+  /* Chart chrome */
+  --chart-grid: #e1e0d9;
+  --chart-axis: #c3c2b7;
+
+  /* Categorical data palette: fixed slot order, never cycled. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #4f4e4a;
+
+  /* Sequential blue ramp (heatmap / descartes), low to high. */
+  --seq-0: #b7d3f6;
+  --seq-1: #9ec5f4;
+  --seq-2: #86b6ef;
+  --seq-3: #6da7ec;
+  --seq-4: #5598e7;
+  --seq-5: #3987e5;
+  --seq-6: #256abf;
+  --seq-7: #1c5cab;
+  --seq-8: #104281;
+
+  --radius: 8px;
+  --radius-card: 12px;
+  --gap: 16px;
+  --control-h: 36px;
+  --field-h: 40px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --font-sans: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --page: #0e0e0d;
+  --surface-1: #1a1a19;
+  --surface-2: #232321;
+  --surface-hover: #282826;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --control-border: #75746d;
+
+  --text: #f0efec;
+  --text-2: #c3c2b7;
+  --text-muted: #b0afa6;
+
+  --accent: #3987e5;
+  --accent-text: #86b6ef;
+  --accent-strong: #86b6ef;
+  --on-accent: #0b0b0b;
+  --accent-soft: rgba(57, 135, 229, 0.16);
+  --accent-soft-text: #86b6ef;
+  --focus: #86b6ef;
+
+  --good: #0ca30c;
+  --good-text: #5fd35f;
+  --good-soft: rgba(12, 163, 12, 0.16);
+  --warning: #fab219;
+  --warning-text: #fab219;
+  --warning-soft: rgba(250, 178, 25, 0.14);
+  --critical: #d03b3b;
+  --critical-text: #f5a0a0;
+  --critical-soft: rgba(208, 59, 59, 0.12);
+
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55);
+  --topbar-bg: rgba(14, 14, 13, 0.92);
+  --track: rgba(255, 255, 255, 0.07);
+
+  --chart-grid: #2c2c2a;
+  --chart-axis: #383835;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #b0afa6;
+
+  --seq-0: #1f2a3a;
+  --seq-1: #233f66;
+  --seq-2: #1c5cab;
+  --seq-3: #256abf;
+  --seq-4: #2d7fdf;
+  --seq-5: #3987e5;
+  --seq-6: #4a90e6;
+  --seq-7: #5a9de9;
+  --seq-8: #6da7ec;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --page: #0e0e0d;
+    --surface-1: #1a1a19;
+    --surface-2: #232321;
+    --surface-hover: #282826;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.14);
+    --control-border: #75746d;
+
+    --text: #f0efec;
+    --text-2: #c3c2b7;
+    --text-muted: #b0afa6;
+
+    --accent: #3987e5;
+    --accent-text: #86b6ef;
+    --accent-strong: #86b6ef;
+    --on-accent: #0b0b0b;
+    --accent-soft: rgba(57, 135, 229, 0.16);
+    --accent-soft-text: #86b6ef;
+    --focus: #86b6ef;
+
+    --good: #0ca30c;
+    --good-text: #5fd35f;
+    --good-soft: rgba(12, 163, 12, 0.16);
+    --warning: #fab219;
+    --warning-text: #fab219;
+    --warning-soft: rgba(250, 178, 25, 0.14);
+    --critical: #d03b3b;
+    --critical-text: #f5a0a0;
+    --critical-soft: rgba(208, 59, 59, 0.12);
+
+    --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.55);
+    --topbar-bg: rgba(14, 14, 13, 0.92);
+    --track: rgba(255, 255, 255, 0.07);
+
+    --chart-grid: #2c2c2a;
+    --chart-axis: #383835;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --series-other: #b0afa6;
+
+    --seq-0: #1f2a3a;
+    --seq-1: #233f66;
+    --seq-2: #1c5cab;
+    --seq-3: #256abf;
+    --seq-4: #2d7fdf;
+    --seq-5: #3987e5;
+    --seq-6: #4a90e6;
+    --seq-7: #5a9de9;
+    --seq-8: #6da7ec;
+  }
+}
 
 /* -------------------------------------------------------------------------
    Reset & base
@@ -10,124 +219,465 @@
   padding: 0;
 }
 
-:root {
-  --bg:         #0d0f12;
-  --surface:    #161a20;
-  --surface-2:  #1e242c;
-  --border:     #2a3040;
-  --text:       #d0d6e0;
-  --text-dim:   #7a8499;
-  --accent:     #4c8bf5;
-  --danger:     #ea4335;
-  --success:    #34a853;
-  --warning:    #fbbc04;
-
-  --radius:     6px;
-  --gap:        1rem;
-  --font-mono:  "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
-  --font-sans:  system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
 html {
   font-size: 14px;
-  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--bg);
+  background: var(--page);
   color: var(--text);
   font-family: var(--font-sans);
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.5;
   min-height: 100vh;
-  padding: var(--gap);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* -------------------------------------------------------------------------
-   Typography
-   ------------------------------------------------------------------------- */
-
 h1 {
-  font-size: 1.4rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1;
 }
 
 h1 .accent {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ".live" turns warning-yellow while the global pause toggle is engaged. */
 h1 .accent.is-paused {
-  color: var(--warning);
+  color: var(--warning-text);
 }
 
 h2 {
-  font-size: 0.85rem;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-  margin-bottom: 0.75rem;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+h3, h4 {
+  font-weight: 600;
+  color: var(--text);
+}
+
+a {
+  color: var(--accent-text);
+  text-underline-offset: 2px;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
 }
 
 .hint {
-  font-size: 0.78rem;
-  color: var(--text-dim);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-.empty-hint {
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  padding: 0.5rem 0;
+.hidden {
+  display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+  transform: translateY(-200%);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
 }
 
 /* -------------------------------------------------------------------------
-   Header
+   Controls: fields and buttons
    ------------------------------------------------------------------------- */
 
-header {
+label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+select,
+textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  padding: 0 12px;
+  height: var(--field-h);
+  width: 100%;
+  transition: border-color 120ms var(--ease), background-color 120ms var(--ease);
+}
+
+textarea {
+  height: auto;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+textarea[readonly] {
+  cursor: default;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+input[type="text"]:hover,
+input[type="number"]:hover,
+input[type="password"]:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--text-muted);
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+input[type="password"]:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--focus);
+}
+
+select {
+  cursor: pointer;
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type="file"] {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  cursor: pointer;
+  width: 100%;
+}
+
+input[type="file"]::file-selector-button {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface-1);
+  color: var(--text);
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  margin-right: 10px;
+  cursor: pointer;
+}
+
+button {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  transition: background-color 120ms var(--ease), border-color 120ms var(--ease),
+    color 120ms var(--ease), transform 120ms var(--ease);
+}
+
+button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+
+button:disabled,
+button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  min-height: var(--control-h);
+}
+
+.btn-primary {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+  filter: brightness(1.08);
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.btn-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+  border-color: var(--control-border);
+}
+
+.btn-danger {
+  background: var(--critical-soft);
+  color: var(--critical-text);
+  border-color: var(--critical-text);
+}
+
+.btn-danger:disabled,
+.btn-danger[aria-disabled="true"] {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+
+.btn-danger:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--critical-text);
+  color: var(--surface-1);
+}
+
+.btn-small {
+  min-height: 32px;
+  font-size: 12px;
+  padding: 0 10px;
+}
+
+.icon-btn {
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  color: var(--text-2);
+  border-color: var(--border-strong);
+  background: var(--surface-1);
+}
+
+.icon-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.icon-btn .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.field > label {
+  line-height: 1.3;
+}
+
+.help {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.help-lead {
+  margin-bottom: 12px;
+}
+
+.check {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-  padding-bottom: var(--gap);
+  gap: 10px;
+  min-height: 32px;
+  margin-bottom: 4px;
+}
+
+.check label {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.input-group input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.input-group button {
+  height: var(--field-h);
+  flex-shrink: 0;
+}
+
+/* Status line under the Decider field: icon + text, never colour alone. */
+.decider-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.decider-status .icon {
+  margin-top: 1px;
+}
+
+.decider-status[data-state="ok"] {
+  border-color: var(--good-text);
+  background: var(--good-soft);
+  color: var(--good-text);
+}
+
+.decider-status[data-state="degraded"],
+.decider-status[data-state="open"] {
+  border-color: var(--warning-text);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
+.reset-row {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* -------------------------------------------------------------------------
+   Top bar
+   ------------------------------------------------------------------------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--page);
+  background: var(--topbar-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border);
-  margin-bottom: var(--gap);
+}
+
+.topbar-inner {
+  max-width: 1680px;
+  margin: 0 auto;
+  min-height: 56px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .brand {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.2rem;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 
-.brand-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-/* Shown under the logo whenever the global pause toggle is engaged. */
-.paused-badge {
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--warning);
-  background: rgba(251, 188, 4, 0.12);
-  border: 1px solid rgba(251, 188, 4, 0.35);
-  border-radius: 99px;
-  padding: 0.1rem 0.55rem;
-}
-
-/* Loading spinner shown at the top while the LLM is analyzing. */
 .spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid var(--border);
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: viewlyt-spin 0.7s linear infinite;
@@ -140,435 +690,1479 @@ header {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .spinner {
-    animation-duration: 2s;
-  }
+/* Run-state control: one pill showing the state and driving global pause. */
+.run-toggle {
+  flex-shrink: 0;
+  min-height: var(--control-h);
+  padding: 0 14px;
+  border-radius: 999px;
+  border-color: var(--border-strong);
+  background: var(--surface-1);
+  color: var(--text);
 }
 
-.top-right {
-  display: flex;
+.run-toggle:hover {
+  background: var(--surface-hover);
+  border-color: var(--control-border);
+}
+
+.run-live,
+.paused-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 0.6rem;
-  margin-left: auto;
+  gap: 8px;
+}
+
+.run-live.hidden,
+.paused-badge.hidden {
+  display: none;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
   flex-shrink: 0;
 }
 
-#language {
-  width: auto;
-  font-size: 0.78rem;
-  padding: 0.25rem 0.5rem;
+body[data-connected="1"] .live-dot {
+  background: var(--good);
 }
 
-.status {
-  font-size: 0.75rem;
+@keyframes viewlyt-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(12, 163, 12, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 7px rgba(12, 163, 12, 0);
+  }
+}
+
+body[data-connected="1"] .run-toggle:not(.is-paused) .live-dot {
+  animation: viewlyt-pulse 1.8s ease-out infinite;
+}
+
+.paused-badge {
+  color: var(--warning-text);
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.05em;
-  padding: 0.25rem 0.65rem;
-  border-radius: 99px;
-  text-transform: uppercase;
+}
+
+.run-toggle.is-paused {
+  border-color: var(--warning-text);
+  background: var(--warning-soft);
+}
+
+/* Connection pill: icon shape differs by state, never colour alone. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.3;
+}
+
+.status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .status.connected {
-  background: rgba(52, 168, 83, 0.15);
-  color: var(--success);
-  border: 1px solid rgba(52, 168, 83, 0.35);
+  background: var(--good-soft);
+  color: var(--good-text);
+  border-color: var(--good-text);
+}
+
+.status.connected::before {
+  background: currentColor;
 }
 
 .status.disconnected {
-  background: rgba(234, 67, 53, 0.12);
-  color: var(--danger);
-  border: 1px solid rgba(234, 67, 53, 0.30);
+  background: var(--critical-soft);
+  color: var(--critical-text);
+  border-color: var(--critical-text);
 }
 
-/* Global pause/resume toggle: a compact icon button that locks/unlocks ALL
-   automatic analysis (server.paused). Shows the icon of the click's EFFECT
-   (⏸ while running, ▶ while paused), matching the span-toggle convention. */
-.global-pause {
+.status.disconnected::before {
+  border: 2px solid currentColor;
+}
+
+/* KPI strip: status + metrics + language; scrolls sideways when it must. */
+.kpi-strip {
+  flex: 1 1 0;
+  min-width: 0;
+  order: 1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  /* Extra bottom room hosts the budget meter, which hangs below the Cost value
+     without adding height to that KPI (all KPIs share one baseline). */
+  padding: 4px 4px 9px;
+  margin: -4px -4px -9px;
+  scroll-padding-inline: 4px;
+}
+
+.kpi-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.kpi-strip > * {
+  flex: 0 0 auto;
+  scroll-snap-align: start;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+
+.stat-value {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.stat-value.is-busy {
+  color: var(--warning-text);
+}
+
+#proc {
+  min-width: 9ch;
+}
+
+.stat-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#cost-delta {
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-cost {
+  position: relative;
+}
+
+.stat-cost .meter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  width: auto;
+}
+
+.meter {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--meter, 0));
+  transition: transform 200ms var(--ease), background-color 200ms var(--ease);
+}
+
+.meter[data-level="near"] .meter-fill {
+  background: var(--warning);
+}
+
+.meter[data-level="full"] .meter-fill {
+  background: var(--critical);
+}
+
+/* Decider indicator (shown while a decision model is configured and usable). Icon
+   plus text always; the tint only reinforces it. */
+.decider-chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  line-height: 1;
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 4px 12px 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--good-text);
+  background: var(--good-soft);
+  color: var(--good-text);
+  cursor: help;
+  white-space: nowrap;
 }
 
-.global-pause:hover {
-  color: var(--text);
-  border-color: var(--accent);
+.decider-chip .icon {
+  width: 14px;
+  height: 14px;
 }
 
-.global-pause.is-paused {
-  color: var(--warning);
-  border-color: rgba(251, 188, 4, 0.35);
-  background: rgba(251, 188, 4, 0.12);
+.decider-chip[data-state="degraded"],
+.decider-chip[data-state="open"] {
+  border-color: var(--warning-text);
+  background: var(--warning-soft);
+  color: var(--warning-text);
 }
 
 /* Sticky "budget cap reached" chip: analyses are paused by the spending cap. */
 .budget-flag {
-  font-size: 0.75rem;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.05em;
-  padding: 0.25rem 0.65rem;
-  border-radius: 99px;
-  text-transform: uppercase;
-  background: rgba(251, 188, 4, 0.12);
-  color: var(--warning);
-  border: 1px solid rgba(251, 188, 4, 0.35);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  border: 1px solid var(--warning-text);
   cursor: help;
-}
-
-/* -------------------------------------------------------------------------
-   Stats bar
-   ------------------------------------------------------------------------- */
-
-/* Stat cards live in the header now: a compact, wrapping row. */
-.top-stats {
-  display: flex;
-  gap: 0.5rem;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-}
-
-.top-stats .stat {
-  padding: 0.3rem 0.65rem;
-  min-width: 0;
-}
-
-.top-stats .stat-value {
-  font-size: 1.05rem;
-}
-
-.top-stats .stat-label {
-  font-size: 0.62rem;
-}
-
-.stat {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.6rem 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 120px;
-}
-
-.stat-label {
-  font-size: 0.72rem;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-.stat-value {
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--accent);
-  line-height: 1;
-}
-
-/* -------------------------------------------------------------------------
-   Panel grid
-   ------------------------------------------------------------------------- */
-
-main > .panels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--gap);
-  margin-bottom: var(--gap);
-}
-
-.panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1rem;
-}
-
-.panel.full-width {
-  margin-bottom: var(--gap);
-}
-
-/* -------------------------------------------------------------------------
-   Form fields
-   ------------------------------------------------------------------------- */
-
-.field-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.65rem;
-}
-
-label {
-  font-size: 0.78rem;
-  color: var(--text-dim);
-}
-
-input[type="text"],
-input[type="number"],
-input[type="password"],
-select,
-textarea {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: #f1f5f9;
-  font-family: var(--font-sans);
-  font-size: 0.88rem;
-  padding: 0.4rem 0.6rem;
-  outline: none;
-  transition: border-color 0.15s;
-  width: 100%;
-}
-
-input[type="text"]::placeholder,
-input[type="number"]::placeholder,
-input[type="password"]::placeholder,
-textarea::placeholder {
-  color: #94a3b8;
-}
-
-input[type="text"]:focus,
-input[type="number"]:focus,
-input[type="password"]:focus,
-select:focus,
-textarea:focus {
-  border-color: var(--accent);
-}
-
-select {
-  cursor: pointer;
-  appearance: auto;
-}
-
-textarea {
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  resize: vertical;
-  line-height: 1.5;
-}
-
-textarea[readonly] {
-  cursor: default;
-}
-
-.hidden {
-  display: none !important;
-}
-
-/* -------------------------------------------------------------------------
-   Buttons
-   ------------------------------------------------------------------------- */
-
-.button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-button {
-  font-family: var(--font-sans);
-  font-size: 0.82rem;
-  font-weight: 600;
-  padding: 0.4rem 0.85rem;
-  border-radius: var(--radius);
-  border: none;
-  cursor: pointer;
-  transition: opacity 0.15s, filter 0.15s;
   white-space: nowrap;
 }
 
-button:hover {
-  filter: brightness(1.12);
+.lang-field {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 
-button:active {
-  filter: brightness(0.9);
+.lang-icon {
+  display: none;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  color: var(--text-2);
+  pointer-events: none;
 }
 
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+#language {
+  width: auto;
+  min-width: 128px;
+  height: var(--control-h);
+  font-size: 13px;
+  padding: 0 28px 0 12px;
+  background-color: var(--surface-1);
+  border-color: var(--border-strong);
 }
 
-button:disabled:hover {
-  filter: none;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: #fff;
-}
-
-.btn-secondary {
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-}
-
-.btn-danger {
-  background: rgba(234, 67, 53, 0.15);
-  color: var(--danger);
-  border: 1px solid rgba(234, 67, 53, 0.30);
-}
-
-.btn-small {
-  font-size: 0.75rem;
-  padding: 0.25rem 0.55rem;
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  /* The actions precede the KPI strip in the DOM (phone Tab order); on one row the
+     strip sits between Live and the actions. */
+  order: 2;
 }
 
 /* -------------------------------------------------------------------------
-   Probe list
+   App frame
    ------------------------------------------------------------------------- */
 
-.probe-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+/* One column everywhere; DOM order = visual order = Tab order. From 1200px the
+   grid below turns the chat rail into the right-hand column. */
+/* The skip link lands on <main> (tabindex -1): focus it without drawing a ring
+   around the whole page. */
+.app:focus {
+  outline: none;
 }
 
-.probe-row {
+.app {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+/* -------------------------------------------------------------------------
+   Composer (ask bar)
+   ------------------------------------------------------------------------- */
+
+.composer {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px;
+  /* The one-row layout depends on the composer's own width (it shares a column with
+     the chat rail on wide screens), not on the viewport. */
+  container: composer / inline-size;
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Segmented control with a sliding selected indicator (--seg-i = 0|1|2). */
+.seg {
+  --seg-i: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  flex-shrink: 0;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+}
+
+.seg-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 3);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  transform: translateX(calc(var(--seg-i) * 100%));
+  transition: transform 200ms var(--ease);
+}
+
+.ask-chip {
+  position: relative;
+  min-height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ask-chip:hover {
+  color: var(--text);
+}
+
+.ask-chip.ask-chip-active {
+  color: var(--text);
+}
+
+.composer-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+}
+
+#ask-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  font-size: 14px;
+  padding: 0 14px;
+}
+
+#ask-categories {
+  flex: 0 1 240px;
+  min-width: 140px;
+  height: 44px;
+}
+
+.composer-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.composer-actions button {
+  min-height: 44px;
+  padding: 0 16px;
+}
+
+.composer-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* Suggestion chips (generated in TS) live under the hint. */
+#suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#suggestions:not(:empty) {
+  margin-top: 12px;
+}
+
+.suggest-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  max-width: min(340px, 100%);
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+  white-space: normal;
+}
+
+.suggest-chip:hover {
+  border-color: var(--accent-text);
+}
+
+.suggest-chip-label {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.suggest-chip-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.suggest-dismiss {
+  align-self: center;
+}
+
+/* -------------------------------------------------------------------------
+   Workspace: chat rail + results
+   ------------------------------------------------------------------------- */
+
+.results-panel {
+  min-width: 0;
+}
+
+.results-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.75rem;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  min-height: 36px;
 }
 
-.probe-info {
+.results-title {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  min-width: 0;
-  flex: 1;
+  gap: 12px;
 }
 
-.probe-kind-badge {
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 0.15rem 0.45rem;
-  border-radius: 4px;
-  background: rgba(76, 139, 245, 0.15);
-  color: var(--accent);
-  border: 1px solid rgba(76, 139, 245, 0.25);
-  flex-shrink: 0;
+.results-title h2 {
+  font-size: 20px;
 }
 
-.probe-name {
-  font-weight: 600;
-  font-size: 0.88rem;
-  color: #fff;
-  flex-shrink: 0;
+.count-pill {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-variant-numeric: tabular-nums;
 }
 
-.probe-detail {
-  font-size: 0.78rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.results-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.menu-wrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 140px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-overlay);
+}
+
+/* No room below the trigger: open upward. Narrow screen edge: open rightward. */
+.menu.menu-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.menu.menu-left {
+  right: auto;
+  left: 0;
+}
+
+/* A card whose menu is open must paint above the cards after it (a collapsed
+   card is short, so its menu overlaps the next one). */
+.result-card:has(.menu:not(.hidden)) {
+  z-index: 15; /* above sibling cards, below the sticky .topbar (20) */
+}
+
+.menu > a,
+.menu > button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.menu > a:hover,
+.menu > button:hover,
+.menu > a:focus-visible,
+.menu > button:focus-visible {
+  background: var(--surface-hover);
+}
+
+.menu > a:focus-visible {
+  outline-offset: -2px;
 }
 
 /* -------------------------------------------------------------------------
-   Result cards
+   Live chat rail
    ------------------------------------------------------------------------- */
 
-/* Responsive card grid: side-by-side probes on wide screens, one column when
-   narrow. align-items:start keeps a collapsed card from stretching to match
-   its tall neighbor. */
-.results-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  align-items: start;
-  gap: 0.75rem;
-  /* An inline-size container so a per-card "span 2 columns" toggle can fall
-     back to a single column (via @container below) whenever the grid is too
-     narrow to actually fit two 340px tracks — no manual breakpoint needed. */
-  container-type: inline-size;
+.chat-rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 12px 16px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.chat-head h2 {
+  flex-shrink: 0;
+}
+
+.chat-count {
+  flex: 1 0 auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Feed-direction toggle. The arrow child is rewritten by TS. */
+.feed-order-btn {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  gap: 6px;
+  font-size: 12px;
+  border-radius: 999px;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.feed-order-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.feed-order-arrow {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--accent-text);
+}
+
+.chat-toggle {
+  display: none;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  gap: 6px;
+  font-size: 12px;
+  border-radius: 999px;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.chat-toggle .icon {
+  width: 14px;
+  height: 14px;
+  transition: transform 200ms var(--ease);
+}
+
+.chat-toggle[aria-expanded="true"] .icon {
+  transform: rotate(180deg);
+}
+
+.chat-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  border-top: 1px solid var(--border);
+}
+
+.chat-rail.is-collapsed .chat-body {
+  display: none;
+}
+
+/* Wraps #feed + the floating jump pill so the pill anchors to the feed area. */
+.feed-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* #feed is itself the bounded scroll container (autoscroll + unread pill read
+   its scrollTop/scrollHeight), so it must never grow the page. */
+#feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  height: clamp(220px, 34dvh, 340px);
+}
+
+#feed > .feed-line {
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+  animation: feed-in 120ms var(--ease);
+}
+
+/* New lines settle in from a soft wash. Background only: animating opacity
+   would drop the text below AAA contrast for the length of the animation. */
+@keyframes feed-in {
+  from {
+    background-color: var(--surface-hover);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.feed-author {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* Floating "N new" pill: shown while the user is scrolled away from the newest
+   edge. Bottom by default, flips to the top in newest-first mode. */
+.feed-jump {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-height: 32px;
+  padding: 0 14px;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  font-size: 12px;
+  border-radius: 999px;
+  box-shadow: var(--shadow-overlay);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-jump:active:not(:disabled) {
+  transform: translateX(-50%) translateY(1px);
+}
+
+.feed-wrap.newest-first .feed-jump {
+  top: 12px;
+  bottom: auto;
+}
+
+/* Empty states (feed and results). Direct children of #feed / #results. */
+.empty-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.empty-icon {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+}
+
+.empty-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.feed-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 32px 16px;
+  min-height: 100%;
+}
+
+.feed-empty strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.feed-empty .btn-small {
+  margin-top: 4px;
 }
 
 .results-list > .empty-hint {
   grid-column: 1 / -1;
 }
 
-.result-card {
-  background: var(--surface-2);
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 48px 16px;
+  background: var(--surface-1);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.75rem 1rem;
-  /* Grid items default to min-width:auto, so a wide child (long URL, code,
-     table) would stretch the track and spill past the card. Pin it to 0 and
-     clip so the track — not the content — governs the width. */
-  min-width: 0;
+  border-radius: var(--radius-card);
+}
+
+.empty-state .empty-icon {
+  width: 24px;
+  height: 24px;
+  color: var(--accent-text);
+}
+
+.empty-state h3 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.empty-state p {
+  font-size: 14px;
+  color: var(--text-2);
+  max-width: 52ch;
+}
+
+.empty-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.prompt-chip {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 500;
+  white-space: normal;
+  text-align: center;
+}
+
+.prompt-chip:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.link-btn {
+  min-height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--accent-text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-btn:hover {
+  background: var(--surface-hover);
+}
+
+/* -------------------------------------------------------------------------
+   Settings drawer
+   ------------------------------------------------------------------------- */
+
+dialog.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  width: min(520px, 100vw);
+  max-width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--border-strong);
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+  background: var(--surface-1);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
   overflow: hidden;
-  /* Anchor for the absolutely-positioned bottom-right column-span toggle. */
+}
+
+dialog.drawer[open] {
+  display: flex;
+  flex-direction: column;
+  animation: drawer-in 280ms var(--ease);
+}
+
+dialog.drawer::backdrop {
+  background: var(--scrim);
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(32px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 12px 24px;
+  min-height: 60px;
+  flex-shrink: 0;
+}
+
+.drawer-head h2 {
+  font-size: 20px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-strong);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
   position: relative;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 0;
+  color: var(--text-2);
+  font-weight: 500;
+  border: 0;
 }
 
-/* "Thinking" state: this card's probe is IN THE CURRENTLY in-flight batch
-   (each probe can have its own refresh cadence, so this is per-card, never a
-   single global light). A conic-gradient "comet" sweeps around the border via
-   ::before. We animate the gradient's START ANGLE (registered with @property so
-   it interpolates) — NOT a `transform: rotate` on the element, which would spin
-   the border-mask with it, tilting the rectangular ring off the card's edges.
-   The mask pair (content-box XOR border-box) keeps it a thin ring — the card's
-   own background/content is never touched. */
-@property --viewlyt-ring-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-
-.result-card.analyzing::before {
+.tab::after {
   content: "";
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 2.5px;
-  background: conic-gradient(
-    from var(--viewlyt-ring-angle),
-    transparent 0deg,
-    var(--accent) 55deg,
-    #a9c6ff 90deg,
-    var(--accent) 125deg,
-    transparent 180deg
-  );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  /* Soft glow so the sweeping comet reads as "alive", not a hairline. */
-  filter: drop-shadow(0 0 3px rgba(76, 139, 245, 0.6));
-  animation: viewlyt-analyzing-spin 1.6s linear infinite;
-  pointer-events: none;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform 200ms var(--ease);
 }
 
-@keyframes viewlyt-analyzing-spin {
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tab[aria-selected="true"]::after {
+  transform: scaleX(1);
+}
+
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.tabpanel[hidden] {
+  display: none;
+}
+
+.panel-title {
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+
+.panel-title-spaced {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.step-title {
+  font-size: 14px;
+  margin: 20px 0 6px;
+}
+
+.code-block {
+  margin-bottom: 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.code-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.code-block textarea,
+.code-block pre {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.code-block textarea {
+  resize: vertical;
+}
+
+.schema {
+  padding: 12px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre;
+  user-select: text;
+  cursor: text;
+}
+
+/* -------------------------------------------------------------------------
+   Toasts: bottom-right stack (bottom centre on phones).
+   ------------------------------------------------------------------------- */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(26rem, calc(100vw - 32px));
+}
+
+dialog > .toasts {
+  position: fixed;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: var(--shadow-overlay);
+  animation: toast-in 200ms var(--ease);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
   to {
-    --viewlyt-ring-angle: 360deg;
+    opacity: 1;
+    transform: none;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .result-card.analyzing::before {
-    animation: none;
+.toast-icon {
+  margin-top: 1px;
+}
+
+.toast-icon .icon,
+.toast-icon.icon {
+  width: 18px;
+  height: 18px;
+}
+
+.toast-error .toast-icon {
+  color: var(--critical-text);
+}
+
+.toast-success .toast-icon {
+  color: var(--good-text);
+}
+
+.toast-info .toast-icon {
+  color: var(--accent-text);
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 1px;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-2);
+}
+
+.toast-close:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.toast-close .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* -------------------------------------------------------------------------
+   Responsive shell
+   ------------------------------------------------------------------------- */
+
+/* Wide desktops: the chat rail becomes a sticky right column that spans the
+   composer and the probes, so it starts right under the top bar and fills the
+   viewport (top 72 = bar 56 + gutter 16; bottom gutter 16). The page's own bottom
+   padding is that same 16px: more would let the rail slide up under the bar when the
+   page is scrolled to the end. */
+@media (min-width: 1200px) {
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-rows: auto 1fr;
+    align-items: start;
+    padding-bottom: 16px;
   }
+
+  .composer {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .results-panel {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .chat-rail {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    position: sticky;
+    /* --topbar-h is kept in sync by main.ts (the bar is 1 or 2 rows tall). */
+    top: calc(var(--topbar-h, 57px) + 15px);
+    height: calc(100dvh - var(--topbar-h, 57px) - 33px);
+    min-height: 360px;
+  }
+
+  .chat-toggle {
+    display: none;
+  }
+
+  /* The collapsible state is a sub-1200 concern only. */
+  .chat-rail.is-collapsed .chat-body {
+    display: flex;
+  }
+
+  #feed {
+    height: auto;
+  }
+}
+
+/* Below 1200 the rail is a collapsible panel between the composer and the probes
+   (main.ts moves it there, so no CSS order is needed). */
+@media (max-width: 1199px) {
+  .chat-toggle {
+    display: inline-flex;
+  }
+}
+
+/* Composer: when the composer is too narrow for one row, the input shares row 1 with
+   the mode control and the actions drop to their own row (same order as the DOM). */
+@container composer (max-width: 899px) {
+  .composer-row {
+    flex-wrap: wrap;
+  }
+
+  .composer-field {
+    flex: 1 1 260px;
+  }
+
+  .composer-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}
+
+/* Top bar wraps to two rows: controls on top, metrics strip below. Below 1100px
+   always; above it, when main.ts finds the strip would otherwise clip (.is-wrapped). */
+.topbar-inner.is-wrapped {
+  flex-wrap: wrap;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  row-gap: 8px;
+}
+
+.topbar-inner.is-wrapped .kpi-strip {
+  order: 10;
+  flex: 1 1 100%;
+}
+
+.topbar-inner.is-wrapped .topbar-actions {
+  margin-left: auto;
+}
+
+/* Tablets and up: when even a full-width second row is too narrow, the metrics
+   wrap onto more rows instead of scrolling out of sight. Phones keep the scroll. */
+@media (min-width: 768px) {
+  .topbar-inner.is-wrapped .kpi-strip {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+}
+
+/* Edge fade whenever the strip scrolls sideways. */
+.kpi-strip.is-scrollable {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+}
+
+@media (max-width: 1099px) {
+  .topbar-inner {
+    flex-wrap: wrap;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    row-gap: 8px;
+  }
+
+  .kpi-strip {
+    order: 10;
+    flex: 1 1 100%;
+  }
+
+  .topbar-actions {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --control-h: 44px;
+    --field-h: 44px;
+  }
+
+  .topbar {
+    position: static;
+  }
+
+  .topbar-inner {
+    padding-left: 16px;
+    padding-right: 16px;
+    gap: 10px;
+  }
+
+  .app {
+    padding: 16px 16px 48px;
+  }
+
+  /* Phones: the language select collapses to a globe button (the native picker
+     lists the languages); everything in the top bar is 44px. */
+  .lang-icon {
+    display: inline-flex;
+    width: 18px;
+    height: 18px;
+  }
+
+  #language {
+    width: var(--control-h);
+    min-width: 0;
+    padding: 0;
+    color: transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    text-indent: -999px;
+  }
+
+  #language option {
+    color: var(--text);
+    text-indent: 0;
+  }
+
+  .kpi-strip {
+    gap: 24px;
+    margin: 0 -16px -3px;
+    padding: 6px 16px 9px;
+    scroll-padding-inline: 16px;
+  }
+
+  .composer-row {
+    flex-wrap: wrap;
+  }
+
+  .seg {
+    width: 100%;
+  }
+
+  .ask-chip {
+    min-height: 44px;
+  }
+
+  .composer-field {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  #ask-categories {
+    flex: 1 1 100%;
+  }
+
+  .composer-actions {
+    flex: 1 1 100%;
+  }
+
+  .composer-actions button {
+    flex: 1 1 0;
+  }
+
+  .btn-small {
+    min-height: 36px;
+  }
+
+  .results-head-actions .btn-small {
+    min-height: 44px;
+  }
+
+  .results-head-actions {
+    width: 100%;
+  }
+
+  .results-head-actions > .btn-small,
+  .results-head-actions .menu-wrap {
+    flex: 1 1 0;
+  }
+
+  .results-head-actions .menu-wrap > .btn-small {
+    width: 100%;
+  }
+
+  .feed-order-btn,
+  .chat-toggle {
+    min-height: 36px;
+  }
+
+  dialog.drawer {
+    border-radius: 0;
+    border-left: 0;
+  }
+
+  .drawer-body {
+    padding: 20px 16px;
+  }
+
+  .toasts {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    margin: 0 auto;
+    align-items: center;
+    max-width: none;
+  }
+
+  .toast {
+    width: 100%;
+  }
+}
+
+@media (pointer: coarse) {
+  :root {
+    --control-h: 44px;
+    --field-h: 44px;
+  }
+}
+
+/* Reduced motion: nothing animates or transitions at all (state changes are instant),
+   so document.getAnimations() stays empty. Meaning is carried by static cues: the
+   spinner becomes a still ring, the "Live" dot a still dot, the in-flight bar a still
+   accent line, skeletons stay at full opacity. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  .spinner {
+    border-top-color: var(--accent);
+  }
+}
+
+/* =========================================================================
+   Probe cards and chart renderers
+   ========================================================================= */
+
+/* -------------------------------------------------------------------------
+   Card grid + container
+   ------------------------------------------------------------------------- */
+
+/* Responsive card grid: side-by-side probes on wide screens, one column when
+   narrow. align-items:start keeps a collapsed card from stretching to match
+   its tall neighbor. The 380px track + 16px gap couple to TWO_COL_MIN_WIDTH
+   (776) in main.ts and to the @container breakpoint below. */
+.results-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
+  align-items: stretch;
+  gap: var(--gap);
+  /* An inline-size container so a per-card "span 2 columns" toggle can fall
+     back to a single column (via @container below) whenever the grid is too
+     narrow to actually fit two 380px tracks, and so narrow cards can drop
+     their sparkline column. */
+  container: results / inline-size;
+}
+
+.result-card {
+  position: relative;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 16px;
+  /* Grid items default to min-width:auto, so a wide child (long URL, code,
+     table) would stretch the track. Pin it to 0; content wraps or scrolls
+     inside. (No overflow clipping: the overflow menu and the descartes
+     add-axis buttons must be able to leave the card.) */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 120ms var(--ease);
+}
+
+.result-card.collapsed {
+  align-self: start;
+}
+
+@media (min-width: 1280px) {
+  .result-card {
+    padding: 20px;
+  }
+}
+
+.result-card:hover,
+.result-card:focus-within {
+  border-color: var(--border-strong);
+}
+
+/* The card currently being dragged: faded so the drop target reads clearly. */
+.result-card.dragging {
+  opacity: 0.4;
 }
 
 /* A card the user widened to two columns. */
@@ -576,25 +2170,26 @@ button:disabled:hover {
   grid-column: span 2;
 }
 
-/* Two 340px tracks + the 0.75rem (12px) grid gap need ~692px; below that the
-   grid only fits one column, so a "span 2" card must fall back to one to avoid
+/* Two 380px tracks + the 16px grid gap need 776px; below that the grid only
+   fits one column, so a "span 2" card must fall back to one to avoid
    overflowing. Keyed off the .results-list inline-size container above. */
-@container (max-width: 691px) {
+@container results (max-width: 775px) {
   .result-card.span-2 {
     grid-column: auto;
   }
   /* The card is back to a single track here, so the descartes board must not
-     keep the widened caps — it would overflow the (narrower) card. */
+     keep the widened caps. */
   .result-card.span-2 .descartes-plot {
     grid-template-columns: auto repeat(var(--cols), minmax(0, 84px));
     grid-template-rows: repeat(var(--rows), minmax(28px, 46px)) auto;
   }
 }
 
-/* Collapsed card: header (badge + label + meta) stays; body folds away. */
+/* Collapsed card: header stays; body, editor, error and footer fold away. */
 .result-card.collapsed .result-display,
 .result-card.collapsed .result-scrubber,
-.result-card.collapsed .card-editor {
+.result-card.collapsed .card-editor,
+.result-card.collapsed .card-error {
   display: none;
 }
 
@@ -602,36 +2197,580 @@ button:disabled:hover {
   margin-bottom: 0;
 }
 
-/* .result-card.is-latest intentionally removed (R4: flat cards, no left accent bar) */
+/* -------------------------------------------------------------------------
+   In-flight: a 2px indeterminate bar along the card's top edge
+   ------------------------------------------------------------------------- */
+
+.card-progress {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  right: -1px;
+  height: 2px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms var(--ease);
+}
+
+.card-progress::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateX(-100%);
+}
+
+.result-card.analyzing > .card-progress {
+  opacity: 1;
+}
+
+.result-card.analyzing > .card-progress::before {
+  animation: card-progress 1.4s linear infinite;
+}
+
+@keyframes card-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-card.analyzing > .card-progress::before {
+    width: 100%;
+    transform: none;
+    animation: none;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Header: grip, title + kind tag + subtitle, chart select, overflow menu
+   ------------------------------------------------------------------------- */
 
 .result-header {
+  position: relative;
+  /* Above the chart container below (both are stacking contexts), so the
+     overflow menu is never painted under the chart. */
+  z-index: 2;
+  /* Own inline-size container: the header adapts to the CARD width, not the grid. */
+  container: hdr / inline-size;
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.6rem;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
 }
 
+.result-header-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Drag handle: reorders cards via native HTML5 drag-and-drop. Only the handle
+   is draggable (not the whole card), so clicks/selects/inputs inside the card
+   are unaffected. Shown on hover/focus only (space is always reserved). */
+.card-drag-handle {
+  position: absolute;
+  left: -15px;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 24px;
+  color: var(--text-muted);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms var(--ease), color 120ms var(--ease);
+}
+
+.card-drag-handle .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.result-card:hover .card-drag-handle,
+.result-card:focus-within .card-drag-handle,
+.card-drag-handle:active {
+  opacity: 1;
+}
+
+.card-drag-handle:hover {
+  color: var(--text);
+}
+
+.card-drag-handle:active {
+  cursor: grabbing;
+}
+
+@media (hover: none) {
+  .card-drag-handle {
+    opacity: 0.7;
+  }
+}
+
+.result-titles {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Title and kind tag share ONE row: the title wraps in full, the tag never
+   drops under it, so every card's subtitle starts at a predictable y. */
+.result-title-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: nowrap;
+  gap: 0 8px;
+  min-width: 0;
+}
+
+/* Editable via the Edit panel: the title wraps in FULL, never clipped. */
 .result-label {
-  font-weight: 700;
-  font-size: 0.9rem;
-  color: #fff;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 24px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
-/* Classification bars */
+.result-label:empty {
+  display: none;
+}
+
+.result-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 24px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.result-kind-badge .icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Subtitle: the prompt, clamped to two lines (full text in the title attribute). */
+.result-prompt {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.45;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.result-prompt:empty {
+  display: none;
+}
+
+.result-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Chart type: icon + friendly name; option values stay the ChartType ids. */
+.chart-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chart-select-icon,
+.chart-select-caret {
+  position: absolute;
+  pointer-events: none;
+  color: var(--text-2);
+}
+
+.chart-select-icon {
+  left: 8px;
+}
+
+.chart-select-caret {
+  right: 8px;
+  width: 12px;
+  height: 12px;
+}
+
+.chart-select {
+  -webkit-appearance: none;
+  appearance: none;
+  width: auto;
+  height: 32px;
+  padding: 0 26px 0 28px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.chart-select:hover {
+  background: var(--surface-hover);
+  border-color: var(--control-border);
+}
+
+/* The one overflow menu (dots) and its items. */
+.card-menu-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--text-2);
+  border-color: transparent;
+}
+
+.card-menu-btn:hover,
+.card-menu-btn[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.card-menu-btn .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.card-menu {
+  min-width: 176px;
+}
+
+.menu .menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-strong);
+}
+
+.menu > button .icon {
+  color: var(--text-2);
+}
+
+.menu > button.menu-item-danger,
+.menu > button.menu-item-danger .icon {
+  color: var(--critical-text);
+}
+
+.menu > button.menu-item-danger:hover,
+.menu > button.menu-item-danger:focus-visible {
+  background: var(--critical-soft);
+}
+
+/* -------------------------------------------------------------------------
+   Inline per-probe failure + empty skeleton
+   ------------------------------------------------------------------------- */
+
+.card-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--critical-text);
+  border-radius: var(--radius);
+  background: var(--critical-soft);
+  color: var(--critical-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.card-error .icon {
+  margin-top: 2px;
+}
+
+.is-skeleton .skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: sk-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes sk-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.sk-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 20px;
+}
+
+/* Text skeleton: lines on the same 22px rhythm as the rendered markdown. */
+.sk-text {
+  margin: 6px 0;
+}
+
+.is-skeleton .skeleton:has(.sk-text) {
+  gap: 0;
+}
+
+.sk-line {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--border-strong);
+}
+
+.sk-label {
+  flex: 0 0 64px;
+}
+
+.sk-bar {
+  flex: 0 1 auto;
+  max-width: calc(100% - 76px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-skeleton .skeleton {
+    animation: none;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Footer timeline: range + stamp + Live toggle on one row
+   ------------------------------------------------------------------------- */
+
+.result-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* Single snapshot: no range to drag, but keep the stamp and the Live toggle. */
+.result-scrubber.is-single .scrub-range {
+  display: none;
+}
+
+.result-scrubber.is-single .scrub-meta {
+  margin-left: auto;
+}
+
+/* Nothing to follow yet: only the "waiting" text shows. */
+.result-scrubber.is-empty .scrub-live {
+  display: none;
+}
+
+/* Native range input: 4px track filled to the thumb, 16px thumb. Must NOT
+   inherit the global text/number/password field styling. */
+input.scrub-range {
+  --fill: 100%;
+  --scrub-track: color-mix(in srgb, var(--text-muted) 45%, transparent);
+  flex: 1 1 64px;
+  width: auto;
+  min-width: 48px;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 24px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  box-shadow: none;
+  outline: none;
+  cursor: pointer;
+}
+
+input.scrub-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--scrub-track) var(--fill));
+}
+
+input.scrub-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px; /* centre the 16px thumb on the 4px track */
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface-1);
+  transition: box-shadow 120ms var(--ease);
+}
+
+input.scrub-range:hover::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 5px var(--accent-soft);
+}
+
+input.scrub-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--scrub-track);
+}
+
+input.scrub-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+input.scrub-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+
+input.scrub-range:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.scrub-meta {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  gap: 8px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Live toggle: pressed while the card follows the latest snapshot. */
+.scrub-live {
+  min-height: 24px;
+  padding: 0 10px;
+  gap: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scrub-live:hover {
+  background: var(--surface-hover);
+}
+
+.scrub-live[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.scrub-live[aria-pressed="true"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@media (pointer: coarse) {
+  input.scrub-range {
+    height: 44px;
+    margin: -10px 0;
+  }
+  .scrub-live {
+    min-height: 44px;
+  }
+  .chart-select,
+  .card-menu-btn {
+    min-height: 44px;
+  }
+  .card-menu-btn {
+    width: 44px;
+  }
+  .menu > a,
+  .menu > button {
+    min-height: 44px;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Display wrapper + keyboard focus + hover affordances
+   ------------------------------------------------------------------------- */
+
+.result-display {
+  display: block;
+  min-width: 0;
+  /* Chart renderers adapt to the card's own width (named, so the grid-level
+     "results" container queries are unaffected). */
+  container: chart / inline-size;
+  margin-bottom: 12px;
+}
+
+.chart-viz {
+  display: block;
+  min-width: 0;
+}
+
+.chart-viz:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+/* -------------------------------------------------------------------------
+   Delta badge: arrow icon + signed number, neutral ink (rising is not "good")
+   ------------------------------------------------------------------------- */
+
+.delta-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+
+.delta-badge .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* -------------------------------------------------------------------------
+   Bars: thin marks on a baseline, label | track | pct | delta | sparkline
+   ------------------------------------------------------------------------- */
 
 .bars {
   /* Shared grid (rows use display:contents) so every row's 1fr track is the
-     SAME width → the bars are directly comparable across categories. The
-     colored track is the star: it gets the 1fr with a guaranteed minimum,
-     the label may shrink, and the sparkline column is bounded so it can
-     never starve the track. */
+     SAME width, so bars are directly comparable. delta + sparkline are
+     FIXED-width so nothing shifts as history grows. */
   display: grid;
-  /* delta + sparkline are FIXED-width so the columns never shift as history
-     grows (the sparkline text lengthens snapshot by snapshot); label/track flex. */
-  grid-template-columns: minmax(56px, 104px) minmax(60px, 1fr) 42px 46px 62px;
+  grid-template-columns: minmax(48px, min(18%, 112px)) minmax(64px, 1fr) 44px 56px 48px;
   align-items: center;
-  gap: 0.4rem 0.5rem;
+  gap: 4px 8px;
   min-width: 0;
 }
 
@@ -640,245 +2779,472 @@ button:disabled:hover {
 }
 
 .bar-label {
-  font-size: 0.8rem;
+  font-size: 13px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+/* 20px hit area; the mark itself is 10px with a hairline baseline at its start. */
 .bar-track {
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: 3px;
-  height: 14px;
-  overflow: hidden;
   position: relative;
+  display: flex;
+  align-items: center;
+  height: 20px;
+  padding-left: 1px;
+  min-width: 0;
+  border-radius: 4px;
+}
+
+.bar-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--chart-axis);
 }
 
 .bar-fill {
-  height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease;
+  height: 10px;
   min-width: 2px;
+  border-radius: 0 4px 4px 0;
 }
 
-.bar-pct {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-dim);
+.bar-pct,
+.cat-pct {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
   text-align: right;
 }
 
-.spark {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: #94a3b8;
-  letter-spacing: -0.04em;
-  white-space: nowrap;
-  opacity: 0.75;
-  overflow: hidden;
+.spark,
+.cat-spark {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 18px;
   min-width: 0;
 }
 
+.spark-svg {
+  display: block;
+  overflow: visible;
+}
+
+.spark-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.bar-track:hover,
+.delta-track:hover {
+  background: var(--surface-hover);
+}
+
+.bar-track.is-active,
+.delta-track.is-active,
+.stacked-seg.is-active {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 /* -------------------------------------------------------------------------
-   Per-probe chart type selector + chart renderers
+   Legend under every non-bars chart: swatch | name | pct | delta | sparkline
    ------------------------------------------------------------------------- */
 
-.chart-select {
-  width: auto;
-  font-size: 0.72rem;
-  padding: 0.15rem 0.4rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.chart-select:focus {
-  border-color: var(--accent);
-}
-
-.result-header-right {
-  display: flex;
+.cat-stats {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) 44px 56px 48px;
   align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
-  margin-left: auto;
+  gap: 4px 8px;
+  margin-top: 12px;
+  min-width: 0;
 }
 
-/* Stacked bar */
+.cat-stat-row {
+  display: contents;
+}
+
+/* Delta chart legend: swatch | name | pct | sparkline (no repeated delta column). */
+.cat-stats.cat-stats-lean {
+  grid-template-columns: 12px minmax(0, 1fr) 44px 48px;
+}
+
+.cat-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  justify-self: center;
+}
+
+.cat-name {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------------------
+   Stacked bar: 2px surface gaps between segments, rounded outer ends
+   ------------------------------------------------------------------------- */
 
 .stacked-bar {
   display: flex;
+  gap: 2px;
   width: 100%;
-  height: 22px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.07);
+  height: 16px;
 }
 
 .stacked-seg {
   height: 100%;
-  min-width: 1px;
-  transition: flex-basis 0.4s ease;
+  min-width: 2px;
+  flex-grow: 0;
+  flex-shrink: 1;
+  border-radius: 2px;
 }
 
-/* Legend rules removed (R3: buildLegend is gone; .cat-stats replaces it) */
-
-/* SVG charts (donut / lines / columns / area) */
-
-.chart-svg {
-  display: block;
-  max-width: 100%;
-  height: auto;
+.stacked-seg:first-child {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
 }
 
-.chart-donut {
-  width: 140px;
-  height: 140px;
+.stacked-seg:last-child {
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
 }
 
-.chart-lines {
-  width: 100%;
-  height: 120px;
-}
-
-/* R3 — new chart containers */
-.chart-columns {
-  width: 100%;
-  height: 140px;
-  display: block;
-}
-
-.chart-columns rect {
-  transition: height 0.3s ease, y 0.3s ease;
-}
-
-.chart-area {
-  width: 100%;
-  height: 120px;
-  display: block;
-}
-
-/* Wrapper for the chosen visualization (R3) */
-.chart-viz {
-  display: block;
-}
-
-.chart-baseline {
-  stroke: var(--border);
-  stroke-width: 1;
-  opacity: 0.6;
-}
-
-.chart-line {
-  fill: none;
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
+.stacked-seg:hover {
+  filter: brightness(1.12);
 }
 
 /* -------------------------------------------------------------------------
-   Delta badges (change vs the previous snapshot)
-   ------------------------------------------------------------------------- */
-
-.delta-badge {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  font-weight: 600;
-  white-space: nowrap;
-  text-align: right;
-}
-
-.delta-up {
-  color: var(--success);
-}
-
-.delta-down {
-  color: var(--danger);
-}
-
-.delta-zero {
-  color: var(--text-dim);
-  opacity: 0.7;
-}
-
-/* -------------------------------------------------------------------------
-   Delta chart — diverging horizontal bars vs the previous snapshot
+   Delta chart: diverging bars on a centred zero axis, label | track | value
    ------------------------------------------------------------------------- */
 
 .delta-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: minmax(48px, min(18%, 112px)) minmax(64px, 1fr) 64px;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
 }
 
 .delta-row {
-  display: grid;
-  grid-template-columns: 120px 1fr 52px;
-  align-items: center;
-  gap: 0.5rem;
+  display: contents;
 }
 
 .delta-label {
-  font-size: 0.8rem;
+  font-size: 13px;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Centered zero axis: two equal halves with a divider line in the middle. */
 .delta-track {
+  position: relative;
   display: flex;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 3px;
-  overflow: hidden;
+  align-items: center;
+  height: 20px;
+  border-radius: 4px;
+}
+
+.delta-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--chart-axis);
 }
 
 .delta-half {
   flex: 1 1 0;
   display: flex;
-  height: 100%;
+  align-items: center;
+  min-width: 0;
 }
 
 .delta-half-neg {
   justify-content: flex-end;
-  border-right: 1px solid var(--border);
+  padding-right: 1px;
 }
 
 .delta-half-pos {
   justify-content: flex-start;
+  padding-left: 1px;
 }
 
 .delta-bar {
-  height: 100%;
+  height: 10px;
   min-width: 0;
-  transition: width 0.4s ease;
 }
 
 .delta-bar-pos {
-  background: var(--success);
-  border-radius: 0 3px 3px 0;
+  border-radius: 0 4px 4px 0;
 }
 
 .delta-bar-neg {
-  background: var(--danger);
-  border-radius: 3px 0 0 3px;
+  border-radius: 4px 0 0 4px;
 }
 
-.delta-value {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  text-align: right;
+/* -------------------------------------------------------------------------
+   SVG charts: sized in real pixels by the renderer (no stretched viewBox)
+   ------------------------------------------------------------------------- */
+
+.chart-svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
 }
 
-/* Open probe: single snapshot display (R5 replaces timeline with scrubber) */
+.chart-donut {
+  width: 152px;
+  height: 152px;
+  margin: 0 auto;
+}
+
+.chart-gauge {
+  max-width: 240px;
+  margin: 0 auto;
+}
+
+.chart-svg text {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Text wears text tokens, never the series colour. Scoped by class so marks
+   keep their per-category fill/stroke attributes. */
+.chart-svg .chart-tick,
+.chart-svg .chart-xlabel,
+.chart-svg .chart-heat-label {
+  fill: var(--text-muted);
+}
+
+.chart-svg .chart-podium-value {
+  fill: var(--text);
+  font-weight: 600;
+}
+
+.chart-svg .chart-donut-pct {
+  fill: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.chart-svg .chart-donut-name {
+  fill: var(--text-2);
+}
+
+.chart-svg .chart-gauge-pct {
+  fill: var(--text);
+  font-size: 28px;
+  font-weight: 600;
+}
+
+.chart-svg .chart-gauge-name {
+  fill: var(--text-2);
+  font-size: 13px;
+}
+
+.chart-svg .chart-cell-text {
+  font-weight: 600;
+}
+
+.chart-svg .chart-chip {
+  fill: var(--surface-1);
+}
+
+.chart-svg .chart-chip-text {
+  fill: var(--text);
+  font-weight: 600;
+}
+
+.chart-svg .chart-cell-empty {
+  fill: var(--surface-2);
+}
+
+.chart-svg .chart-dot-ring {
+  fill: var(--surface-1);
+}
+
+.chart-svg .chart-gauge-track {
+  stroke: var(--chart-axis);
+}
+
+/* Gridlines: hairlines at 0/50/100%, never dashed. */
+.chart-svg .chart-grid-line {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-svg .chart-baseline {
+  stroke: var(--chart-axis);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.chart-svg .chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.chart-svg .chart-hit-line {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+}
+
+.chart-svg .chart-hit-line:hover,
+.chart-svg .chart-hit-line.is-active {
+  stroke: var(--text);
+  stroke-opacity: 0.12;
+}
+
+.chart-svg .chart-hit:hover {
+  fill: var(--text);
+  fill-opacity: 0.06;
+}
+
+.chart-svg .chart-hit.is-active {
+  fill: var(--text);
+  fill-opacity: 0.1;
+}
+
+/* Keyboard-inspected mark (the tooltip shows next to it). */
+.chart-svg path.is-active,
+.chart-svg polygon.is-active,
+.chart-svg circle.is-active,
+.chart-svg rect.is-active:not(.chart-hit) {
+  stroke: var(--text);
+  stroke-width: 2px;
+}
+
+.chart-svg .chart-hit:hover,
+.chart-svg path[data-tip-name]:hover,
+.chart-svg polygon[data-tip-name]:hover {
+  cursor: default;
+}
+
+.chart-svg path[data-tip-name]:hover,
+.chart-svg rect[data-tip-name]:not(.chart-hit):hover {
+  stroke: var(--text);
+  stroke-width: 1.5px;
+}
+
+/* Ramp legend ("less to more") shared by heatmap and descartes. */
+.ramp-legend,
+.descartes-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ramp-legend {
+  margin-top: 8px;
+}
+
+.ramp-bar {
+  display: inline-block;
+  width: 96px;
+  height: 8px;
+  border-radius: 4px;
+  /* Same ramp the cells are painted from (seqColor in main.ts). */
+  background: linear-gradient(
+    to right,
+    var(--seq-0),
+    var(--seq-2),
+    var(--seq-4),
+    var(--seq-6),
+    var(--seq-8)
+  );
+}
+
+/* -------------------------------------------------------------------------
+   Tooltip (one floating node; surface-2, hairline, overlay shadow)
+   ------------------------------------------------------------------------- */
+
+.chart-tip {
+  position: fixed;
+  z-index: 60;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.chart-tip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.chart-tip-name {
+  overflow-wrap: anywhere;
+}
+
+.chart-tip-swatch {
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.chart-tip-val {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tip-val strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chart-tip-note {
+  margin-top: 2px;
+  color: var(--text-muted);
+}
+
+/* -------------------------------------------------------------------------
+   Open probe: markdown typography (rendered by marked + DOMPurify)
+   ------------------------------------------------------------------------- */
 
 .result-text {
-  font-size: 0.88rem;
+  font-size: 14px;
   color: var(--text);
   line-height: 1.6;
   /* LLM text carries long unbroken tokens (URLs, ids, code); wrap them so they
@@ -888,8 +3254,7 @@ button:disabled:hover {
   word-break: break-word;
 }
 
-/* Markdown typography inside open-probe results (rendered by marked+DOMPurify).
-   Tight margins: these are short syntheses, not documents. */
+/* Tight margins: these are short syntheses, not documents. */
 .result-text p {
   margin: 0 0 0.5em;
 }
@@ -914,25 +3279,25 @@ button:disabled:hover {
 .result-text h4,
 .result-text h5,
 .result-text h6 {
-  font-size: 0.92rem;
-  font-weight: 700;
-  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
   margin: 0.6em 0 0.3em;
 }
 
 .result-text code {
   font-family: var(--font-mono);
-  font-size: 0.82em;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
+  font-size: 0.86em;
+  background: var(--surface-2);
+  border-radius: 4px;
   padding: 0.05em 0.35em;
 }
 
 .result-text pre {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius);
+  padding: 8px 12px;
   overflow-x: auto;
   margin: 0.4em 0 0.6em;
 }
@@ -945,12 +3310,12 @@ button:disabled:hover {
 .result-text blockquote {
   margin: 0.4em 0 0.6em;
   padding: 0.1em 0 0.1em 0.75em;
-  border-left: 3px solid var(--border);
-  color: var(--text-dim);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
 }
 
 .result-text a {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -958,7 +3323,7 @@ button:disabled:hover {
 .result-text table {
   border-collapse: collapse;
   margin: 0.4em 0 0.6em;
-  font-size: 0.82rem;
+  font-size: 13px;
   /* A wide table scrolls inside the card instead of spilling past it. */
   display: block;
   max-width: 100%;
@@ -967,7 +3332,7 @@ button:disabled:hover {
 
 .result-text th,
 .result-text td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   padding: 0.25em 0.55em;
   text-align: left;
 }
@@ -978,977 +3343,106 @@ button:disabled:hover {
   margin: 0.6em 0;
 }
 
-/* R5 — scrubber row (hidden when only one snapshot) */
-.result-scrubber {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin: 0.15rem 0 0.6rem;
-}
-
-/* Single snapshot: no range to drag, but keep the meta line (timestamp + LIVE)
-   visible — it's the only place the stamp shows now that the header meta is gone. */
-.result-scrubber.is-single .scrub-range {
-  display: none;
-}
-
-/* Native range input — minimal, themed via accent-color; must NOT inherit the
-   global text/number/password border rule (type=range is not in that selector,
-   but add an explicit reset for safety). */
-input.scrub-range {
-  flex: 1 1 auto;
-  width: auto;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 14px; /* hit area; the visible track is thin (below) */
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  box-shadow: none;
-  outline: none;
-  cursor: pointer;
-}
-
-/* Thin, discreet track + small accent thumb (WebKit) */
-input.scrub-range::-webkit-slider-runnable-track {
-  height: 3px;
-  border-radius: 999px;
-  background: var(--border);
-}
-
-input.scrub-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 10px;
-  height: 10px;
-  margin-top: -3.5px; /* center the thumb on the 3px track */
-  border-radius: 50%;
-  background: var(--accent);
-  border: none;
-  transition: box-shadow 0.12s;
-}
-
-input.scrub-range:hover::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px rgba(76, 139, 245, 0.18);
-}
-
-/* Firefox */
-input.scrub-range::-moz-range-track {
-  height: 3px;
-  border-radius: 999px;
-  background: var(--border);
-}
-
-input.scrub-range::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: none;
-}
-
-input.scrub-range:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-
-.scrub-meta {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-/* "LIVE" pill badge inside the scrubber */
-.scrub-live {
-  text-transform: uppercase;
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--accent);
-  background: rgba(76, 139, 245, 0.16);
-  border: 1px solid rgba(76, 139, 245, 0.35);
-  border-radius: 999px;
-  padding: 0.05rem 0.4rem;
-  cursor: pointer; /* click to snap back to the latest snapshot */
-}
-
-.scrub-live:hover {
-  background: rgba(76, 139, 245, 0.28);
-}
-
-/* Single-snapshot display container (R5) */
-.result-display {
-  display: block;
-  margin-top: 0.1rem;
-}
-
 /* -------------------------------------------------------------------------
-   Toasts — fixed bottom-right stack; errors are danger-tinted, successes green.
+   Per-card editor panel
    ------------------------------------------------------------------------- */
-
-.toasts {
-  position: fixed;
-  right: 1rem;
-  bottom: 1rem;
-  z-index: 1000;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-width: min(26rem, calc(100vw - 2rem));
-}
-
-.toast {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  font-size: 0.82rem;
-  line-height: 1.4;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
-  animation: toast-in 0.18s ease-out;
-}
-
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
-
-.toast-error {
-  border-color: rgba(234, 67, 53, 0.35);
-  background: rgba(234, 67, 53, 0.12);
-  color: var(--danger);
-}
-
-.toast-success {
-  border-color: rgba(52, 168, 83, 0.35);
-  background: rgba(52, 168, 83, 0.12);
-  color: var(--success);
-}
-
-.toast-text {
-  flex: 1 1 auto;
-  word-break: break-word;
-}
-
-.toast-close {
-  flex: 0 0 auto;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font-size: 0.75rem;
-  padding: 0 0.15rem;
-  opacity: 0.7;
-}
-
-.toast-close:hover {
-  opacity: 1;
-  filter: none;
-}
-
-/* R3 — per-category stats table under every chart type except "bars" */
-.cat-stats {
-  /* Shared grid (rows use display:contents) so all rows align on identical columns. */
-  display: grid;
-  /* Match .bars: delta + sparkline fixed-width so nothing shifts as the
-     sparkline grows; swatch fixed, name flexes. */
-  grid-template-columns: 12px minmax(0, 1fr) 46px 46px 62px;
-  align-items: center;
-  gap: 0.3rem 0.5rem;
-  margin-top: 0.6rem;
-  min-width: 0;
-}
-
-.cat-stat-row {
-  display: contents;
-}
-
-.cat-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.cat-name {
-  font-size: 0.8rem;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cat-pct {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-dim);
-  text-align: right;
-}
-
-.cat-spark {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: #94a3b8;
-  letter-spacing: -0.04em;
-  white-space: nowrap;
-  opacity: 0.8;
-  overflow: hidden;
-  min-width: 0;
-}
-
-/* Timeline artifacts removed (R4): .result-history / .result-entry /
-   .result-entry.is-latest / .result-entry.is-previous / .entry-time /
-   .entry-body — open timeline is replaced by the scrubber single display.
-   .result-text is kept above (still used). */
-
-/* -------------------------------------------------------------------------
-   Snippet section
-   ------------------------------------------------------------------------- */
-
-.snippet-section p.hint {
-  margin-bottom: 0.6rem;
-  line-height: 1.55;
-}
-
-#snippet {
-  margin-bottom: 0.5rem;
-  background: #0a0c0f;
-  border-color: #222831;
-  color: #8fa4c0;
-}
-
-/* -------------------------------------------------------------------------
-   Results star — prominent top section (not collapsible)
-   ------------------------------------------------------------------------- */
-
-/* R4: border-left removed (no accent side bar); R2: min-height bumped so
-   #feed has real height even with a single probe. */
-.results-star {
-  padding: 1.25rem 1.5rem;
-  min-height: 360px;
-  margin-bottom: var(--gap);
-}
-
-.results-star h2 {
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--accent);
-  margin-bottom: 1rem;
-  text-transform: uppercase;
-}
-
-/* Live Results heading row: title + export links + 'Analyze now' force button. */
-.results-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-}
-
-.results-head h2 {
-  margin-bottom: 0;
-}
-
-.results-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-/* An <a> styled as a button (the export downloads). */
-.btn-link {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-  font-family: var(--font-sans);
-  font-weight: 600;
-  white-space: nowrap;
-  transition: opacity 0.15s, filter 0.15s;
-}
-
-.btn-link:hover {
-  filter: brightness(1.12);
-}
-
-/* Two columns: Live Results (wide) + Live Chat (narrow, own scroll). */
-.results-cols {
-  display: flex;
-  gap: var(--gap);
-  align-items: stretch;
-}
-
-.results-col {
-  min-width: 0; /* let flex children shrink instead of overflowing */
-}
-
-.results-col-main {
-  flex: 2.5 1 0;
-}
-
-.results-col-chat {
-  flex: 1 1 0;
-  /* Don't stretch to the (possibly very tall) results column; stay a bounded,
-     sticky panel with its own scroll so the feed never grows the page height. */
-  align-self: flex-start;
-  position: sticky;
-  top: var(--gap);
-  max-height: calc(100vh - 2 * var(--gap));
-  display: flex;
-  flex-direction: column;
-  border-left: 1px solid var(--border);
-  padding-left: var(--gap);
-}
-
-/* Chat heading row: title on the left, feed-direction toggle on the right. */
-.chat-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.results-col-chat h2 {
-  font-size: 0.85rem;
-  color: var(--text-dim);
-  letter-spacing: 0.06em;
-  min-width: 0;
-}
-
-/* Feed-direction toggle: a discreet chip that flips newest-at-bottom (default,
-   arrow ↓) and newest-at-top (arrow ↑). */
-.feed-order-btn {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 0.2rem 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  background: var(--surface);
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
-}
-
-.feed-order-btn:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.feed-order-arrow {
-  font-size: 0.82rem;
-  line-height: 1;
-  color: var(--accent);
-}
-
-/* Wraps #feed + the floating jump pill so the pill anchors to the feed area
-   (below the heading) in both directions, and stretches to fill the column. */
-.feed-wrap {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Chat feed fills the bounded chat column and scrolls internally (the column is
-   capped to the viewport via max-height) so it never grows the page height. */
-#feed {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  line-height: 1.6;
-  color: var(--text);
-}
-
-#feed > div {
-  padding: 0.05rem 0;
-  word-break: break-word;
-}
-
-.feed-author {
-  font-weight: 600;
-  color: var(--accent);
-}
-
-/* Floating "↓ N new" pill: shown while the user scrolled away from the newest
-   edge and messages keep arriving; anchored to .feed-wrap. Sits at the bottom
-   by default (newest-at-bottom) and flips to the top in newest-first mode. */
-.feed-jump {
-  position: absolute;
-  bottom: 0.5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--accent);
-  color: #fff;
-  font-size: 0.72rem;
-  padding: 0.25rem 0.7rem;
-  border-radius: 9999px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
-  cursor: pointer;
-}
-
-.feed-wrap.newest-first .feed-jump {
-  top: 0.5rem;
-  bottom: auto;
-}
-
-/* Narrow screens: stack the two columns vertically. */
-@media (max-width: 860px) {
-  .results-cols {
-    flex-direction: column;
-  }
-
-  .results-col-chat {
-    border-left: none;
-    border-top: 1px solid var(--border);
-    padding-left: 0;
-    padding-top: var(--gap);
-    /* stacked: drop the sticky/viewport cap; the #feed cap below bounds it.
-       (.feed-jump anchors to .feed-wrap, which is always position:relative.) */
-    position: relative;
-    max-height: none;
-  }
-
-  /* R2 — sensible mobile cap when columns are stacked */
-  #feed {
-    max-height: 50vh;
-  }
-}
-
-/* -------------------------------------------------------------------------
-   Collapsible groups
-   ------------------------------------------------------------------------- */
-
-.group {
-  display: block;
-  margin-bottom: var(--gap);
-}
-
-.group-header {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: #fff;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  padding: 0.6rem 1rem;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  /* override button reset */
-  text-align: left;
-}
-
-.group-header:hover {
-  background: var(--surface-2);
-  border-color: var(--accent);
-}
-
-.group-header:active {
-  filter: brightness(0.9);
-}
-
-.caret {
-  display: inline-block;
-  font-style: normal;
-  transition: transform 0.2s ease;
-  line-height: 1;
-  color: var(--text-dim);
-}
-
-.group.collapsed .caret {
-  transform: rotate(-90deg);
-}
-
-.group-body {
-  padding-top: var(--gap);
-}
-
-.group.collapsed .group-body {
-  display: none;
-}
-
-/* panels grid inside a group-body keeps its own margin */
-.group-body > .panels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--gap);
-  margin-bottom: var(--gap);
-}
-
-/* -------------------------------------------------------------------------
-   Ask-bar — quick probe composer (always visible, above results)
-   ------------------------------------------------------------------------- */
-
-.ask-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  padding: 0.45rem 0.65rem 0.45rem 0.75rem;
-  margin-bottom: var(--gap);
-  flex-wrap: wrap;
-}
-
-.ask-chips {
-  display: flex;
-  gap: 0.3rem;
-  flex-shrink: 0;
-}
-
-.ask-chip {
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  padding: 0.2rem 0.65rem;
-  border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-dim);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-  white-space: nowrap;
-}
-
-.ask-chip:hover {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.ask-chip.ask-chip-active {
-  background: rgba(76, 139, 245, 0.18);
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.ask-bar #ask-text {
-  flex: 1 1 200px;
-  min-width: 140px;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  outline: none;
-  padding: 0.3rem 0.4rem;
-  font-size: 0.88rem;
-  color: #f1f5f9;
-  width: auto;
-}
-
-.ask-bar #ask-text:focus {
-  border: none;
-  box-shadow: none;
-}
-
-.ask-bar #ask-categories {
-  flex: 0 1 180px;
-  min-width: 120px;
-  background: transparent;
-  border: none;
-  border-left: 1px solid var(--border);
-  border-radius: 0;
-  outline: none;
-  padding: 0.3rem 0.6rem;
-  font-size: 0.82rem;
-  color: var(--text-dim);
-  width: auto;
-}
-
-.ask-bar #ask-categories:focus {
-  border: none;
-  border-left: 1px solid var(--accent);
-  box-shadow: none;
-}
-
-.ask-send-btn {
-  flex-shrink: 0;
-  border-radius: 9999px;
-  padding: 0.3rem 1rem;
-  font-size: 0.82rem;
-}
-
-/* -------------------------------------------------------------------------
-   Schema <pre> — visible, copyable batch-format reference
-   ------------------------------------------------------------------------- */
-
-.schema {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  line-height: 1.6;
-  color: var(--text-dim);
-  background: #0a0c0f;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.65rem 0.85rem;
-  margin-bottom: 0.5rem;
-  overflow-x: auto;
-  white-space: pre;
-  user-select: text;
-  cursor: text;
-}
-
-/* -------------------------------------------------------------------------
-   File input — styled to match the dark theme
-   ------------------------------------------------------------------------- */
-
-input[type="file"] {
-  font-family: var(--font-sans);
-  font-size: 0.82rem;
-  color: var(--text-dim);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.3rem 0.6rem;
-  cursor: pointer;
-  width: 100%;
-  transition: border-color 0.15s;
-}
-
-input[type="file"]:hover {
-  border-color: var(--accent);
-}
-
-input[type="file"]::file-selector-button {
-  font-family: var(--font-sans);
-  font-size: 0.78rem;
-  font-weight: 600;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.15rem 0.55rem;
-  margin-right: 0.6rem;
-  cursor: pointer;
-  transition: border-color 0.15s;
-}
-
-input[type="file"]::file-selector-button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/* -------------------------------------------------------------------------
-   Reset row — danger button tucked at the bottom of the Model panel
-   ------------------------------------------------------------------------- */
-
-.reset-row {
-  margin-top: 0.4rem;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--border);
-}
-
-/* -------------------------------------------------------------------------
-   Scrollbar (optional cosmetic tweak)
-   ------------------------------------------------------------------------- */
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: var(--bg);
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-/* -------------------------------------------------------------------------
-   Batch 2 — editable result-card chrome, Auto chip, Cost stat card
-   ------------------------------------------------------------------------- */
-
-/* --- Result header layout ---------------------------------------------------
-   Vertical stack: a compact meta strip (badge + action controls) on top, then
-   the title on its own dedicated full-width line, then the prompt subtitle.
-   Splitting the controls off into the meta strip is what lets the title use the
-   whole card width instead of being squeezed to an ellipsis beside the buttons. */
-
-.result-header {
-  flex-direction: column;
-  align-items: stretch;
-  gap: .5rem;
-}
-
-/* Meta strip: drag handle + kind badge on the left, action controls pushed to
-   the right (via margin-left:auto on .result-header-right — NOT space-between,
-   which would strand the badge in the middle now that the handle is a 3rd item). */
-.result-header-top {
-  display: flex;
-  align-items: center;
-  gap: .5rem;
-  min-width: 0;
-}
-
-/* Title + prompt column, full width (the whole card, not a leftover sliver). */
-.result-titles {
-  display: flex;
-  flex-direction: column;
-  gap: .2rem;
-  min-width: 0;
-}
-
-/* --- Kind badge on the result card (mirrors .probe-kind-badge) --- */
-
-.result-kind-badge {
-  font-size: .68rem;
-  font-weight: 700;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-  padding: .15rem .45rem;
-  border-radius: 4px;
-  background: rgba(76, 139, 245, .15);
-  color: var(--accent);
-  border: 1px solid rgba(76, 139, 245, .25);
-  flex-shrink: 0;
-}
-
-/* --- Editable label: a bold title on its own line, wrapping in FULL
-   (never clipped to an ellipsis — the whole question stays readable). --- */
-
-.result-label {
-  font-weight: 700;
-  font-size: .95rem;
-  color: #fff;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.result-label:empty {
-  display: none;
-}
-
-/* --- Prompt subtitle under the title: clamped to two lines so a long
-   instruction stays tidy without hiding the title. --- */
-
-.result-prompt {
-  font-size: .78rem;
-  color: var(--text-dim);
-  line-height: 1.45;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-
-.result-prompt:empty {
-  display: none;
-}
-
-/* --- Edit / Remove buttons in .result-header-right --- */
-
-/* Ensure .card-edit and .card-remove have correct minimal sizing even when
-   the btn-secondary / btn-danger / btn-small classes are not yet applied. */
-.card-edit,
-.card-remove {
-  font-size: .75rem;
-  padding: .25rem .55rem;
-}
-
-/* --- Drag handle: reorders cards via native HTML5 drag-and-drop. Only the
-   handle is draggable (not the whole card), so clicks/selects/inputs inside
-   the card are unaffected. --- */
-.card-drag-handle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  flex-shrink: 0;
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  line-height: 1;
-  cursor: grab;
-}
-
-.card-drag-handle:hover {
-  color: var(--text);
-}
-
-.card-drag-handle:active {
-  cursor: grabbing;
-}
-
-/* The card currently being dragged: faded so the drop target reads clearly. */
-.result-card.dragging {
-  opacity: 0.4;
-}
-
-/* --- Column-span toggle: a discreet icon button at the card's bottom-right.
-   Stays out of the way (fades in on hover / focus / when the card is widened)
-   so it never competes with the chart, then flips 1 ↔ 2 grid columns. --- */
-.card-span {
-  position: absolute;
-  right: 0.5rem;
-  bottom: 0.5rem;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 28px;
-  height: 22px;
-  padding: 0 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(22, 26, 32, 0.82);
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease,
-    background 0.15s ease;
-}
-
-/* Reveal it on card hover, on keyboard focus anywhere in the card, or when the
-   button itself is focused. It stays hidden otherwise (in BOTH states) so it
-   never occludes chart data — a widened card is self-evidently the "on" state,
-   and hovering surfaces the toggle to switch back. */
-.result-card:hover .card-span,
-.result-card:focus-within .card-span,
-.card-span:focus-visible {
-  opacity: 1;
-}
-
-.card-span:hover {
-  color: var(--text);
-  border-color: var(--accent);
-  background: var(--surface);
-}
-
-/* Active state (card spans two columns): accent-tinted so it reads as "on". */
-.card-span.is-wide {
-  color: var(--accent);
-  border-color: rgba(76, 139, 245, 0.4);
-  background: rgba(76, 139, 245, 0.12);
-}
-
-/* Coarse-pointer / touch devices have no hover: keep the toggle visible. */
-@media (hover: none) {
-  .card-span {
-    opacity: 0.55;
-  }
-}
-
-/* --- Per-card editor panel --- */
 
 .card-editor {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: .75rem;
-  margin: .25rem 0 .6rem;
   display: flex;
   flex-direction: column;
-  gap: .5rem;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .card-editor.hidden {
   display: none;
 }
 
-/* Full-width text inputs inside the editor inherit global input styling;
-   only the textarea-like prompt field needs a min-height hint. */
+.card-editor input[type="text"],
+.card-editor input[type="number"] {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.card-editor textarea {
+  min-height: 72px;
+  padding: 8px 10px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.card-editor .field-group {
+  margin-bottom: 0;
+}
+
 .edit-prompt {
-  min-height: 3.5rem;
   resize: vertical;
 }
 
-/* --- Per-probe settings row inside the editor --- */
-
+/* Per-probe settings row inside the editor. */
 .edit-settings {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem;
+  gap: 8px 16px;
 }
 
 .edit-setting {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  color: var(--text-dim);
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
   margin: 0;
 }
 
 .edit-setting input {
-  width: 6.5rem;
-  font-size: 0.82rem;
-  padding: 0.2rem 0.45rem;
+  width: 104px;
 }
 
-/* --- Descartes axis-caption inputs inside the editor --- */
-
+/* Descartes axis-caption inputs inside the editor. */
 .edit-axis-row {
   display: flex;
-  gap: 0.5rem;
-  margin: 0.35rem 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0;
 }
 
 .edit-axis-row input {
-  flex: 1;
+  flex: 1 1 140px;
   min-width: 0;
-  font-size: 0.82rem;
-  padding: 0.3rem 0.5rem;
 }
 
 .edit-valuemode-row {
-  margin: 0.35rem 0;
+  margin: 4px 0;
 }
 
-/* --- Category list inside the editor --- */
-
+/* Category list inside the editor. */
 .edit-categories {
   display: flex;
   flex-direction: column;
-  gap: .35rem;
+  gap: 8px;
 }
 
-/* Grid: [color 28px] [name input flex] [up] [down] [delete] */
+/* Grid: [color] [name input] [up] [down] [delete] */
 .edit-cat-row {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 32px minmax(0, 1fr) auto auto auto;
   align-items: center;
-  gap: .5rem;
+  gap: 8px;
 }
 
-/* Color picker */
 input.edit-color {
-  width: 28px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface-2);
+  width: 32px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
   cursor: pointer;
 }
 
@@ -1958,151 +3452,65 @@ input.edit-color::-webkit-color-swatch-wrapper {
 
 input.edit-color::-webkit-color-swatch {
   border: none;
-  border-radius: 3px;
+  border-radius: 5px;
 }
 
-input.edit-color:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Category name (editable input inside each row) */
-input.edit-cat-name {
-  font-size: .82rem;
-  padding: .2rem .45rem;
-  width: 100%;
-}
-
-/* Per-row delete button + the add-category button */
+.cat-up,
+.cat-down,
 .cat-del {
-  font-size: .7rem;
-  padding: .1rem .45rem;
-  line-height: 1.3;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 8px;
 }
 
 .cat-add {
   align-self: flex-start;
-  margin-top: .15rem;
 }
 
-/* Reorder buttons */
-.cat-up,
-.cat-down {
-  font-size: .7rem;
-  padding: .1rem .4rem;
-  /* Inherit .btn-secondary look; also work standalone: */
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: opacity .15s, filter .15s;
-  white-space: nowrap;
-  line-height: 1.3;
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
 }
 
-.cat-up:hover,
-.cat-down:hover {
-  filter: brightness(1.12);
+.ask-chips {
+  display: flex;
+  gap: 4px;
 }
 
-.cat-up:active,
-.cat-down:active {
-  filter: brightness(.9);
+.edit-valuemode-row .ask-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  background: var(--surface-1);
+  border-color: var(--border-strong);
+  color: var(--text-2);
 }
 
-/* --- Editor Save / Cancel row (reuse .button-row; nothing extra needed) --- */
-
-/* --- Ask-bar Auto chip (#ask-auto) --- */
-/* .ask-chip / .ask-chip-active already cover Auto. Verify active reads well:
-   the accent-tinted background and border give ≥ 4.5:1 contrast on --bg. */
-
-/* Nothing extra required; #ask-auto uses the same classes as Open / Classify. */
-
-/* --- Cost stat card --- */
-
-/* #cost can show "$0.0000" (8 chars) — scale down slightly from the default
-   1.5rem so it fits comfortably inside the 120px min-width card. */
-.stat-value#cost {
-  font-size: 1.15rem;
-}
-
-/* Delta sub-line: mono, dim, smaller — mirrors the pattern of .hint */
-#cost-delta {
-  font-family: var(--font-mono);
-  font-size: .7rem;
-  color: var(--text-dim);
+.edit-valuemode-row .ask-chip.ask-chip-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-soft-text);
 }
 
 /* -------------------------------------------------------------------------
-   Reduced-motion overrides (batch 2 additions)
-   ------------------------------------------------------------------------- */
-
-@media (prefers-reduced-motion: reduce) {
-  .cat-up,
-  .cat-down {
-    transition: none;
-  }
-}
-
-/* =========================================================================
-   Batch 3 — gauge / heatmap / podium / violin charts, Suggest chips,
-              budget field, Cost card overflow fix
-   ========================================================================= */
-
-/* -------------------------------------------------------------------------
-   B9 — four new SVG chart containers
-   The renderer sets fill/stroke inline; these rules only size the <svg>.
-   .chart-baseline is already defined above and reused by axes here.
-   ------------------------------------------------------------------------- */
-
-.chart-gauge {
-  width: 100%;
-  max-width: 240px;
-  height: 130px;
-  display: block;
-  margin: 0 auto;
-}
-
-/* The renderer may place a centered big-number <text> element; it sets
-   fill inline. font-mono is applied via the SVG font-family attribute in
-   the renderer, but inherit here keeps the number on-brand if left unset. */
-.chart-gauge text {
-  font-family: var(--font-mono);
-}
-
-.chart-heatmap {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
-.chart-podium {
-  width: 100%;
-  height: 150px;
-  display: block;
-}
-
-.chart-violin {
-  width: 100%;
-  height: 130px;
-  display: block;
-}
-
-/* -------------------------------------------------------------------------
-   Descartes — generic 2-D coordinate grid ("(x, y)" categories)
+   Descartes: a 2-D coordinate grid ("(x, y)" categories) on the sequential ramp
    ------------------------------------------------------------------------- */
 
 .descartes {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 8px;
 }
 
 /* Positioning context for the 4 hover-reveal add-axis buttons around the plot. */
 .descartes-main {
   position: relative;
   display: inline-block;
+  /* A 22px halo around the plot: the four add-axis buttons live in it, so they
+     never sit on top of (or under) an axis tick. */
+  padding: 22px;
+  max-width: 100%;
 }
 
 /* One CSS grid: a slim axis gutter (row ticks) + N data columns; M data rows
@@ -2113,24 +3521,23 @@ input.edit-cat-name {
   display: grid;
   grid-template-columns: auto repeat(var(--cols), minmax(0, 84px));
   grid-template-rows: repeat(var(--rows), minmax(28px, 46px)) auto;
-  gap: 3px;
+  gap: 2px;
   justify-content: start;
   align-items: stretch;
 }
 
-/* A card widened to two columns has roughly double the width to spend — let
-   the board grow into it instead of staying pinned at the 1-column cap. */
+/* A card widened to two columns has roughly double the width to spend. */
 .result-card.span-2 .descartes-plot {
   grid-template-columns: auto repeat(var(--cols), minmax(0, 160px));
   grid-template-rows: repeat(var(--rows), minmax(36px, 72px)) auto;
 }
 
-/* What the x/y axes represent (set in the card's Edit panel), placed right
-   next to their axis: Y rotated alongside the row ticks, X under the columns. */
+/* What the x/y axes represent (set in the card's Edit panel). */
 .descartes-graph {
   display: flex;
+  justify-content: center;
   align-items: stretch;
-  gap: 0.35rem;
+  gap: 6px;
 }
 
 .descartes-ytitle {
@@ -2139,23 +3546,21 @@ input.edit-cat-name {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.68rem;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
 .descartes-body {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 4px;
 }
 
 .descartes-xtitle {
   text-align: center;
-  font-size: 0.68rem;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .descartes-cell {
@@ -2165,27 +3570,43 @@ input.edit-cat-name {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.35s ease;
 }
 
-/* A cell with no matching category (non-rectangular data): faint placeholder. */
+.descartes-cell:hover {
+  outline: 2px solid var(--text-muted);
+  outline-offset: -2px;
+}
+
+/* A cell with no matching category: a quiet surface, not a hole. */
 .descartes-cell.is-empty {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px dashed rgba(255, 255, 255, 0.06);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 /* The single most-predicted coordinate gets a crisp ring. */
 .descartes-cell.is-modal {
-  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.descartes-cell.is-active {
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
 .descartes-pct {
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 12px;
   font-weight: 600;
-  color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+/* Label on a surface chip when neither ink reaches 7:1 on the cell colour. */
+.descartes-pct.is-chip {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text);
 }
 
 .descartes-ylabel,
@@ -2193,9 +3614,8 @@ input.edit-cat-name {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--text-dim);
+  font-size: 12px;
+  color: var(--text-muted);
   min-width: 0;
 }
 
@@ -2203,9 +3623,10 @@ input.edit-cat-name {
   display: block;
 }
 
-/* An axis tick: its clickable label + a hover-reveal "✕" to remove the whole
-   column/row. Doubles as the axis editor — no separate editor UI needed. */
+/* An axis tick: its clickable label + a hover-reveal remove button. Doubles as
+   the axis editor, so no separate editor UI is needed. */
 .descartes-tick {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -2216,11 +3637,13 @@ input.edit-cat-name {
 .descartes-tick-label {
   background: none;
   border: none;
-  padding: 0;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 4px;
   font: inherit;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
   cursor: pointer;
   max-width: 100%;
   overflow: hidden;
@@ -2230,8 +3653,8 @@ input.edit-cat-name {
 
 .descartes-tick-label:hover,
 .descartes-tick-label:focus-visible {
-  color: var(--accent);
-  text-decoration: underline dotted;
+  color: var(--accent-text);
+  text-decoration: underline;
 }
 
 .descartes-tick-del {
@@ -2239,18 +3662,22 @@ input.edit-cat-name {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 13px;
-  height: 13px;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
   padding: 0;
-  font-size: 0.6rem;
-  line-height: 1;
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   background: none;
-  color: var(--text-dim);
+  color: var(--text-muted);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease;
+  transition: opacity 120ms var(--ease), color 120ms var(--ease);
+}
+
+.descartes-tick-del svg {
+  width: 10px;
+  height: 10px;
 }
 
 .descartes-tick:hover .descartes-tick-del,
@@ -2259,43 +3686,68 @@ input.edit-cat-name {
 }
 
 .descartes-tick-del:hover {
-  color: #ef4444;
+  color: var(--critical-text);
 }
 
-.descartes-tick-input {
-  width: 100%;
+/* Armed: the first activation of the remove button. A second one removes the
+   row/column; the button is kept fully visible and tinted until it disarms. */
+.descartes-tick-del.is-armed {
+  opacity: 1;
+  color: var(--critical-text);
+  background: var(--critical-soft);
+  box-shadow: inset 0 0 0 1.5px var(--critical);
+}
+
+.descartes-tick.is-editing > :not(input) {
+  visibility: hidden;
+}
+
+/* Overlay, out of flow: renaming a tick must not resize the axis gutter. */
+.descartes .descartes-tick-input[type="text"],
+.descartes-tick-input[type="text"] {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  width: max(100%, 84px);
+  height: 24px;
+  min-height: 24px;
   min-width: 44px;
   font: inherit;
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  padding: 1px 3px;
-  border: 1px solid var(--accent);
-  border-radius: 3px;
+  font-size: 12px;
+  padding: 0 4px;
+  border: 1px solid var(--focus);
+  border-radius: 4px;
   background: var(--surface-2);
   color: var(--text);
 }
 
 /* The 4 add-axis buttons: discreet circles at the plot's edges, revealed on
-   hover — left/right add a column before/after, bottom/top add a row
-   before(origin)/after (mirrors the axis derivation order in main.ts). */
+   hover (or focus). Left/right add a column before/after, bottom/top add a row
+   before (origin) / after (mirrors the axis derivation order in main.ts). */
 .descartes-addbtn {
   position: absolute;
   z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
   padding: 0;
-  font-size: 0.85rem;
-  line-height: 1;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 50%;
-  background: var(--surface);
-  color: var(--text-dim);
+  background: var(--surface-1);
+  color: var(--text-2);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition: opacity 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.descartes-addbtn svg {
+  width: 12px;
+  height: 12px;
 }
 
 .descartes-main:hover .descartes-addbtn,
@@ -2309,36 +3761,43 @@ input.edit-cat-name {
 }
 
 .descartes-add-x-before {
-  left: -10px;
+  left: -2px;
   top: 50%;
   transform: translateY(-50%);
 }
 
 .descartes-add-x-after {
-  right: -10px;
+  right: -2px;
   top: 50%;
   transform: translateY(-50%);
 }
 
 .descartes-add-y-after {
-  top: -10px;
+  top: -2px;
   left: 50%;
   transform: translateX(-50%);
 }
 
 .descartes-add-y-before {
-  bottom: -10px;
+  bottom: -2px;
   left: 50%;
   transform: translateX(-50%);
 }
 
+.descartes-addbtn:active:not(:disabled) {
+  /* Keep the centring transform; the global button press nudge would drop it. */
+  transform: translate(0, 0);
+}
+
 /* Coarse-pointer / touch devices have no hover: keep affordances reachable. */
-@media (hover: none) {
-  .descartes-addbtn {
-    opacity: 0.55;
-  }
+@media (hover: none), (pointer: coarse), (max-width: 767px) {
+  .descartes-addbtn,
   .descartes-tick-del {
-    opacity: 0.55;
+    opacity: 0.7;
+  }
+
+  .descartes-tick-del.is-armed {
+    opacity: 1;
   }
 }
 
@@ -2347,44 +3806,27 @@ input.edit-cat-name {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.4rem 0.75rem;
-}
-
-/* Legend: a single sequential-intensity gradient (this is a generic density
-   map — no win/lose semantics). */
-.descartes-legend {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.7rem;
-  color: var(--text-dim);
-}
-
-.descartes-legend-bar {
-  display: inline-block;
-  width: 90px;
-  height: 8px;
-  border-radius: 4px;
-  background: linear-gradient(to right, rgba(76, 139, 245, 0.12), rgba(76, 139, 245, 1));
+  gap: 4px 12px;
 }
 
 .descartes-outro {
-  font-size: 0.7rem;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
-/* "#"/"%" — flips a cell's displayed value between a raw count and a share. */
+/* "#"/"%": flips a cell's displayed value between a raw count and a share. */
 .descartes-valuemode {
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  min-height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
   background: none;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1;
-  padding: 2px 5px;
-  cursor: pointer;
 }
 
 .descartes-valuemode:hover,
@@ -2393,154 +3835,587 @@ input.edit-cat-name {
   border-color: var(--accent);
 }
 
-/* Empty state: no axes yet → offer to seed the default grid. */
+/* Empty state: no axes yet, offer to seed the default grid. */
 .descartes-empty {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
+  gap: 8px;
+  padding: 8px 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .descartes-cell {
-    transition: none !important;
+/* Narrow charts: the bars sparkline column goes first (the legend sparkline
+   fits much lower) and the label column is a share of the width, so the 1fr
+   track keeps ~150px. */
+@container chart (max-width: 419px) {
+  .bars {
+    grid-template-columns: minmax(48px, min(18%, 112px)) minmax(96px, 1fr) 44px 56px;
+  }
+  .delta-chart {
+    grid-template-columns: minmax(48px, min(18%, 112px)) minmax(96px, 1fr) 64px;
+  }
+  .spark {
+    display: none;
   }
 }
 
-/* -------------------------------------------------------------------------
-   B9 — reduced-motion: suppress rect/path transitions in new chart types
-   ------------------------------------------------------------------------- */
-
-@media (prefers-reduced-motion: reduce) {
-  .chart-gauge *,
-  .chart-heatmap *,
-  .chart-podium *,
-  .chart-violin * {
-    transition: none !important;
-    animation: none !important;
+@container chart (max-width: 299px) {
+  .cat-stats {
+    grid-template-columns: 12px minmax(0, 1fr) 44px 56px;
+  }
+  .cat-stats.cat-stats-lean {
+    grid-template-columns: 12px minmax(0, 1fr) 44px;
+  }
+  .cat-spark {
+    display: none;
   }
 }
 
-/* -------------------------------------------------------------------------
-   B10 — Suggest chips container (#suggestions)
-   Lives directly under the ask-bar; empty (no children) collapses to 0.
-   ------------------------------------------------------------------------- */
-
-#suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .5rem;
-  margin: -.3rem 0 var(--gap);
+/* Phones: each bar row stacks (label, pct, delta above, full-width track below). */
+@container chart (max-width: 339px) {
+  .bars {
+    display: block;
+  }
+  .bar-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 56px;
+    align-items: center;
+    gap: 0 8px;
+    margin-bottom: 8px;
+  }
+  .bar-row .bar-track {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
 }
 
-/* -------------------------------------------------------------------------
-   B10 — individual .suggest-chip
-   Each chip shows a bold label + a dim one-line hint. Clicking sends the
-   probe and clears #suggestions.
-   WCAG-AA: accent border on --bg yields > 4.5:1; white label on surface-2
-   background is > 7:1.
-   ------------------------------------------------------------------------- */
-
-.suggest-chip {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: .1rem;
-  text-align: left;
-  max-width: 340px;
-  padding: .4rem .7rem;
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  background: rgba(76, 139, 245, .10);
-  color: var(--text);
-  cursor: pointer;
-  transition: background .12s;
+/* Card header: narrow cards show the chart type as an icon (name in the title). */
+@container hdr (max-width: 439px) {
+  .chart-select {
+    width: 36px;
+    padding: 0;
+    color: transparent;
+    text-indent: -999px;
+  }
+  .chart-select option {
+    color: var(--text);
+    text-indent: 0;
+  }
+  .chart-select-caret {
+    display: none;
+  }
+  .chart-select-icon {
+    left: 50%;
+    transform: translateX(-50%);
+  }
 }
 
-.suggest-chip:hover {
-  background: rgba(76, 139, 245, .18);
+@media (pointer: coarse) {
+  .descartes-valuemode {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
-
-.suggest-chip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Bold white title line */
-.suggest-chip-label {
-  color: #fff;
-  font-size: .84rem;
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-/* Dim one-liner hint — truncates so chips stay compact */
-.suggest-chip-hint {
-  font-size: .74rem;
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 320px;
-}
-
-/* -------------------------------------------------------------------------
-   B10 — #ask-suggest ("Suggest") button
-   Secondary-style pill sitting next to #ask-send inside the ask-bar.
-   Mirrors .ask-send-btn sizing but uses surface-2 bg + border (secondary).
-   ------------------------------------------------------------------------- */
-
-.ask-suggest-btn {
-  flex-shrink: 0;
-  border-radius: 9999px;
-  padding: .3rem .9rem;
-  font-size: .82rem;
-  /* secondary appearance: surface-2 bg, border, readable text */
-  background: var(--surface-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  transition: background .12s, border-color .12s, color .12s;
-}
-
-.ask-suggest-btn:hover {
-  background: var(--surface);
-  border-color: var(--accent);
-  color: var(--accent);
-  filter: none; /* override global button brightness filter */
-}
-
-.ask-suggest-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* "Thinking…" transient state while suggest_probes is in flight */
-.ask-suggest-btn[data-thinking="1"] {
-  opacity: .6;
-  cursor: wait;
-}
-
-/* -------------------------------------------------------------------------
-   B8 — Cost card: handle longer "$0.0123 / $5.00" budget display
-   Drop the font size slightly and pin white-space so the slash + budget
-   never wrap. (min-width: 120px on .stat is already set in batch 1.)
-   ------------------------------------------------------------------------- */
 
 .stat-value#cost {
-  /* Override the batch-2 value (1.15rem) with a slightly smaller one so that
-     "$0.0123 / $5.00" (16 chars) fits in the 120px min-width card. */
-  font-size: 1.05rem;
   white-space: nowrap;
 }
 
-/* -------------------------------------------------------------------------
-   B10 — Reduced-motion: suppress suggest-chip transition
-   ------------------------------------------------------------------------- */
+/* Very narrow phones (WCAG reflow at 320px): the action buttons may shrink. */
+@media (max-width: 359px) {
+  .composer-actions {
+    gap: 6px;
+  }
+  .composer-actions button {
+    min-width: 0;
+    padding: 0 6px;
+    gap: 4px;
+  }
+  .composer-actions .btn-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
 
-@media (prefers-reduced-motion: reduce) {
-  .suggest-chip,
-  .ask-suggest-btn {
-    transition: none;
+@media (max-width: 359px) {
+  #ask-suggest .icon,
+  #ask-split .icon {
+    display: none;
+  }
+}
+
+/* =========================================================================
+   Touch targets (WCAG 2.5.5): every control is at least 44x44 CSS px on touch
+   devices and below 768px. Desktop pointer layouts keep the denser sizes.
+   ========================================================================= */
+
+@media (pointer: coarse), (max-width: 767px) {
+  .skip-link {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .ask-chip,
+  .suggest-chip {
+    min-height: 44px;
+  }
+
+  .menu > a,
+  .menu > button {
+    min-height: 44px;
+  }
+
+  /* Card footer: the timeline thumb and the Live toggle. */
+  input.scrub-range {
+    height: 44px;
+    margin: -10px 0;
+  }
+
+  .scrub-live,
+  .descartes-valuemode {
+    min-height: 44px;
+  }
+
+  .btn-small,
+  .feed-order-btn,
+  .chat-toggle,
+  .prompt-chip,
+  .link-btn,
+  .card-editor .ask-chip,
+  .edit-valuemode-row .ask-chip,
+  .cat-add {
+    min-height: 44px;
+  }
+
+  .edit-valuemode-row .ask-chip,
+  .descartes-valuemode {
+    min-width: 44px;
+  }
+
+  .feed-jump {
+    min-height: 44px;
+    padding: 0 18px;
+  }
+
+  .toast-close {
+    width: 44px;
+    height: 44px;
+    margin: -10px -4px -10px 0;
+  }
+
+  .card-editor input[type="text"],
+  .card-editor input[type="number"],
+  input[type="file"] {
+    height: 44px;
+  }
+
+  input[type="file"] {
+    padding-block: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  input[type="file"]::file-selector-button {
+    min-height: 32px;
+  }
+
+  .cat-up,
+  .cat-down,
+  .cat-del {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .edit-cat-row {
+    grid-template-columns: 44px minmax(0, 1fr) auto auto auto;
+  }
+
+  input.edit-color {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Checkboxes: the whole labelled row is the target. */
+  .check {
+    min-height: 44px;
+    margin-bottom: 0;
+    position: relative;
+  }
+
+  .check input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+
+  .check label {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* The chart-type select keeps a 44px square even when it shrinks to an icon. */
+  .chart-select,
+  .card-menu-btn {
+    min-height: 44px;
+  }
+
+  .card-menu-btn {
+    width: 44px;
+  }
+
+  /* Descartes board: tick labels, remove buttons and the four add buttons are real
+     44px targets; the add buttons drop into a 44px halo around the plot. */
+  .descartes-main {
+    padding: 44px;
+    max-width: none;
+    align-self: flex-start;
+    width: fit-content;
+  }
+
+  /* Every column keeps a 44px target. On a card too narrow for that the board
+     scrolls sideways inside its own region instead of stacking the targets. */
+  .descartes-body {
+    min-width: 0;
+    overflow-x: auto;
+  }
+
+  .descartes-plot {
+    /* The row-label gutter never shrinks below one 44px target, so the corner
+       always has room for the "add column before" button. */
+    grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 84px));
+    grid-template-rows: repeat(var(--rows), minmax(44px, 46px)) auto;
+    min-width: calc(44px * (var(--cols) + 1) + 2px * var(--cols));
+  }
+
+  /* Widened cards keep the same 44px floors (rows, gutter) for the same reason. */
+  .result-card.span-2 .descartes-plot {
+    grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 160px));
+    grid-template-rows: repeat(var(--rows), minmax(44px, 72px)) auto;
+  }
+
+  @container results (max-width: 775px) {
+    .result-card.span-2 .descartes-plot {
+      grid-template-columns: minmax(44px, auto) repeat(var(--cols), minmax(0, 84px));
+      grid-template-rows: repeat(var(--rows), minmax(44px, 46px)) auto;
+    }
+  }
+
+  .descartes-tick-label {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .descartes-tick-del {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  /* A row's remove button lives in the left halo (outside the plot), centred on
+     its row, so its 44px hit box can never overlap a cell or the row label. */
+  .descartes-ylabel.descartes-tick > .descartes-tick-del {
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+  }
+
+  .descartes-ylabel.descartes-tick > .descartes-tick-del:active {
+    transform: translateY(-50%);
+  }
+
+  .descartes-xlabel.descartes-tick {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* The inline rename field that replaces a tick label while editing. */
+  .descartes .descartes-tick-input[type="text"],
+  .descartes-tick-input[type="text"] {
+    height: 44px;
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .descartes-addbtn {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    background: transparent;
+  }
+
+  .descartes-addbtn::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 1px solid var(--control-border);
+    background: var(--surface-1);
+  }
+
+  .descartes-addbtn svg {
+    position: relative;
+  }
+
+  /* The left halo belongs to the row remove buttons, so "add column before"
+     moves to the empty corner of the plot, beside the first column tick. */
+  .descartes-add-x-before {
+    left: 44px;
+    top: auto;
+    bottom: 66px;
+    transform: none;
+  }
+
+  .descartes-add-x-before:active:not(:disabled) {
+    transform: none;
+  }
+
+  .descartes-add-x-after {
+    right: 0;
+  }
+
+  .descartes-add-y-after {
+    top: 0;
+  }
+
+  .descartes-add-y-before {
+    bottom: 0;
+  }
+
+  .descartes-add-y-after:active:not(:disabled),
+  .descartes-add-y-before:active:not(:disabled) {
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Narrow cards show the chart type as an icon: still a 44px square on touch. */
+@container hdr (max-width: 439px) {
+  @media (pointer: coarse), (max-width: 767px) {
+    .chart-select {
+      width: 44px;
+    }
+  }
+}
+
+/* A link that acts like a button (its own line, never inline in a sentence). */
+.link-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+@media (pointer: coarse), (max-width: 767px) {
+  .link-action {
+    min-height: 44px;
+  }
+}
+
+/* Focus rings that sit flush against a clipping container are drawn inside it. */
+.tabpanel:focus-visible,
+.code-block textarea:focus-visible,
+.code-block pre:focus-visible,
+#feed:focus-visible {
+  outline-offset: -2px;
+}
+
+/* =========================================================================
+   Windows High Contrast / forced colors: the system palette replaces ours, so
+   controls keep a system-colour border, focus is a system-colour ring and chart
+   marks (whose colour IS the data) opt out of the override.
+   ========================================================================= */
+
+@media (forced-colors: active) {
+  /* Timeline scrubber: gradient track and thumb colours are dropped in forced
+     colours, so give both an explicit system-colour paint. */
+  input.scrub-range::-webkit-slider-runnable-track {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  input.scrub-range::-moz-range-track {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  input.scrub-range::-moz-range-progress {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  input.scrub-range::-webkit-slider-thumb {
+    forced-color-adjust: none;
+    background: Highlight;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+  }
+
+  input.scrub-range::-moz-range-thumb {
+    forced-color-adjust: none;
+    background: Highlight;
+    border: 2px solid CanvasText;
+    box-shadow: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  button,
+  select,
+  input,
+  textarea,
+  .menu,
+  .toast,
+  .composer,
+  .chat-rail,
+  .result-card,
+  dialog.drawer,
+  .status,
+  .decider-chip,
+  .decider-status,
+  .count-pill,
+  .meter {
+    border: 1px solid CanvasText;
+  }
+
+  .btn-primary {
+    background: ButtonFace;
+    color: ButtonText;
+  }
+
+  .seg-thumb {
+    background: Highlight;
+    opacity: 0.35;
+    border-color: Highlight;
+  }
+
+  .ask-chip.ask-chip-active,
+  .tab[aria-selected="true"],
+  .scrub-live[aria-pressed="true"],
+  .run-toggle {
+    border: 2px solid Highlight;
+  }
+
+  .tab::after,
+  .meter-fill,
+  .live-dot,
+  .card-progress::before {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  .status::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+
+  .status.disconnected::before {
+    background: transparent;
+    border: 2px solid CanvasText;
+  }
+
+  /* Data marks keep their series colour, plus an outline so they read on any canvas. */
+  .bar-fill,
+  .cat-swatch,
+  .stacked-seg,
+  .delta-bar,
+  .descartes-cell,
+  .chart-area-band {
+    forced-color-adjust: none;
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .ramp-bar {
+    forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+
+  .chart-svg rect,
+  .chart-svg path,
+  .chart-svg circle,
+  .chart-svg polygon,
+  .chart-svg polyline,
+  .spark-line {
+    forced-color-adjust: none;
+  }
+
+  .chart-svg text {
+    fill: CanvasText;
+  }
+
+  .menu > a:hover,
+  .menu > button:hover,
+  .menu > a:focus-visible,
+  .menu > button:focus-visible {
+    background: Highlight;
+    color: HighlightText;
+  }
+
+  .feed-jump,
+  .toast,
+  .menu,
+  dialog.drawer {
+    box-shadow: none;
+  }
+}
+
+/* Phones: the rail header stacks the count under the title so the two buttons fit. */
+@media (max-width: 479px) {
+  .chat-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "title order toggle"
+      "count order toggle";
+    column-gap: 8px;
+    row-gap: 0;
+    align-items: center;
+  }
+
+  .chat-head h2 {
+    grid-area: title;
+  }
+
+  .chat-count {
+    grid-area: count;
+  }
+
+  .feed-order-btn {
+    grid-area: order;
+  }
+
+  .chat-toggle {
+    grid-area: toggle;
+  }
+}
+
+/* Touch: tapping a thin mark shows its tooltip. The mark stays thin; an invisible
+   pseudo-element grows its hit area to 44px tall (the value is also printed as text). */
+@media (pointer: coarse) {
+  .bar-track::after,
+  .delta-track::after,
+  .stacked-seg::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -12px;
+    bottom: -12px;
+  }
+
+  .stacked-seg {
+    position: relative;
   }
 }

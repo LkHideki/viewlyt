@@ -19,6 +19,7 @@ from conftest import make_reply as _r
 
 import viewlyt.api as api
 import viewlyt.cli as cli
+import viewlyt.snap as snap
 import viewlyt.watch as watch
 from viewlyt.cli import format_comment_lines
 from viewlyt.htmltext import (
@@ -64,8 +65,8 @@ def _run_batch(targets, tmp_path, **overrides):
 def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_path):
     recs_a = [_c("@joao", "ola", likes="5", date_raw="2 days ago")]
     table = {
-        "idA": ("vidA", "Hello World", recs_a, [], []),
-        "idB": ("vidB", "Outro", [_c("@x", "hi")], [], []),
+        "idA": ("vidA", "Hello World", recs_a, [], [], ""),
+        "idB": ("vidB", "Outro", [_c("@x", "hi")], [], [], ""),
     }
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
@@ -81,9 +82,54 @@ def test_run_batch_writes_files_with_correct_names_and_counts(monkeypatch, tmp_p
     assert sums[0]["error"] is None and sums[0]["segments"] == 0
 
 
+def test_run_batch_surfaces_views_in_summary(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "scrape_one",
+        lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], [], 1234567),
+    )
+
+    sums = _run_batch([("vid", "id")], tmp_path)
+    # The summary carries the exact int; the string is rendered only for display.
+    assert sums[0]["views_int"] == 1234567
+
+
+def test_run_batch_unify_passes_views_as_subtitle(monkeypatch, tmp_path):
+    recs = [_c("@a", "oi", likes="5")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], 42))
+
+    _run_batch([("vid", "id")], tmp_path, unify=True, with_comments=True)
+
+    uf = tmp_path / f"{slugify('T')}-vid.unified.md"
+    body = uf.read_text(encoding="utf-8")
+    expected = format_unified(
+        "T",
+        [("Comments", format_comment_lines(recs, progress=False, merge_comments=True))],
+        subtitle="42 views",  # the int 42, rendered
+    )
+    assert body == "\n".join(expected) + "\n"
+    assert "42 views" in body.splitlines()[2]  # right after the title + blank line
+
+
+def test_run_batch_no_views_omits_subtitle_line(monkeypatch, tmp_path):
+    recs = [_c("@a", "oi", likes="5")]
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], ""))
+
+    _run_batch([("vid", "id")], tmp_path, unify=True, with_comments=True)
+
+    uf = tmp_path / f"{slugify('T')}-vid.unified.md"
+    body = uf.read_text(encoding="utf-8")
+    assert body.splitlines()[0] == "# T"
+    assert body.splitlines()[1] == ""
+    assert body.splitlines()[2] == "## Comments"  # no blank subtitle line inserted
+
+
 def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path):
     ids = ["v1", "v2", "v3", "v4"]
-    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], [], []) for i, vid in enumerate(ids)}
+    table = {f"id{i}": (vid, f"T{vid}", [_c("@a", "x")], [], [], "") for i, vid in enumerate(ids)}
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
 
@@ -95,7 +141,7 @@ def test_run_batch_preserves_input_order_under_concurrency(monkeypatch, tmp_path
 def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
     recs = [_c("@joao", "parte1", likes="7"), _r("@maria", "@joao", "resp"), _c("@joao", "parte2")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, [], [], ""))
 
     merged = _run_batch([("vid", "id")], tmp_path, merge_comments=True)
     body = (tmp_path / f"{slugify('T')}-vid.md").read_text(encoding="utf-8")
@@ -108,7 +154,7 @@ def test_run_batch_merge_comments_threads_into_file(monkeypatch, tmp_path):
 def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
 
     sums = _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True)
 
@@ -124,7 +170,7 @@ def test_run_batch_transcript_only_skips_comment_file(monkeypatch, tmp_path):
 def test_run_batch_ts_keeps_timestamps(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha"), ("0:04", "terceira")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
 
     _run_batch([("vid", "id")], tmp_path, with_comments=False, with_transcript=True, with_ts=True)
 
@@ -138,7 +184,7 @@ def test_run_batch_ts_keeps_timestamps(monkeypatch, tmp_path):
 def test_run_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
     segs = [("0:00", "ola mundo"), ("0:02", "segunda linha")]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, []))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "Titulo", [], segs, [], ""))
     grabbed = {}
     monkeypatch.setattr(
         cli, "_copy_to_clipboard", lambda text: grabbed.setdefault("t", text) or True
@@ -168,7 +214,7 @@ def test_run_batch_related_writes_file(monkeypatch, tmp_path):
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(
-        cli, "scrape_one", lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], related)
+        cli, "scrape_one", lambda d, url, **k: ("vid", "T", [_c("@a", "x")], [], related, "")
     )
 
     sums = _run_batch([("vid", "id")], tmp_path, with_related=True, related_limit=5)
@@ -191,7 +237,7 @@ def test_run_batch_related_only_skips_comment_file(monkeypatch, tmp_path):
         }
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", [], [], related))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", [], [], related, ""))
 
     sums = _run_batch(
         [("vid", "id")], tmp_path, with_comments=False, with_related=True, related_limit=3
@@ -215,7 +261,7 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
         }
     ]
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
-    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, segs, rel))
+    monkeypatch.setattr(cli, "scrape_one", lambda d, url, **k: ("vid", "T", recs, segs, rel, ""))
 
     sums = _run_batch(
         [("vid", "id")],
@@ -249,8 +295,8 @@ def test_run_batch_unify_per_video(monkeypatch, tmp_path):
 
 def test_run_batch_unify_all_global(monkeypatch, tmp_path):
     table = {
-        "idA": ("vidA", "TA", [_c("@a", "xa")], [], []),
-        "idB": ("vidB", "TB", [_c("@b", "xb")], [], []),
+        "idA": ("vidA", "TA", [_c("@a", "xa")], [], [], ""),
+        "idB": ("vidB", "TB", [_c("@b", "xb")], [], [], ""),
     }
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", make_scrape_one(table))
@@ -272,8 +318,8 @@ def test_run_batch_unify_all_global(monkeypatch, tmp_path):
 
 def test_run_batch_per_video_error_isolation(monkeypatch, tmp_path):
     good = {
-        "idA": ("vidA", "A", [_c("@a", "x")], [], []),
-        "idC": ("vidC", "C", [_c("@c", "z")], [], []),
+        "idA": ("vidA", "A", [_c("@a", "x")], [], [], ""),
+        "idC": ("vidC", "C", [_c("@c", "z")], [], [], ""),
     }
 
     def scrape_one(driver, url, **kw):
@@ -306,7 +352,7 @@ def test_run_batch_blocked_retries_headed_when_fallback_true(monkeypatch, tmp_pa
         state["n"] += 1
         if state["n"] == 1:
             raise BlockedError("consent")
-        return ("vid", "T", [_c("@a", "x")], [], [])
+        return ("vid", "T", [_c("@a", "x")], [], [], "")
 
     monkeypatch.setattr(cli, "build_primed_driver", build)
     monkeypatch.setattr(cli, "scrape_one", scrape_one)
@@ -345,7 +391,7 @@ def test_run_batch_retries_failed_video_once(monkeypatch, tmp_path):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient")
-        return ("vid", "T", [_c("@a", "oi")], [], [])
+        return ("vid", "T", [_c("@a", "oi")], [], [], "")
 
     monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
     monkeypatch.setattr(cli, "scrape_one", flaky)
@@ -606,15 +652,494 @@ def test_main_unreadable_from_file_returns_two(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# -C/--channel (run_channel_batch + main's early branch)
+# --------------------------------------------------------------------------- #
+def _channel_items(n=3, prefix="v"):
+    return [
+        {
+            "video_id": f"{prefix}{i}",
+            "title": f"Video {i}",
+            "views": f"{i * 1000:,} views",
+            "url": f"https://www.youtube.com/watch?v={prefix}{i}",
+        }
+        for i in range(1, n + 1)
+    ]
+
+
+def test_run_channel_batch_yt_dlp_writes_file(monkeypatch, tmp_path):
+    items = _channel_items(3)
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("Some Channel", items))
+
+    def boom(*a, **k):
+        raise AssertionError("selenium fallback must not be called when yt-dlp succeeds")
+
+    monkeypatch.setattr(cli, "build_primed_driver", boom)
+    monkeypatch.setattr(cli, "collect_channel_videos", boom)
+
+    sums = cli.run_channel_batch(
+        ["@someone"],
+        n=3,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    assert len(sums) == 1
+    s = sums[0]
+    assert s["error"] is None
+    assert s["engine"] == "yt-dlp"
+    assert s["channel"] == "Some Channel"
+    assert s["count"] == 3
+    assert s["order"] == "recent"
+
+    out_path = tmp_path / f"{slugify('Some Channel')}.channel.md"
+    assert out_path.exists()
+    assert out_path.read_text(encoding="utf-8") == "\n".join(format_related(items)) + "\n"
+    assert s["channel_file"] == str(out_path)
+
+
+def test_run_channel_batch_falls_back_to_selenium_when_ytdl_raises(monkeypatch, tmp_path):
+    items = _channel_items(2, prefix="s")
+
+    def raise_ytdl(ref, n, order):
+        raise RuntimeError("yt-dlp boom")
+
+    monkeypatch.setattr(cli.ytdl, "channel_entries", raise_ytdl)
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@someone"],
+        n=2,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["error"] is None
+    assert s["engine"] == "selenium"
+    assert s["count"] == 2
+
+
+def test_run_channel_batch_falls_back_when_ytdl_returns_empty(monkeypatch, tmp_path):
+    items = _channel_items(1, prefix="e")
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@someone"],
+        n=1,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["error"] is None
+    assert s["engine"] == "selenium"
+    assert s["count"] == 1
+
+
+def test_run_channel_batch_popular_always_routes_to_selenium(monkeypatch, tmp_path):
+    # ytdl.channel_entries(order="popular") always raises NotImplementedError
+    # (YouTube rejects the PU... playlist) — the fallback must still work.
+    items = _channel_items(1, prefix="p")
+
+    def raise_not_implemented(ref, n, order):
+        raise NotImplementedError("no supported way to list popular uploads")
+
+    monkeypatch.setattr(cli.ytdl, "channel_entries", raise_not_implemented)
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Someone Official", items),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@someone"],
+        n=1,
+        order="popular",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["error"] is None
+    assert s["engine"] == "selenium"
+    assert s["order"] == "popular"
+
+
+def test_run_channel_batch_both_engines_fail_sets_error_no_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli, "collect_channel_videos", lambda d, ref, limit, order, progress: ("", [])
+    )
+
+    sums = cli.run_channel_batch(
+        ["@nobody"],
+        n=5,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["error"] is not None
+    assert s["channel_file"] is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_run_channel_batch_isolates_driver_build_failure(monkeypatch, tmp_path):
+    # A Chrome/driver build failure (e.g. SessionNotCreatedException) must not
+    # escape run_channel_batch — each ref gets its own error, not a crash.
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+
+    def boom(h, u):
+        raise RuntimeError("chrome missing")
+
+    monkeypatch.setattr(cli, "build_primed_driver", boom)
+
+    sums = cli.run_channel_batch(
+        ["@channel-a", "@channel-b"],
+        n=1,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    assert len(sums) == 2
+    for s in sums:
+        assert s["error"] is not None
+        assert s["channel_file"] is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_run_channel_batch_recovers_after_collect_failure_on_earlier_ref(monkeypatch, tmp_path):
+    # A dead shared session mid-batch (collect_channel_videos raising) must
+    # not poison later refs — the driver is rebuilt and later channels succeed.
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+
+    built = []
+
+    def fake_build(h, u):
+        drv = FakeDriver()
+        built.append(drv)
+        return drv
+
+    monkeypatch.setattr(cli, "build_primed_driver", fake_build)
+
+    def fake_collect(d, ref, limit, order, progress):
+        if ref == "@channel-a":
+            raise RuntimeError("session died")
+        # Empty name: this test is about session recovery, and the slug it
+        # asserts below is the ref-derived degrade.
+        return "", _channel_items(1, prefix=ref)
+
+    monkeypatch.setattr(cli, "collect_channel_videos", fake_collect)
+
+    sums = cli.run_channel_batch(
+        ["@channel-a", "@channel-b"],
+        n=1,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    assert len(sums) == 2
+    a, b = sums
+    assert a["error"] is not None
+    assert a["channel_file"] is None
+    assert b["error"] is None
+    assert b["channel_file"] is not None
+    assert (tmp_path / f"{slugify('@channel-b'.lstrip('@'))}.channel.md").exists()
+    # The dead driver from @channel-a was quit and a fresh one built for @channel-b.
+    assert len(built) == 2
+    assert built[0].quit_calls == 1
+
+
+def test_run_channel_batch_shares_one_driver_across_channels(monkeypatch, tmp_path):
+    built = []
+
+    def fake_build(h, u):
+        drv = FakeDriver()
+        built.append(drv)
+        return drv
+
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+    monkeypatch.setattr(cli, "build_primed_driver", fake_build)
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("", _channel_items(1, prefix=ref)),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@a", "@b", "@c"],
+        n=1,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    assert len(sums) == 3
+    assert all(s["engine"] == "selenium" and s["error"] is None for s in sums)
+    # Only ONE driver built for all 3 channels (lazy + shared), quit exactly once.
+    assert len(built) == 1
+    assert built[0].quit_calls == 1
+
+
+def test_run_channel_batch_no_fallback_errors_without_building_driver(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+
+    def boom(*a, **k):
+        raise AssertionError("driver must not be built when fallback=False")
+
+    monkeypatch.setattr(cli, "build_primed_driver", boom)
+
+    sums = cli.run_channel_batch(
+        ["@someone"],
+        n=1,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=False,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["error"] is not None
+    assert s["channel_file"] is None
+    # The engine must report what actually ran. Selenium was disabled and never
+    # built a driver, so claiming "selenium" here would be a lie in the summary.
+    assert s["engine"] == "yt-dlp"
+
+
+def test_run_channel_batch_selenium_fallback_keeps_channel_name(monkeypatch, tmp_path):
+    # The yt-dlp path binds the display name; the Selenium fallback must too, or
+    # the ✓ line and the output slug silently degrade to the raw @handle. This
+    # hits EVERY --order popular run, which never reaches yt-dlp by design.
+    items = _channel_items(1, prefix="n")
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("", []))
+    monkeypatch.setattr(cli, "build_primed_driver", lambda h, u: FakeDriver())
+    monkeypatch.setattr(
+        cli,
+        "collect_channel_videos",
+        lambda d, ref, limit, order, progress: ("Veritasium", items),
+    )
+
+    sums = cli.run_channel_batch(
+        ["@veritasium"],
+        n=1,
+        order="popular",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        quiet=True,
+    )
+    s = sums[0]
+    assert s["engine"] == "selenium"
+    assert s["channel"] == "Veritasium"
+    # The name drives the filename slug, not the raw handle.
+    assert s["channel_file"].endswith("veritasium.channel.md")
+
+
+def test_run_channel_batch_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
+    items = _channel_items(2)
+    monkeypatch.setattr(cli.ytdl, "channel_entries", lambda ref, n, order: ("Chan", items))
+    copied = {}
+    monkeypatch.setattr(
+        cli, "_copy_to_clipboard", lambda text: copied.setdefault("text", text) or True
+    )
+
+    cli.run_channel_batch(
+        ["@someone"],
+        n=2,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=True,
+        user_data_dir=None,
+        copy=True,
+        quiet=True,
+    )
+    assert "\n".join(format_related(items)) in copied["text"]
+
+
+def test_main_channel_flag_dispatches_to_run_channel_batch(monkeypatch, capsys):
+    cap = {}
+
+    def fake_run_channel_batch(refs, **kw):
+        cap["refs"] = refs
+        cap["kw"] = kw
+        return [
+            {
+                "ref": "@someone",
+                "channel": "Someone",
+                "count": 10,
+                "order": kw["order"],
+                "engine": "yt-dlp",
+                "channel_file": "out/someone.channel.md",
+                "error": None,
+            }
+        ]
+
+    monkeypatch.setattr(cli, "run_channel_batch", fake_run_channel_batch)
+    rc = cli.main(["-C", "10", "@someone"])
+    assert rc == 0
+    assert cap["refs"] == ["@someone"]
+    assert cap["kw"]["n"] == 10 and cap["kw"]["order"] == "recent"
+    out = capsys.readouterr().out
+    assert "Done: 1/1 channel(s)" in out
+    assert "10 videos" in out
+
+
+def test_main_channel_order_propagated(monkeypatch):
+    cap = {}
+
+    def fake_run_channel_batch(refs, **kw):
+        cap["kw"] = kw
+        return []
+
+    monkeypatch.setattr(cli, "run_channel_batch", fake_run_channel_batch)
+    cli.main(["-C", "5", "--order", "old", "@someone"])
+    assert cap["kw"]["order"] == "old"
+
+
+def test_main_channel_multiple_refs(monkeypatch):
+    cap = {}
+
+    def fake_run_channel_batch(refs, **kw):
+        cap["refs"] = refs
+        return [
+            {
+                "ref": r,
+                "channel": r,
+                "count": 1,
+                "order": "recent",
+                "engine": "yt-dlp",
+                "channel_file": f"out/{r}.channel.md",
+                "error": None,
+            }
+            for r in refs
+        ]
+
+    monkeypatch.setattr(cli, "run_channel_batch", fake_run_channel_batch)
+    rc = cli.main(["-C", "1", "@channel-a", "@channel-b"])
+    assert rc == 0
+    assert cap["refs"] == ["@channel-a", "@channel-b"]
+
+
+@pytest.mark.parametrize("flag", [["-c"], ["-t"], ["-r", "5"], ["-u"], ["--unify-all"]])
+def test_main_channel_incompatible_with_other_selectors_exits_two(monkeypatch, flag):
+    def boom(*a, **k):
+        raise AssertionError("run_channel_batch must not be called")
+
+    monkeypatch.setattr(cli, "run_channel_batch", boom)
+    monkeypatch.setattr(cli, "run_batch", boom)
+    rc = cli.main(["-C", "5", *flag, "@someone"])
+    assert rc == 2
+
+
+def test_main_channel_no_valid_refs_returns_two(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("run_channel_batch must not be called")
+
+    monkeypatch.setattr(cli, "run_channel_batch", boom)
+    assert cli.main(["-C", "5", "not a channel ref at all"]) == 2
+
+
+def test_main_order_without_channel_is_warning_no_op(monkeypatch, caplog):
+    cap = {}
+
+    def fake_run_batch(targets, **kw):
+        cap["called"] = True
+        return [
+            {
+                "video_id": "dQw4w9WgXcQ",
+                "error": None,
+                "with_comments": False,
+                "file": None,
+                "comments": 0,
+                "lines": 0,
+                "with_transcript": True,
+                "transcript_file": "tf",
+                "segments": 1,
+            }
+        ]
+
+    monkeypatch.setattr(cli, "run_batch", fake_run_batch)
+    rc = cli.main(["--order", "old", "dQw4w9WgXcQ"])
+    assert rc == 0
+    assert cap.get("called") is True
+
+
+def test_channel_file_key_included_in_token_report(monkeypatch, tmp_path, capsys):
+    pytest.importorskip("tiktoken")
+    f = tmp_path / "chan.channel.md"
+    f.write_text("1. [Title](url)\n", encoding="utf-8")
+    monkeypatch.setattr(cli.tokens, "tiktoken_available", lambda: True)
+    cli._print_token_report(
+        [{"channel_file": str(f)}],
+        budget_tokens=1000,
+    )
+    out = capsys.readouterr().out
+    assert str(f) in out
+
+
+def test_gather_channel_refs_dedupes_and_skips_invalid(caplog):
+    refs = cli.gather_channel_refs(
+        ["@veritasium", "https://www.youtube.com/@veritasium/videos", "not a channel"], []
+    )
+    assert refs == ["@veritasium"]
+
+
+def test_gather_channel_refs_from_file(tmp_path):
+    f = tmp_path / "channels.txt"
+    f.write_text("@channel-a\n@channel-b\n@channel-a\n", encoding="utf-8")
+    refs = cli.gather_channel_refs([], [str(f)])
+    assert refs == ["@channel-a", "@channel-b"]
+
+
+# --------------------------------------------------------------------------- #
 # scrape_video (library API)
 # --------------------------------------------------------------------------- #
-def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title"):
+def _patch_api_boundary(monkeypatch, drv, *, block="", title="My Title", views=None):
     """Patch the api-bound Selenium boundary to canned no-ops; return nothing."""
     monkeypatch.setattr(api, "build_driver", lambda **k: drv)
     for name in ("prime_consent_cookies", "safe_get", "dismiss_consent_dialog"):
         monkeypatch.setattr(api, name, lambda *a, **k: None)
     monkeypatch.setattr(api, "detect_block", lambda d: block)
     monkeypatch.setattr(api, "get_video_title", lambda d: title)
+    monkeypatch.setattr(api, "get_video_views", lambda d: views)
 
 
 def test_scrape_video_returns_structured_result(monkeypatch):
@@ -651,6 +1176,26 @@ def test_scrape_video_returns_structured_result(monkeypatch):
     assert r.transcript_lines() == ["ola mundo"]
     assert r.transcript_lines(timestamps=True, pair=False) == format_transcript(segs)
     assert drv.quit_calls == 1
+
+
+def test_scrape_video_surfaces_views(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T", views=1234567)
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True)
+    # The int is canonical; .views renders it for display.
+    assert r.views_int == 1234567
+    assert r.views == "1,234,567 views"
+
+
+def test_scrape_video_views_default_empty(monkeypatch):
+    drv = FakeDriver()
+    _patch_api_boundary(monkeypatch, drv, title="T")  # views=None default
+    monkeypatch.setattr(api, "collect_comments", lambda d, **k: [])
+
+    r = api.scrape_video("dQw4w9WgXcQ", comments=True)
+    assert r.views == ""
 
 
 def test_scrape_video_quits_driver_on_error(monkeypatch):
@@ -804,10 +1349,10 @@ def test_scrape_result_write_skips_empty_sections(monkeypatch, tmp_path):
     assert list(tmp_path.glob("*.md")) == [tmp_path / f"{slugify('T')}-dQw4w9WgXcQ.md"]
 
 
-def _scrape_all_three(monkeypatch, *, title="T"):
+def _scrape_all_three(monkeypatch, *, title="T", views=""):
     """scrape_video mocked to return comments + transcript + related."""
     drv = FakeDriver()
-    _patch_api_boundary(monkeypatch, drv, title=title)
+    _patch_api_boundary(monkeypatch, drv, title=title, views=views)
     recs = [
         {
             "kind": "comment",
@@ -859,6 +1404,23 @@ def test_scrape_result_unified_lines_matches_standalone(monkeypatch):
     assert "## Comments" in r.unified_lines() and "## Related videos" in r.unified_lines()
 
 
+def test_scrape_result_unified_lines_passes_views_as_subtitle(monkeypatch):
+    r = _scrape_all_three(monkeypatch, title="T", views=1234567)
+    assert r.views_int == 1234567
+    assert r.views == "1,234,567 views"
+    expected = format_unified(
+        "T",
+        [
+            ("Comments", r.comment_lines()),
+            ("Transcript", r.transcript_lines()),
+            ("Related videos", r.related_lines()),
+        ],
+        subtitle="1,234,567 views",
+    )
+    assert r.unified_lines() == expected
+    assert r.unified_lines()[2] == "1,234,567 views"
+
+
 def test_scrape_result_write_unify_replaces_separate_files(monkeypatch, tmp_path):
     r = _scrape_all_three(monkeypatch, title="T")
     written = r.write(str(tmp_path), unify=True)
@@ -884,6 +1446,7 @@ def _patch_session_boundary(monkeypatch, *, on_safe_get=None, on_detect=None):
     monkeypatch.setattr(api, "safe_get", on_safe_get or (lambda *a, **k: None))
     monkeypatch.setattr(api, "detect_block", on_detect or (lambda d: ""))
     monkeypatch.setattr(api, "get_video_title", lambda d: "T")
+    monkeypatch.setattr(api, "get_video_views", lambda d: None)
     monkeypatch.setattr(
         api,
         "collect_comments",
@@ -1184,3 +1747,104 @@ def test_watch_empty_queue_never_dispatches(monkeypatch, tmp_path):
 
     rc = watch.main(["--queue-file", str(qf), "--timeout", "1", "--yes"])
     assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# vl snap (viewlyt.snap.main), patched at snap.ytdl.* / snap.copy_to_clipboard
+# --------------------------------------------------------------------------- #
+def test_snap_video_writes_file_and_prints(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        snap.ytdl,
+        "video_info",
+        lambda vid: {"title": "Why Machines Learn", "channel": "Veritasium", "view_count": 100},
+    )
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path)])
+    assert rc == 0
+
+    out_file = tmp_path / "why-machines-learn-dQw4w9WgXcQ.snapshot.md"
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "# Why Machines Learn" in content
+    assert "- Channel: Veritasium" in content
+
+    captured = capsys.readouterr()
+    assert "Why Machines Learn" in captured.out
+
+
+def test_snap_channel_writes_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        snap.ytdl,
+        "channel_info",
+        lambda ref, latest=5: {
+            "channel": "Veritasium",
+            "uploader_id": "@veritasium",
+            "entries": [],
+        },
+    )
+
+    rc = snap.main(["@veritasium", "-o", str(tmp_path)])
+    assert rc == 0
+
+    out_file = tmp_path / "veritasium.snapshot.md"
+    assert out_file.exists()
+    assert "# Veritasium" in out_file.read_text(encoding="utf-8")
+
+
+def test_snap_channel_ref_tried_before_video_id(monkeypatch, tmp_path):
+    """A channel URL must route to channel_info, never video_info."""
+    calls = []
+    monkeypatch.setattr(
+        snap.ytdl,
+        "channel_info",
+        lambda ref, latest=5: calls.append(("channel", ref)) or {"channel": "C", "entries": []},
+    )
+    monkeypatch.setattr(
+        snap.ytdl,
+        "video_info",
+        lambda vid: calls.append(("video", vid)) or {"title": "T"},
+    )
+
+    rc = snap.main(["https://www.youtube.com/@veritasium", "-o", str(tmp_path), "-q"])
+    assert rc == 0
+    assert calls == [("channel", "@veritasium")]
+
+
+def test_snap_invalid_target_exits_two(tmp_path, capsys):
+    rc = snap.main(["just some prose", "-o", str(tmp_path)])
+    assert rc == 2
+    assert "vl snap:" in capsys.readouterr().err
+
+
+def test_snap_download_error_exits_one(monkeypatch, tmp_path, capsys):
+    def boom(vid):
+        raise RuntimeError("Video unavailable")
+
+    monkeypatch.setattr(snap.ytdl, "video_info", boom)
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "vl snap:" in err
+    assert "Video unavailable" in err
+    assert not (tmp_path / "dQw4w9WgXcQ.snapshot.md").exists()
+
+
+def test_snap_copy_puts_output_on_clipboard(monkeypatch, tmp_path):
+    monkeypatch.setattr(snap.ytdl, "video_info", lambda vid: {"title": "T", "view_count": 5})
+    copied = {}
+    monkeypatch.setattr(
+        snap, "copy_to_clipboard", lambda text: copied.setdefault("text", text) or True
+    )
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path), "--copy"])
+    assert rc == 0
+    assert "# T" in copied["text"]
+
+
+def test_snap_quiet_suppresses_stdout(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(snap.ytdl, "video_info", lambda vid: {"title": "T"})
+
+    rc = snap.main(["dQw4w9WgXcQ", "-o", str(tmp_path), "-q"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""

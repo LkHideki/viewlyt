@@ -37,6 +37,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
 from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
+from .htmltext import parse_view_count
 
 log = logging.getLogger("viewlyt")
 
@@ -135,6 +136,18 @@ RELATED_TITLE_SELECTORS = (
     "a[title]",
     "span[role=text]",
 )
+
+# Channel /videos grid item — exact tokens, no class-substring matcher.
+CHANNEL_ITEM_SELECTORS = ("ytd-rich-item-renderer", "#contents yt-lockup-view-model")
+# Sort chip bar above the grid ("Latest"/"Popular"/"Oldest"). 2026-07 DOM uses
+# chip-view-model with a button[role=tab] child; the legacy
+# yt-chip-cloud-chip-renderer is kept as an ordered fallback.
+CHANNEL_CHIP_SELECTORS = (
+    "chip-view-model button[role=tab]",
+    "yt-chip-cloud-chip-renderer button",
+    "yt-chip-cloud-chip-renderer",
+)
+CHANNEL_CHIP_LABELS = {"popular": "Popular", "old": "Oldest"}
 
 # Transcript (description -> "Show transcript" -> engagement panel)
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
@@ -303,6 +316,64 @@ def get_video_title(driver) -> str:
     title = re.sub(r"\s*-\s*YouTube\s*$", "", title)
     title = re.sub(r"^\(\d+\)\s*", "", title)
     return title.strip()
+
+
+_CHANNEL_NAME_JS = """
+var m = document.querySelector('meta[property="og:title"]');
+if (m && m.content) { return m.content; }
+var l = document.querySelector('link[itemprop="name"]');
+if (l && l.content) { return l.content; }
+return '';
+"""
+
+
+def get_channel_name(driver) -> str:
+    """Return the channel's display name from a loaded channel page.
+
+    Sibling of :func:`get_video_title`, used by the ``vl -C`` Selenium fallback
+    so the summary line and the output slug carry the channel title instead of
+    the raw ``@handle``. ``og:title`` on a channel page is the channel name;
+    ``link[itemprop="name"]`` is the microdata fallback. Attribute selectors
+    only (never a class substring). NEVER raises: ``""`` means "unknown", and
+    the caller degrades to the ref.
+    """
+    try:
+        name = driver.execute_script(_CHANNEL_NAME_JS) or ""
+    except WebDriverException:
+        name = ""
+    name = re.sub(r"\s*-\s*YouTube\s*$", "", name)
+    return name.strip()
+
+
+_VIEW_COUNT_JS = """
+var m = document.querySelector('meta[itemprop="interactionCount"]');
+if (m && m.content) { return m.content; }
+try {
+    var vc = window.ytInitialPlayerResponse.videoDetails.viewCount;
+    if (vc) { return vc; }
+} catch (e) {}
+return '';
+"""
+
+
+def get_video_views(driver) -> int | None:
+    """Return the main video's EXACT view count as an int, e.g. ``1234567``.
+
+    A single ``execute_script`` with an internal fallback: (1) the
+    ``meta[itemprop="interactionCount"]`` microdata tag (present in <head>, an
+    exact attribute-value selector, never a class-substring match), then
+    (2) ``window.ytInitialPlayerResponse.videoDetails.viewCount``. Both expose
+    the full integer — unlike the rendered "1.2M views" label — so this returns
+    the number itself and leaves rendering to
+    :func:`viewlyt.htmltext.format_view_count` at write time.
+    Never raises; returns ``None`` on any failure or when no count is found.
+    """
+    try:
+        raw = driver.execute_script(_VIEW_COUNT_JS) or ""
+    except WebDriverException:
+        return None
+    digits = re.sub(r"\D", "", str(raw))
+    return int(digits) if digits else None
 
 
 def detect_block(driver) -> str | None:
@@ -855,6 +926,147 @@ def collect_related(driver, limit: int = 10, progress: bool = True) -> list[dict
     except WebDriverException as exc:
         log.warning("related collection failed: %s", exc)
         return []
+
+
+_CLICK_CHANNEL_CHIP_JS = """
+var SELS=arguments[0], LABEL=arguments[1];
+for(var s=0;s<SELS.length;s++){
+  var els=document.querySelectorAll(SELS[s]);
+  for(var i=0;i<els.length;i++){
+    var el=els[i];
+    var t=((el.getAttribute('aria-label')||'')+' '+(el.textContent||'')).trim();
+    if(t===LABEL || t.indexOf(LABEL)===0){ el.click(); return true; }
+  }
+}
+return false;
+"""
+
+_FIRST_CHANNEL_VIDEO_ID_JS = """
+var SEL=arguments[0];
+var items=document.querySelectorAll(SEL);
+for(var i=0;i<items.length;i++){
+  var a=items[i].querySelector("a[href*='/watch?v=']");
+  if(!a)continue;
+  var m=(a.getAttribute('href')||'').match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if(m)return m[1];
+}
+return '';
+"""
+
+
+def _click_channel_chip(driver, order: str) -> bool:
+    """Click the ``order`` sort chip (``"popular"``/``"old"``); no-op for ``"recent"``
+    (the default "Latest" tab needs zero clicks). Returns whether a chip was found
+    and clicked. Never raises.
+    """
+    label = CHANNEL_CHIP_LABELS.get(order)
+    if label is None:
+        return False
+    try:
+        return bool(
+            driver.execute_script(_CLICK_CHANNEL_CHIP_JS, list(CHANNEL_CHIP_SELECTORS), label)
+        )
+    except WebDriverException:
+        return False
+
+
+def _first_channel_video_id(driver) -> str:
+    try:
+        sel = ", ".join(CHANNEL_ITEM_SELECTORS)
+        return driver.execute_script(_FIRST_CHANNEL_VIDEO_ID_JS, sel) or ""
+    except WebDriverException:
+        return ""
+
+
+def collect_channel_videos(
+    driver, ref: str, limit: int, order: str = "recent", progress: bool = True
+) -> tuple[str, list[dict]]:
+    """Collect up to ``limit`` videos from a channel's ``/videos`` grid.
+
+    Selenium fallback for ``vl -C`` — modeled on :func:`collect_related`. Returns
+    ``(channel_name, items)``, mirroring :func:`ytdl.channel_entries` so the CLI
+    caller handles both engines identically; ``items`` are
+    ``{"video_id", "title", "views", "url"}`` dicts (same shape as
+    :func:`collect_related`, reused verbatim by ``htmltext.format_related``).
+    ``channel_name`` is ``""`` when the page never rendered — the caller then
+    degrades the slug to the ref.
+    NEVER raises: any error, block, or ``limit<=0`` returns ``("", [])`` — the
+    CLI caller treats an empty list as "fallback also failed" and surfaces one
+    error per channel instead of crashing the whole batch.
+
+    ``order`` is ``"recent"`` (default "Latest" tab, no clicks), ``"popular"``,
+    or ``"old"`` — the latter two click the matching sort chip and poll until
+    the grid's first video id changes (or the chip click itself failed/no-op,
+    in which case the "Latest" order is used as a best-effort degrade rather
+    than failing outright).
+    """
+    if limit <= 0:
+        return "", []
+    url = f"https://www.youtube.com/{ref}/videos"
+    try:
+        if progress:
+            log.info("collecting up to %d channel videos (%s) from %s", limit, order, ref)
+        safe_get(driver, url)
+        dismiss_consent_dialog(driver)
+        block = detect_block(driver)
+        if block:
+            log.warning("channel page blocked (%s) for %s", block, ref)
+            return "", []
+
+        name = get_channel_name(driver)
+        sel = ", ".join(CHANNEL_ITEM_SELECTORS)
+        try:
+            WebDriverWait(driver, 8, poll_frequency=_POLL).until(lambda d: _count(d, sel) > 0)
+        except TimeoutException:
+            log.warning("channel grid never rendered for %s", ref)
+            return name, []
+
+        if order in ("popular", "old"):
+            before_id = _first_channel_video_id(driver)
+            if _click_channel_chip(driver, order):
+                try:
+                    WebDriverWait(driver, 4, poll_frequency=_POLL).until(
+                        lambda d: _first_channel_video_id(d) != before_id
+                    )
+                except TimeoutException:
+                    log.info(
+                        "channel chip %r click didn't change the grid within 4s "
+                        "— continuing with whatever is loaded",
+                        order,
+                    )
+            else:
+                log.info("no %r sort chip found for %s — using the default order", order, ref)
+
+        # The grid hydrates/re-sorts lazily; nudge-scroll until enough items are
+        # present or the count stops growing (mirrors collect_related's loop).
+        prev, stale = -1, 0
+        for _ in range(12):
+            n = _count(driver, sel)
+            if n >= limit:
+                break
+            if n == prev:
+                stale += 1
+                if stale >= 3:
+                    break
+            else:
+                stale = 0
+            prev = n
+            driver.execute_script("window.scrollBy(0, 1200);")
+            _sleep_jitter(0.35)
+
+        items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
+        # The grid only ever renders an abbreviated count ("1.2M views"), so the
+        # exact int is available only when YouTube happened to print it in full.
+        # parse_view_count returns None for abbreviations rather than inventing
+        # precision; format_related then falls back to the verbatim string.
+        for it in items:
+            it["views_int"] = parse_view_count(it.get("views") or "")
+        if progress:
+            log.info("collected %d channel videos", len(items))
+        return name, items[:limit]
+    except WebDriverException as exc:
+        log.warning("channel video collection failed for %s: %s", ref, exc)
+        return "", []
 
 
 # --------------------------------------------------------------------------- #

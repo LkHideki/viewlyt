@@ -414,6 +414,35 @@ def test_set_model_keeps_key_for_same_or_known_provider(tmp_path, monkeypatch) -
     assert srv.llm_cfg.api_key == "sk-secret"
 
 
+def test_set_model_decider_model_sets_clears_and_keeps(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    srv = LiveServer(LLMConfig(api_key="sk"), WindowConfig())
+    assert srv.llm_cfg.decider_model == ""
+
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": "perplexity/d"}))
+    assert srv.llm_cfg.decider_model == "perplexity/d"
+    assert srv.llm_cfg.to_public_dict()["decider_model"] == "perplexity/d"
+    assert srv.state_message()["model"]["decider_model"] == "perplexity/d"
+
+    # Absent key (e.g. a plain model swap) keeps it...
+    asyncio.run(apply_control(srv, {"op": "set_model", "model": "other"}))
+    assert srv.llm_cfg.decider_model == "perplexity/d"
+
+    # ...and an explicit empty string clears it.
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": ""}))
+    assert srv.llm_cfg.decider_model == ""
+
+
+def test_set_model_decider_model_is_persisted(tmp_path, monkeypatch) -> None:
+    _persist_to_tmp(tmp_path, monkeypatch)
+    from viewlyt.live import persistence
+
+    srv = LiveServer(LLMConfig(api_key="sk"), WindowConfig())
+    asyncio.run(apply_control(srv, {"op": "set_model", "decider_model": "perplexity/d"}))
+    st = persistence.load_state()
+    assert st is not None and st["model"]["decider_model"] == "perplexity/d"
+
+
 def test_set_model_uses_explicit_key_for_unknown_host(tmp_path, monkeypatch) -> None:
     _persist_to_tmp(tmp_path, monkeypatch)
     srv = LiveServer(LLMConfig(api_key="sk-old"), WindowConfig())
@@ -435,7 +464,9 @@ def test_cors_headers_only_for_youtube_origin() -> None:
 
     from viewlyt.live.server import create_app
 
-    client = TestClient(create_app(LiveServer(LLMConfig(), WindowConfig())))
+    client = TestClient(
+        create_app(LiveServer(LLMConfig(), WindowConfig())), base_url="http://127.0.0.1:8000"
+    )
 
     # A foreign website must get NO cross-origin grant on the session export.
     r = client.get("/export.json", headers={"origin": "https://evil.example"})
