@@ -23,7 +23,7 @@ import logging
 import random
 import re
 import time
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
@@ -38,7 +38,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
 from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
-from .htmltext import parse_relative_date, parse_view_count
+from .htmltext import parse_view_count
 
 log = logging.getLogger("viewlyt")
 
@@ -167,6 +167,10 @@ CHANNEL_DATE_SELECTORS = (
 # 3, since a wrong stop would silently drop in-window videos).
 _CHANNEL_WINDOW_MAX_STEPS = 150
 _CHANNEL_WINDOW_STALE = 5
+# Window mode needs the age labels to be readable: with at least this many cards
+# rendered and MORE THAN HALF unreadable, the date source is unusable (non-English
+# UI, renamed DOM) and the call fails instead of passing off a whole channel as a window.
+_CHANNEL_WINDOW_MIN_CARDS = 5
 
 # Transcript (description -> "Show transcript" -> engagement panel)
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
@@ -876,6 +880,10 @@ def collect_comments(
 # --------------------------------------------------------------------------- #
 # Related videos (secondary column)
 # --------------------------------------------------------------------------- #
+# NOTE: the card-harvest body below is duplicated in _CHANNEL_WINDOW_JS (+ a date text,
+# no cap) for the channel window mode. This copy is shared with the related-videos product
+# and its output is locked, so it stays as is — but a selector/title/views fix here must
+# be mirrored there, or the two will silently diverge.
 # Single-round-trip read of the secondary column: for each <yt-lockup-view-model>
 # take the first /watch?v= link's id, the title (ordered selector fallback, then
 # the link's title attr), and the views metadata span (the one whose text matches
@@ -1035,6 +1043,7 @@ return out;
 
 # Window-mode harvest: _RELATED_JS plus the raw date text, and NO cap — filtering by
 # date happens in Python afterwards, so a JS-side LIMIT would count out-of-window cards.
+# The card-harvest body is a COPY of _RELATED_JS's: keep the two in sync by hand.
 _CHANNEL_WINDOW_JS = (
     _CHANNEL_CARD_DATE_JS
     + r"""
@@ -1063,10 +1072,9 @@ return out;
 """
 )
 
-# The grid renders COMPACT relative dates ("6d ago", "5mo ago", "1y ago"); parse_relative_date
-# only understands the long form ("6 days ago"), so expand before delegating. "Streamed"/
-# "Premiered" prefixes are dropped because parse_relative_date's "a/an" -> "1" rewrite is
-# anchored at the start of the text ("Streamed a month ago" would otherwise not parse).
+# The grid renders COMPACT relative ages ("6d ago", "5mo ago", "1y ago"); they are expanded
+# to the long form ("6 days ago") before matching. A "Streamed"/"Premiered" prefix is dropped
+# first, because the "a/an" -> "1" rewrite ("a month ago") is anchored at the start of the text.
 _STREAM_PREFIX_RE = re.compile(r"^\s*(?:streamed(?:\s+live)?|premiered)\s+", re.I)
 _COMPACT_AGO_RE = re.compile(r"\b(\d+)\s*(mo|[smhdwy])\s+ago\b", re.I)
 _COMPACT_UNITS = {
@@ -1078,93 +1086,136 @@ _COMPACT_UNITS = {
     "mo": "month",
     "y": "year",
 }
-_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_AGO_RE = re.compile(r"(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago", re.I)
+
+# What an age label MEANS. YouTube FLOORS the unit ("1y ago" = 1 up to <2 years), so a label is
+# an interval of possible publish dates, never one date. Measured on live grids (2026-11-11,
+# against yt-dlp upload dates): days render up to "13d" ("1w" never shows), then "2w".."4w";
+# "1mo" starts at ~30 d and "11mo" reaches ~364 d (a month is ~30.44 d, NOT 30); "1y" starts at
+# 365 d and year N spans ~[N*365.25, (N+1)*365.25). Between two DATES the age also jitters by
+# +1 day ("6d ago" = 6 or 7 days apart) because the publish time of day is dropped.
+# unit -> (days per unit as numerator/denominator, slack on the newest end, slack on the
+# oldest end), slack in days: calendar months run 28..31 d and a calendar year 365 or 366 d,
+# which the averages hide.
+_AGE_UNITS = {
+    "second": (1, 86400, 0, 0),
+    "minute": (1, 1440, 0, 0),
+    "hour": (1, 24, 0, 0),
+    "day": (1, 1, 0, 0),
+    "week": (7, 1, 0, 0),
+    "month": (487, 16, 3, 3),  # 30.4375 d
+    "year": (1461, 4, 0, 1),  # 365.25 d
+}
 
 
 def _today() -> date:
-    """Today's date for window-mode date math — one indirection so tests can pin it."""
-    return date.today()
+    """Today's date (UTC) for window-mode date math — one indirection so tests can pin it.
+    UTC to match ``vl``'s default window end and yt-dlp's ``upload_date`` clock."""
+    return datetime.now(UTC).date()
 
 
-def _card_date(text: str, today: date) -> date | None:
-    """Approximate publish date of a channel-grid card from its relative-date text.
+def _card_span(text: str, today: date) -> tuple[date, date] | None:
+    """Interval ``(oldest, newest)`` of possible publish dates for a grid age label.
 
-    ``None`` when the text is empty or unparseable ("Scheduled for …", a live
-    "watching" count, …): :func:`parse_relative_date` hands unparseable text back
-    verbatim rather than flagging it, so the result is only trusted when it is an
-    ISO date. Never raises (absurd counts overflow ``timedelta``/``date``).
+    ``"1y ago"`` on 2026-11-11 is ``(2024-11-11 .. 2025-11-11)``-ish, not a single date: see
+    ``_AGE_UNITS`` for what each unit really covers. ``None`` when the text is empty or not
+    a relative age ("Scheduled for …", a live "watching" count, a non-English "há 6 dias",
+    …). Never raises (absurd counts overflow ``timedelta``).
     """
     t = _STREAM_PREFIX_RE.sub("", text or "")
-    t = _COMPACT_AGO_RE.sub(lambda m: f"{m[1]} {_COMPACT_UNITS[m[2].lower()]} ago", t)
+    t = _COMPACT_AGO_RE.sub(lambda m: f"{m[1]} {_COMPACT_UNITS[m[2].lower()]} ago", t).lower()
     try:
-        iso = parse_relative_date(t, today)
-        return date.fromisoformat(iso) if _ISO_DATE_RE.fullmatch(iso) else None
+        if "just now" in t or "moment" in t:
+            n, unit = 0, "second"
+        else:
+            m = _AGO_RE.search(re.sub(r"^\s*an?\s+", "1 ", t))
+            if not m:
+                return None
+            n, unit = int(m[1]), m[2]
+        num, den, new_slack, old_slack = _AGE_UNITS[unit]
+        newest_age = max(0, n * num // den - new_slack)
+        oldest_age = -(-(n + 1) * num // den) + old_slack  # ceil((n + 1) * num / den)
+        return today - timedelta(days=oldest_age), today - timedelta(days=newest_age)
     except (ValueError, OverflowError):
         return None
 
 
-def _in_window(d: date | None, since: date | None, until: date | None) -> bool:
-    """Inclusive window test; an undated card (``None``) is kept — never silently
-    drop data over a date we merely failed to read."""
-    return d is None or ((since is None or d >= since) and (until is None or d <= until))
+def _overlaps(span: tuple[date, date] | None, since: date | None, until: date | None) -> bool:
+    """Whether a card's possible-date interval touches ``[since, until]`` (inclusive).
+
+    A card is dropped only when it is CERTAINLY outside; an unreadable date (``None``)
+    stays too — never silently drop data over a date we merely failed to read."""
+    if span is None:
+        return True
+    oldest, newest = span
+    return (until is None or oldest <= until) and (since is None or newest >= since)
 
 
 def _window_scroll_done(
-    dates: list[date | None],
-    order: str,
+    spans: list[tuple[date, date] | None],
+    scan_order: str,
     since: date | None,
     until: date | None,
     limit: int,
 ) -> bool:
     """Whether the rendered cards already settle the window (no point scrolling on).
 
-    The grid is date-sorted, so for ``recent`` everything not yet rendered is older
-    than the LAST dated card (stop once that is before ``since``) and for ``old``
-    everything not yet rendered is newer (stop once it is after ``until``).
-    ``popular`` has no date order, hence no date-based stop. Independently, a
-    positive ``limit`` caps the result AFTER filtering, and appended cards only
-    ever land behind the ones already rendered, so ``limit`` in-window cards fix
-    the answer whatever the order.
+    The grid is date-sorted, so for ``recent`` everything not yet rendered is OLDER than
+    the last dated card: once even that card's NEWEST possible date is before ``since``,
+    it is certainly out, and so is everything behind it. (Its oldest end would stop too
+    early: a "1y ago" card may still be only 366 days old.) ``popular`` has no date order,
+    hence no date stop. Independently, a positive ``limit`` caps the result AFTER
+    filtering, and appended cards only ever land behind the ones already rendered, so
+    ``limit`` kept cards fix the answer (the caller passes 0 when the answer is taken from
+    the other end of the window, i.e. ``order="old"``).
     """
-    dated = [d for d in dates if d is not None]
-    if dated:
-        last = dated[-1]
-        if order == "recent" and since is not None and last < since:
-            return True
-        if order == "old" and until is not None and last > until:
-            return True
-    return limit > 0 and sum(_in_window(d, since, until) for d in dates) >= limit
+    dated = [s for s in spans if s is not None]
+    if scan_order == "recent" and since is not None and dated and dated[-1][1] < since:
+        return True
+    return limit > 0 and sum(_overlaps(s, since, until) for s in spans) >= limit
 
 
 def _scroll_channel_window(
     driver,
     sel: str,
-    order: str,
+    scan_order: str,
     since: date | None,
     until: date | None,
     limit: int,
     today: date,
-) -> None:
-    """Nudge-scroll the channel grid until :func:`_window_scroll_done`, the grid
-    stagnates (``_CHANNEL_WINDOW_STALE`` growth-less steps) or the hard step budget
-    is spent. The stop check shares the round-trip that counts the cards."""
+) -> tuple[str, int]:
+    """Nudge-scroll the channel grid until the window is settled. The stop checks share
+    the round-trip that reads the cards. Returns ``(why, cards)``: ``why`` is
+
+    * ``"undated"`` — most cards have no readable age (checked on every probe, so the
+      very first one aborts before any scrolling);
+    * ``"done"`` — :func:`_window_scroll_done`;
+    * ``"stagnant"`` — the grid stopped growing (``_CHANNEL_WINDOW_STALE`` steps): its end;
+    * ``"budget"`` — ``_CHANNEL_WINDOW_MAX_STEPS`` ran out first: the listing may be
+      incomplete, and the caller says so.
+
+    ``cards`` is the distinct-card count at the last probe.
+    """
     date_sels = list(CHANNEL_DATE_SELECTORS)
-    prev, stale = -1, 0
+    prev, stale, n = -1, 0, 0
     for _ in range(_CHANNEL_WINDOW_MAX_STEPS):
         texts = driver.execute_script(_CHANNEL_DATES_JS, sel, date_sels)
-        dates = [_card_date(str(t or ""), today) for t in texts] if isinstance(texts, list) else []
-        if _window_scroll_done(dates, order, since, until, limit):
-            return
-        n = len(dates)
+        spans = [_card_span(str(t or ""), today) for t in texts] if isinstance(texts, list) else []
+        n = len(spans)
+        if n >= _CHANNEL_WINDOW_MIN_CARDS and 2 * sum(s is None for s in spans) > n:
+            return "undated", n
+        if _window_scroll_done(spans, scan_order, since, until, limit):
+            return "done", n
         if n == prev:
             stale += 1
             if stale >= _CHANNEL_WINDOW_STALE:
-                return
+                return "stagnant", n
         else:
             stale = 0
         prev = n
         driver.execute_script("window.scrollBy(0, 1200);")
         _sleep_jitter(0.35)
+    return "budget", n
 
 
 def collect_channel_videos(
@@ -1198,19 +1249,29 @@ def collect_channel_videos(
 
     **Window mode** (``since``/``until``, inclusive, either may be ``None``): only
     videos published inside the window are returned and each item gains
-    ``"date": "yyyy-mm-dd"``. The grid only renders a RELATIVE age ("6d ago",
-    "5mo ago", "Streamed 3 weeks ago"), so the date is an APPROXIMATION (months≈30d,
-    years≈365d — a "2 months ago" card is ~60 d give or take weeks, YouTube floors
-    the unit), and the window edge is fuzzy on this engine; ``yt-dlp`` dates are
-    exact. A card whose date can't be read is KEPT with ``"date": ""``. ``limit<=0``
-    then means "no count limit" (the window is the bound); a positive ``limit`` caps
-    the result AFTER filtering. Scrolling stops early — in the same round-trip that
-    counts the cards — once the last rendered card is older than ``since``
-    (``order="recent"``) or newer than ``until`` (``order="old"``), or once
-    ``limit`` in-window cards are in hand; ``"popular"`` has no date order, so it
-    only filters. Runaway scrolling is bounded by a step budget and a stagnation
-    guard. Without a window the behaviour and items are exactly the plain ones
-    (no ``"date"`` key).
+    ``"date": "yyyy-mm-dd"``. The grid only renders a RELATIVE age that YouTube FLOORS
+    ("6d ago", "5mo ago", "1y ago": a "1y ago" video is anywhere from 365 to ~730 days
+    old), so a card's date is really an INTERVAL (see ``_AGE_UNITS``) and the window
+    edge is fuzzy on this engine (``yt-dlp`` dates are exact). A card is kept whenever
+    that interval OVERLAPS the window — never dropped if it might be inside, so expect
+    a few extra videos at the edges, up to a year at the old end of a yearly label — and
+    its ``"date"`` is the interval's NEWEST possible date. A card whose age can't be
+    read is KEPT with ``"date": ""``; but if most cards are unreadable (a non-English
+    YouTube UI, a renamed DOM) the whole call fails with a warning and ``("", [])``
+    instead of returning the channel as a fake window.
+
+    ``limit<=0`` then means "no count limit" (the window is the bound); a positive
+    ``limit`` caps the result AFTER filtering. The walk is always over the default
+    newest-first grid: scrolling stops early — in the same round-trip that reads the
+    cards — once the last rendered card's newest possible date is before ``since``, or
+    (``order="recent"``/``"popular"``) once ``limit`` kept cards are in hand.
+    ``order="old"`` never clicks the "Oldest" chip (a missing chip, or a click that
+    doesn't re-sort, would leave a newest-first grid mislabelled oldest-first, and the
+    window would sit at the far end of the real one): it reverses the filtered list, so
+    ``limit`` then means the N OLDEST videos of the window. ``"popular"`` still clicks
+    its chip and only filters. Runaway scrolling is bounded by a step budget (a warning
+    says when it runs out mid-window) and a stagnation guard. Without a window the
+    behaviour and items are exactly the plain ones (no ``"date"`` key).
     """
     windowed = since is not None or until is not None
     if limit <= 0 and not windowed:
@@ -1218,7 +1279,17 @@ def collect_channel_videos(
     url = f"https://www.youtube.com/{ref}/videos"
     try:
         if progress:
-            log.info("collecting up to %d channel videos (%s) from %s", limit, order, ref)
+            if windowed:
+                log.info(
+                    "collecting channel videos published %s..%s%s (%s) from %s",
+                    since or "…",
+                    until or "…",
+                    f", up to {limit}" if limit > 0 else "",
+                    order,
+                    ref,
+                )
+            else:
+                log.info("collecting up to %d channel videos (%s) from %s", limit, order, ref)
         safe_get(driver, url)
         dismiss_consent_dialog(driver)
         block = detect_block(driver)
@@ -1234,7 +1305,9 @@ def collect_channel_videos(
             log.warning("channel grid never rendered for %s", ref)
             return name, []
 
-        if order in ("popular", "old"):
+        # Window mode never re-sorts to "Oldest" (see the docstring): it walks the default
+        # newest-first grid and reverses in Python.
+        if order == "popular" or (order == "old" and not windowed):
             before_id = _first_channel_video_id(driver)
             if _click_channel_chip(driver, order):
                 try:
@@ -1252,7 +1325,31 @@ def collect_channel_videos(
 
         if windowed:
             today = _today()
-            _scroll_channel_window(driver, sel, order, since, until, limit, today)
+            why, reached = _scroll_channel_window(
+                driver,
+                sel,
+                "popular" if order == "popular" else "recent",
+                since,
+                until,
+                0 if order == "old" else limit,  # "old" cuts after the reversal, not before
+                today,
+            )
+            if why == "undated":
+                log.warning(
+                    "channel %s: cannot read the publish ages of the grid cards (a non-English "
+                    "YouTube UI, e.g. a --user-data-dir profile, or a DOM change) — a date "
+                    "window can't be honoured, giving up",
+                    ref,
+                )
+                return "", []
+            if why == "budget":
+                log.warning(
+                    "channel %s: scroll budget (%d steps) exhausted after %d cards before the "
+                    "window was settled — the listing may be incomplete",
+                    ref,
+                    _CHANNEL_WINDOW_MAX_STEPS,
+                    reached,
+                )
             raw = (
                 driver.execute_script(
                     _CHANNEL_WINDOW_JS,
@@ -1264,10 +1361,12 @@ def collect_channel_videos(
             )
             items = []
             for it in raw:
-                d = _card_date(it.pop("date_text", "") or "", today)
-                it["date"] = d.isoformat() if d else ""
-                if _in_window(d, since, until):
+                span = _card_span(it.pop("date_text", "") or "", today)
+                it["date"] = span[1].isoformat() if span else ""  # newest possible date
+                if _overlaps(span, since, until):
                     items.append(it)
+            if order == "old":
+                items.reverse()  # the grid is newest-first; see the docstring
         else:
             # The grid hydrates/re-sorts lazily; nudge-scroll until enough items are
             # present or the count stops growing (mirrors collect_related's loop).
