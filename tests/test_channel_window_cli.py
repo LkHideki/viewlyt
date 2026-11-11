@@ -277,7 +277,7 @@ def test_c_alone_still_uses_channel_entries_never_the_window_function(eng, tmp_p
     assert "probes" not in out and "2026-" not in out
 
 
-def test_plain_summary_has_no_window_keys(eng, tmp_path):
+def test_plain_summary_has_no_window_keys_but_carries_the_listed_items(eng, tmp_path):
     s = cli.run_channel_batch(
         ["@veritasium"],
         n=3,
@@ -288,7 +288,18 @@ def test_plain_summary_has_no_window_keys(eng, tmp_path):
         user_data_dir=None,
         quiet=True,
     )[0]
-    assert set(s) == {"ref", "channel", "count", "order", "engine", "channel_file", "error"}
+    # "items" (what was listed) feeds the channel -> per-video pipeline; no window keys.
+    assert set(s) == {
+        "ref",
+        "channel",
+        "count",
+        "order",
+        "engine",
+        "channel_file",
+        "error",
+        "items",
+    }
+    assert s["items"] == _items(3)
 
 
 def test_c_ceiling_cuts_the_windowed_list_to_n(eng, tmp_path):
@@ -348,16 +359,6 @@ def test_ceiling_with_order_old_keeps_the_oldest(eng, tmp_path):
         (["--since", "90d", "--order", "popular"], ["--order popular", "--since"]),
         (["--since", "90d", "--scan-cap", "-1"], ["--scan-cap"]),
         (["-C", "5", "--scan-cap", "-1"], ["--scan-cap"]),
-        (["--since", "90d", "-c"], ["--since/--until is incompatible"]),
-        (["--since", "90d", "-t"], ["--since/--until is incompatible"]),
-        (["--since", "90d", "--transcript-only"], ["--since/--until is incompatible"]),
-        (["--since", "90d", "-r", "5"], ["--since/--until is incompatible"]),
-        (["--since", "90d", "-u"], ["--since/--until is incompatible"]),
-        (["--since", "90d", "--unify-all"], ["--since/--until is incompatible"]),
-        (
-            ["-C", "5", "--since", "90d", "-c"],
-            ["-C/--channel and --since/--until are incompatible"],
-        ),
     ],
 )
 def test_usage_errors_exit_two_with_a_flag_naming_message(
@@ -377,10 +378,35 @@ def test_usage_errors_exit_two_with_a_flag_naming_message(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_plain_c_incompatibility_message_is_unchanged(eng, tmp_path, caplog):
-    assert cli.main(["-C", "5", "-c", "-o", str(tmp_path), "@veritasium"]) == 2
-    assert _errors(caplog) == ["-C/--channel is incompatible with -c/-t/-r/-u/--unify-all"]
-    assert eng.untouched
+@pytest.mark.parametrize(
+    "selector",
+    [["-c"], ["-t"], ["--transcript-only"], ["-r", "5"], ["-u"], ["--unify-all"]],
+)
+@pytest.mark.parametrize(
+    "listing", [["-C", "5"], ["--since", "90d"], ["-C", "5", "--since", "90d"]]
+)
+def test_a_selector_beside_c_or_since_is_a_pipeline_not_a_usage_error(
+    eng, tmp_path, caplog, monkeypatch, listing, selector
+):
+    """Was: exit 2 "... incompatible with -c/-t/-r/-u/--unify-all". Now the listing runs
+    (same engines, same ``.channel.md``) and its videos are handed to ``run_batch``."""
+    ids = ["abcdefghi01", "abcdefghi02"]
+    items = [
+        {"video_id": v, "title": v, "views": "", "url": f"https://www.youtube.com/watch?v={v}"}
+        for v in ids
+    ]
+    eng.window = ("Veritasium", items, _meta())
+    eng.plain = ("Veritasium", items)
+    calls = []
+    monkeypatch.setattr(cli, "run_batch", lambda targets, **kw: calls.append(list(targets)) or [])
+
+    rc = cli.main([*listing, *selector, "-o", str(tmp_path), "@veritasium"])
+    assert rc == 0
+    assert _errors(caplog) == []
+    assert (tmp_path / "veritasium.channel.md").exists()
+    assert calls == [[(v, f"https://www.youtube.com/watch?v={v}") for v in ids]]
+    windowed = "--since" in listing
+    assert bool(eng.window_calls) is windowed and bool(eng.plain_calls) is not windowed
 
 
 def test_window_with_no_valid_channel_ref_exits_two(eng, tmp_path, caplog):

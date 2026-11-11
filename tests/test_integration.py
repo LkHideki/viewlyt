@@ -1058,15 +1058,72 @@ def test_main_channel_multiple_refs(monkeypatch):
     assert cap["refs"] == ["@channel-a", "@channel-b"]
 
 
-@pytest.mark.parametrize("flag", [["-c"], ["-t"], ["-r", "5"], ["-u"], ["--unify-all"]])
-def test_main_channel_incompatible_with_other_selectors_exits_two(monkeypatch, flag):
-    def boom(*a, **k):
-        raise AssertionError("run_channel_batch must not be called")
+_PIPELINE_ALL = {"with_comments": True, "with_transcript": True, "with_related": True}
 
-    monkeypatch.setattr(cli, "run_channel_batch", boom)
-    monkeypatch.setattr(cli, "run_batch", boom)
-    rc = cli.main(["-C", "5", *flag, "@someone"])
-    assert rc == 2
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    [
+        (["-c"], {"with_comments": True, "with_transcript": False, "with_related": False}),
+        (["-t"], {"with_comments": False, "with_transcript": True, "with_related": False}),
+        (
+            ["--transcript-only"],
+            {"with_comments": False, "with_transcript": True, "with_related": False},
+        ),
+        (
+            ["-r", "5"],
+            {
+                "with_comments": False,
+                "with_transcript": False,
+                "with_related": True,
+                "related_limit": 5,
+            },
+        ),
+        (
+            ["-u"],
+            {**_PIPELINE_ALL, "unify": True, "related_limit": cli._UNIFY_DEFAULT_RELATED},
+        ),
+        (
+            ["--unify-all"],
+            {**_PIPELINE_ALL, "unify_all": True, "related_limit": cli._UNIFY_DEFAULT_RELATED},
+        ),
+    ],
+)
+def test_main_channel_with_a_selector_lists_then_runs_the_per_video_batch(
+    monkeypatch, flag, expected
+):
+    """``-C`` + a per-video selector used to be a usage error (exit 2); it is now the channel ->
+    per-video pipeline: the listing runs, then the listed videos go through ``run_batch``."""
+    cap = {}
+    vid = "abcdefghijk"
+
+    def fake_run_channel_batch(refs, **kw):
+        cap["listing"] = (refs, kw)
+        return [
+            {
+                "ref": "@someone",
+                "channel": "Someone",
+                "count": 1,
+                "order": "recent",
+                "engine": "yt-dlp",
+                "channel_file": "out/someone.channel.md",
+                "error": None,
+                "items": [{"video_id": vid, "url": f"https://www.youtube.com/watch?v={vid}"}],
+            }
+        ]
+
+    def fake_run_batch(targets, **kw):
+        cap["batch"] = (targets, kw)
+        return []
+
+    monkeypatch.setattr(cli, "run_channel_batch", fake_run_channel_batch)
+    monkeypatch.setattr(cli, "run_batch", fake_run_batch)
+    assert cli.main(["-C", "5", *flag, "@someone"]) == 0
+    assert cap["listing"][0] == ["@someone"] and cap["listing"][1]["n"] == 5
+    targets, kw = cap["batch"]
+    assert targets == [(vid, f"https://www.youtube.com/watch?v={vid}")]
+    for key, value in expected.items():
+        assert kw[key] == value, key
 
 
 def test_main_channel_no_valid_refs_returns_two(monkeypatch):

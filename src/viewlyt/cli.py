@@ -91,6 +91,9 @@ examples:
   vl --since 2025-01-01 --until 2025-12-31 '@x'    # a closed date range
   vl -C 50 --since 1y '@x'                         # the window, capped at 50 videos
   vl --since 90d --dates '@x'                      # every line carries its publish date
+  vl -C 30 -t '@veritasium'                        # list 30 videos, then transcribe each
+  vl --since 90d -c -t '@x'                        # comments + transcript of every video in 90d
+  vl --since 1y --unify-all '@x'                   # one unified-all.md for a year of uploads
   vl -u '<url>'                                    # all products in one file (--unify)
   vl -u --copy '<url>'                             # unify and copy to the clipboard
   vl --unify-all '<url1>' '<url2>'                 # all videos in a single file
@@ -799,7 +802,7 @@ def run_channel_batch(
     least one item; a channel that fails both engines gets an ``error`` in
     its summary and no file. Returns one summary dict per ref, in input
     order: ``{"ref", "channel", "count", "order", "engine", "channel_file",
-    "error"}``.
+    "error", "items"}`` — ``items`` being the videos that were listed (``[]`` on error).
 
     **Window mode** (``since`` given; ``until`` defaults to today UTC): every video
     published in ``[since, until]`` instead of the first ``n``, via
@@ -904,6 +907,9 @@ def run_channel_batch(
                 "engine": engine,
                 "channel_file": channel_file,
                 "error": error,
+                # What was listed (after window filtering and the -C ceiling), so the
+                # channel -> per-video pipeline needn't re-fetch it ([] when it failed).
+                "items": items,
             }
             if window is not None:
                 summary.update(
@@ -1062,7 +1068,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="treat the inputs as CHANNELS and list the first N videos each -> "
         "out/<channel-slug>.channel.md (0 = off). With --since/--until it is a CEILING on "
-        "the windowed list instead. Incompatible with -c/-t/-r/-u/--unify-all. yt-dlp is "
+        "the windowed list instead. Alone it only LISTS; add -c/-t/-r/-u/--unify-all and "
+        "every listed video is then scraped with those products (a pipeline). yt-dlp is "
         "tried first, falling back to Selenium.",
     )
     p.add_argument(
@@ -1079,7 +1086,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="list EVERY video a channel published from SPEC until today (or --until) -> "
         "out/<channel-slug>.channel.md. SPEC is yyyy-mm-dd or relative: 30d, 12w, 6m, 1y "
         "(months=30d, years=365d). Implies channel mode (no -C needed; -C N then caps the "
-        "list at N). Same exclusions as -C.",
+        "list at N). Like -C it only lists, unless -c/-t/-r/-u/--unify-all is added: then "
+        "every video of the window is scraped.",
     )
     p.add_argument(
         "--until",
@@ -1218,9 +1226,50 @@ def _resolve_window(args: argparse.Namespace) -> tuple[date, date] | None:
     return since, until
 
 
+def _has_video_selector(args: argparse.Namespace) -> bool:
+    """True when a per-video product was asked for (-c/-t/--transcript-only/-r/-u/--unify-all)."""
+    return bool(
+        args.comments
+        or args.transcript
+        or args.transcript_only
+        or args.related
+        or args.unify
+        or args.unify_all
+    )
+
+
+def _targets_from_listing(summaries: list[dict]) -> tuple[list[tuple[str, str]], int]:
+    """``(video_id, url)`` targets from the listed channels, plus how many channels
+    contributed at least one.
+
+    Listing order is kept (channel by channel, each in its own order) so
+    ``--unify-all`` reads the way the listing does; a video seen in several channels is
+    scraped ONCE, first occurrence wins; items with no video id are skipped."""
+    seen: set[str] = set()
+    targets: list[tuple[str, str]] = []
+    contributing = 0
+    for s in summaries:
+        if s.get("error"):
+            continue
+        before = len(targets)
+        for item in s.get("items") or []:
+            vid = item.get("video_id") or ""
+            if not vid or vid in seen:
+                continue
+            seen.add(vid)
+            targets.append((vid, item.get("url") or f"https://www.youtube.com/watch?v={vid}"))
+        contributing += len(targets) > before
+    return targets, contributing
+
+
 def _run_channel_mode(args: argparse.Namespace, window: tuple[date, date] | None = None) -> int:
-    """``-C/--channel N`` / ``--since``: list videos per channel ref instead of scraping
-    videos. Split out of :func:`main` so the early branch there stays short."""
+    """``-C/--channel N`` / ``--since``: list videos per channel ref.
+
+    Alone this is a listing-only product. With a per-video selector (``-c``/``-t``/
+    ``--transcript-only``/``-r``/``-u``/``--unify-all``) it is a PIPELINE: the listing runs
+    exactly as it would alone (same ``.channel.md``, same report), then the listed videos
+    go through the same per-video flow as ``vl <urls>`` (:func:`_run_video_batch`).
+    Split out of :func:`main` so the early branch there stays short."""
     try:
         refs = gather_channel_refs(args.inputs, args.from_file)
     except OSError as exc:
@@ -1230,6 +1279,7 @@ def _run_channel_mode(args: argparse.Namespace, window: tuple[date, date] | None
         log.error("no valid channel handles/URLs given (pass @handle/URLs and/or --from-file)")
         return 2
 
+    pipeline = _has_video_selector(args)
     span = f", window={window[0]}..{window[1]}" if window else ""
     log.info("%d channel(s) to list (order=%s, n=%d%s)", len(refs), args.order, args.channel, span)
     summaries = run_channel_batch(
@@ -1240,7 +1290,9 @@ def _run_channel_mode(args: argparse.Namespace, window: tuple[date, date] | None
         headless=not args.headed,
         fallback=not args.no_fallback,
         user_data_dir=args.user_data_dir,
-        copy=args.copy,
+        # In a pipeline the clipboard gets the per-video output; a second write here
+        # would just be clobbered by it (or clobber it, depending on order).
+        copy=args.copy and not pipeline,
         quiet=args.quiet,
         since=window[0] if window else None,
         until=window[1] if window else None,
@@ -1259,74 +1311,30 @@ def _run_channel_mode(args: argparse.Namespace, window: tuple[date, date] | None
     for s in failed:
         print(f"  {_color('✗', '31')} {s['ref']}  {s['error']}", file=sys.stderr)
 
-    if args.show_tokens and ok:
-        _print_token_report(ok, budget_tokens=int(args.budget * 1000))
+    # The listing's own exit code: 1 only when every channel failed (a 0-video window
+    # is a success). Listing-only runs return it as is.
+    listing_rc = 1 if failed and not ok else 0
+    if not pipeline:
+        if args.show_tokens and ok:
+            _print_token_report(ok, budget_tokens=int(args.budget * 1000))
+        return listing_rc
 
-    if failed and not ok:
-        return 1
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.WARNING if args.quiet else logging.INFO,
-        format="%(levelname)s %(message)s",
-    )
-
-    if args.legacy_no_ts:
-        log.warning(
-            "--no-ts is deprecated and a no-op: timestamps are stripped by default "
-            "(use --ts to keep them)"
-        )
-
-    try:
-        window = _resolve_window(args)
-    except ValueError as exc:
-        log.error("%s", exc)
-        return 2
-
-    if window is None:
-        # Mirrors the --order warning below: harmless flags that only mean something
-        # with a window are called out instead of silently ignored.
-        if args.dates:
-            log.warning("--dates has no effect without --since")
-        if args.scan_cap != _DEFAULT_SCAN_CAP:
-            log.warning("--scan-cap has no effect without --since")
-
-    if args.channel > 0 or window is not None:
-        if (
-            args.comments
-            or args.transcript
-            or args.transcript_only
-            or args.related
-            or args.unify
-            or args.unify_all
-        ):
-            names = [
-                name
-                for name, on in (("-C/--channel", args.channel > 0), ("--since/--until", window))
-                if on
-            ]
-            log.error(
-                "%s %s incompatible with -c/-t/-r/-u/--unify-all",
-                " and ".join(names),
-                "are" if len(names) > 1 else "is",
-            )
-            return 2
-        return _run_channel_mode(args, window)
-    if args.order != "recent":
-        log.warning("--order has no effect without -C/--channel or --since")
-
-    try:
-        targets = gather_urls(args.inputs, args.from_file)
-    except OSError as exc:
-        log.error("could not read input file: %s", exc)
-        return 2
+    targets, n_channels = _targets_from_listing(summaries)
     if not targets:
-        log.error("no valid YouTube URLs/ids given (pass URLs and/or --from-file a .txt/.csv)")
-        return 2
+        if listing_rc:
+            log.error("no channel could be listed — nothing to scrape")
+        else:
+            log.info("the listing holds no videos (empty window) — nothing to scrape")
+        return listing_rc
+    log.info("%d video(s) from %d channel(s) listed -> scraping them now", len(targets), n_channels)
+    return _run_video_batch(args, targets)
 
+
+def _run_video_batch(args: argparse.Namespace, targets: list[tuple[str, str]]) -> int:
+    """The per-video flow: resolve which products to collect, run the batch over
+    ``targets`` (``(video_id, url)``), print the per-video report and token estimate,
+    and return the exit code. Shared by plain ``vl <urls>`` and by the channel pipeline
+    (``-C``/``--since`` + a product selector), so the two can never diverge."""
     with_comments, with_transcript, with_related = resolve_modes(
         args.comments, args.transcript, args.transcript_only, args.related
     )
@@ -1415,6 +1423,49 @@ def main(argv: list[str] | None = None) -> int:
     if failed and not ok:
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.WARNING if args.quiet else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
+
+    if args.legacy_no_ts:
+        log.warning(
+            "--no-ts is deprecated and a no-op: timestamps are stripped by default "
+            "(use --ts to keep them)"
+        )
+
+    try:
+        window = _resolve_window(args)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+
+    if window is None:
+        # Mirrors the --order warning below: harmless flags that only mean something
+        # with a window are called out instead of silently ignored.
+        if args.dates:
+            log.warning("--dates has no effect without --since")
+        if args.scan_cap != _DEFAULT_SCAN_CAP:
+            log.warning("--scan-cap has no effect without --since")
+
+    if args.channel > 0 or window is not None:
+        return _run_channel_mode(args, window)
+    if args.order != "recent":
+        log.warning("--order has no effect without -C/--channel or --since")
+
+    try:
+        targets = gather_urls(args.inputs, args.from_file)
+    except OSError as exc:
+        log.error("could not read input file: %s", exc)
+        return 2
+    if not targets:
+        log.error("no valid YouTube URLs/ids given (pass URLs and/or --from-file a .txt/.csv)")
+        return 2
+    return _run_video_batch(args, targets)
 
 
 def _print_token_report(ok_summaries: list[dict], budget_tokens: int) -> None:
