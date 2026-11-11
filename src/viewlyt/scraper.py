@@ -23,6 +23,7 @@ import logging
 import random
 import re
 import time
+from datetime import date
 
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
@@ -37,7 +38,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from tqdm import tqdm
 
 from .htmltext import extract_video_id as extract_video_id  # pure impl moved to htmltext.py
-from .htmltext import parse_view_count
+from .htmltext import parse_relative_date, parse_view_count
 
 log = logging.getLogger("viewlyt")
 
@@ -148,6 +149,24 @@ CHANNEL_CHIP_SELECTORS = (
     "yt-chip-cloud-chip-renderer",
 )
 CHANNEL_CHIP_LABELS = {"popular": "Popular", "old": "Oldest"}
+# Relative publish date of a grid card — ordered fallback, EXACT tokens (never a
+# substring class matcher). Probed live on @veritasium (2026-11): a card's metadata
+# row is <yt-content-metadata-view-model> > div[role=group] > span.icon,
+# span[role=text] "17M", span.delimiter, span[role=text].…TextLastPart "6d ago";
+# collab videos PREPEND channel spans ("Veritasium", "and 2swap", "8.9M", "5mo ago"),
+# so the date is always the LAST text span. The JS takes the last non-empty match of
+# the first selector that yields text.
+CHANNEL_DATE_SELECTORS = (
+    "yt-content-metadata-view-model .ytContentMetadataViewModelMetadataTextLastPart",
+    "yt-content-metadata-view-model span[role=text]",
+)
+# Window mode (--since/--until) scroll budget. The plain-count loop below stops
+# after 12 steps (a few dozen cards), which would silently truncate a long window
+# on a busy channel; here the date-based early stop is the normal exit and these
+# are only the runaway guards (a stale tolerance a bit wider than the count loop's
+# 3, since a wrong stop would silently drop in-window videos).
+_CHANNEL_WINDOW_MAX_STEPS = 150
+_CHANNEL_WINDOW_STALE = 5
 
 # Transcript (description -> "Show transcript" -> engagement panel)
 DESC_EXPAND = "#description-inline-expander #expand, tp-yt-paper-button#expand"
@@ -978,8 +997,185 @@ def _first_channel_video_id(driver) -> str:
         return ""
 
 
+# Window mode only (the plain path keeps _RELATED_JS untouched): cardDate() reads a
+# card's relative-date text through the ordered CHANNEL_DATE_SELECTORS ("" if none hit).
+_CHANNEL_CARD_DATE_JS = r"""
+function cardDate(card, SELS){
+  for(var s=0;s<SELS.length;s++){
+    var ns=card.querySelectorAll(SELS[s]);
+    for(var k=ns.length-1;k>=0;k--){
+      var t=(ns[k].textContent||'').replace(/\s+/g,' ').trim();
+      if(t)return t;
+    }
+  }
+  return '';
+}
+"""
+
+# The scroll loop's probe: ONE light round-trip per step returning just the date text
+# of every DISTINCT card (ids de-duplicated — the grid selector list matches each card
+# twice, as the <ytd-rich-item-renderer> and its nested lockup), in DOM order. Python
+# derives both the count and the early-stop condition from it.
+_CHANNEL_DATES_JS = (
+    _CHANNEL_CARD_DATE_JS
+    + r"""
+var ITEM=arguments[0], DATE=arguments[1];
+var items=document.querySelectorAll(ITEM), out=[], seen={};
+for(var i=0;i<items.length;i++){
+  var a=items[i].querySelector("a[href*='/watch?v=']");
+  if(!a)continue;
+  var m=(a.getAttribute('href')||'').match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if(!m||seen[m[1]])continue;
+  seen[m[1]]=1;
+  out.push(cardDate(items[i],DATE));
+}
+return out;
+"""
+)
+
+# Window-mode harvest: _RELATED_JS plus the raw date text, and NO cap — filtering by
+# date happens in Python afterwards, so a JS-side LIMIT would count out-of-window cards.
+_CHANNEL_WINDOW_JS = (
+    _CHANNEL_CARD_DATE_JS
+    + r"""
+var ITEM=arguments[0], TITLE=arguments[1], DATE=arguments[2];
+var items=document.querySelectorAll(ITEM), out=[], seen={};
+for(var i=0;i<items.length;i++){
+  var lu=items[i];
+  var a=lu.querySelector("a[href*='/watch?v=']");
+  if(!a)continue;
+  var m=(a.getAttribute('href')||'').match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if(!m||seen[m[1]])continue;
+  var id=m[1], title='';
+  for(var k=0;k<TITLE.length;k++){var tn=lu.querySelector(TITLE[k]);
+    if(tn){var tt=(tn.textContent||'').replace(/\s+/g,' ').trim();if(tt){title=tt;break;}}}
+  if(!title)title=(a.getAttribute('title')||'').replace(/\s+/g,' ').trim();
+  if(!title)continue;
+  var views='', meta=lu.querySelector('yt-content-metadata-view-model');
+  if(meta){var sp=meta.querySelectorAll('span');
+    for(var j=0;j<sp.length;j++){var vx=(sp[j].textContent||'').replace(/\s+/g,' ').trim();
+      if(/view|visualiz/i.test(vx)){views=vx;break;}}}
+  seen[m[1]]=1;
+  out.push({video_id:id,title:title,views:views,
+    url:'https://www.youtube.com/watch?v='+id,date_text:cardDate(lu,DATE)});
+}
+return out;
+"""
+)
+
+# The grid renders COMPACT relative dates ("6d ago", "5mo ago", "1y ago"); parse_relative_date
+# only understands the long form ("6 days ago"), so expand before delegating. "Streamed"/
+# "Premiered" prefixes are dropped because parse_relative_date's "a/an" -> "1" rewrite is
+# anchored at the start of the text ("Streamed a month ago" would otherwise not parse).
+_STREAM_PREFIX_RE = re.compile(r"^\s*(?:streamed(?:\s+live)?|premiered)\s+", re.I)
+_COMPACT_AGO_RE = re.compile(r"\b(\d+)\s*(mo|[smhdwy])\s+ago\b", re.I)
+_COMPACT_UNITS = {
+    "s": "second",
+    "m": "minute",
+    "h": "hour",
+    "d": "day",
+    "w": "week",
+    "mo": "month",
+    "y": "year",
+}
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _today() -> date:
+    """Today's date for window-mode date math — one indirection so tests can pin it."""
+    return date.today()
+
+
+def _card_date(text: str, today: date) -> date | None:
+    """Approximate publish date of a channel-grid card from its relative-date text.
+
+    ``None`` when the text is empty or unparseable ("Scheduled for …", a live
+    "watching" count, …): :func:`parse_relative_date` hands unparseable text back
+    verbatim rather than flagging it, so the result is only trusted when it is an
+    ISO date. Never raises (absurd counts overflow ``timedelta``/``date``).
+    """
+    t = _STREAM_PREFIX_RE.sub("", text or "")
+    t = _COMPACT_AGO_RE.sub(lambda m: f"{m[1]} {_COMPACT_UNITS[m[2].lower()]} ago", t)
+    try:
+        iso = parse_relative_date(t, today)
+        return date.fromisoformat(iso) if _ISO_DATE_RE.fullmatch(iso) else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def _in_window(d: date | None, since: date | None, until: date | None) -> bool:
+    """Inclusive window test; an undated card (``None``) is kept — never silently
+    drop data over a date we merely failed to read."""
+    return d is None or ((since is None or d >= since) and (until is None or d <= until))
+
+
+def _window_scroll_done(
+    dates: list[date | None],
+    order: str,
+    since: date | None,
+    until: date | None,
+    limit: int,
+) -> bool:
+    """Whether the rendered cards already settle the window (no point scrolling on).
+
+    The grid is date-sorted, so for ``recent`` everything not yet rendered is older
+    than the LAST dated card (stop once that is before ``since``) and for ``old``
+    everything not yet rendered is newer (stop once it is after ``until``).
+    ``popular`` has no date order, hence no date-based stop. Independently, a
+    positive ``limit`` caps the result AFTER filtering, and appended cards only
+    ever land behind the ones already rendered, so ``limit`` in-window cards fix
+    the answer whatever the order.
+    """
+    dated = [d for d in dates if d is not None]
+    if dated:
+        last = dated[-1]
+        if order == "recent" and since is not None and last < since:
+            return True
+        if order == "old" and until is not None and last > until:
+            return True
+    return limit > 0 and sum(_in_window(d, since, until) for d in dates) >= limit
+
+
+def _scroll_channel_window(
+    driver,
+    sel: str,
+    order: str,
+    since: date | None,
+    until: date | None,
+    limit: int,
+    today: date,
+) -> None:
+    """Nudge-scroll the channel grid until :func:`_window_scroll_done`, the grid
+    stagnates (``_CHANNEL_WINDOW_STALE`` growth-less steps) or the hard step budget
+    is spent. The stop check shares the round-trip that counts the cards."""
+    date_sels = list(CHANNEL_DATE_SELECTORS)
+    prev, stale = -1, 0
+    for _ in range(_CHANNEL_WINDOW_MAX_STEPS):
+        texts = driver.execute_script(_CHANNEL_DATES_JS, sel, date_sels)
+        dates = [_card_date(str(t or ""), today) for t in texts] if isinstance(texts, list) else []
+        if _window_scroll_done(dates, order, since, until, limit):
+            return
+        n = len(dates)
+        if n == prev:
+            stale += 1
+            if stale >= _CHANNEL_WINDOW_STALE:
+                return
+        else:
+            stale = 0
+        prev = n
+        driver.execute_script("window.scrollBy(0, 1200);")
+        _sleep_jitter(0.35)
+
+
 def collect_channel_videos(
-    driver, ref: str, limit: int, order: str = "recent", progress: bool = True
+    driver,
+    ref: str,
+    limit: int,
+    order: str = "recent",
+    progress: bool = True,
+    *,
+    since: date | None = None,
+    until: date | None = None,
 ) -> tuple[str, list[dict]]:
     """Collect up to ``limit`` videos from a channel's ``/videos`` grid.
 
@@ -990,17 +1186,34 @@ def collect_channel_videos(
     :func:`collect_related`, reused verbatim by ``htmltext.format_related``).
     ``channel_name`` is ``""`` when the page never rendered — the caller then
     degrades the slug to the ref.
-    NEVER raises: any error, block, or ``limit<=0`` returns ``("", [])`` — the
-    CLI caller treats an empty list as "fallback also failed" and surfaces one
-    error per channel instead of crashing the whole batch.
+    NEVER raises: any error, block, or ``limit<=0`` (outside window mode) returns
+    ``("", [])`` — the CLI caller treats an empty list as "fallback also failed" and
+    surfaces one error per channel instead of crashing the whole batch.
 
     ``order`` is ``"recent"`` (default "Latest" tab, no clicks), ``"popular"``,
     or ``"old"`` — the latter two click the matching sort chip and poll until
     the grid's first video id changes (or the chip click itself failed/no-op,
     in which case the "Latest" order is used as a best-effort degrade rather
     than failing outright).
+
+    **Window mode** (``since``/``until``, inclusive, either may be ``None``): only
+    videos published inside the window are returned and each item gains
+    ``"date": "yyyy-mm-dd"``. The grid only renders a RELATIVE age ("6d ago",
+    "5mo ago", "Streamed 3 weeks ago"), so the date is an APPROXIMATION (months≈30d,
+    years≈365d — a "2 months ago" card is ~60 d give or take weeks, YouTube floors
+    the unit), and the window edge is fuzzy on this engine; ``yt-dlp`` dates are
+    exact. A card whose date can't be read is KEPT with ``"date": ""``. ``limit<=0``
+    then means "no count limit" (the window is the bound); a positive ``limit`` caps
+    the result AFTER filtering. Scrolling stops early — in the same round-trip that
+    counts the cards — once the last rendered card is older than ``since``
+    (``order="recent"``) or newer than ``until`` (``order="old"``), or once
+    ``limit`` in-window cards are in hand; ``"popular"`` has no date order, so it
+    only filters. Runaway scrolling is bounded by a step budget and a stagnation
+    guard. Without a window the behaviour and items are exactly the plain ones
+    (no ``"date"`` key).
     """
-    if limit <= 0:
+    windowed = since is not None or until is not None
+    if limit <= 0 and not windowed:
         return "", []
     url = f"https://www.youtube.com/{ref}/videos"
     try:
@@ -1037,24 +1250,45 @@ def collect_channel_videos(
             else:
                 log.info("no %r sort chip found for %s — using the default order", order, ref)
 
-        # The grid hydrates/re-sorts lazily; nudge-scroll until enough items are
-        # present or the count stops growing (mirrors collect_related's loop).
-        prev, stale = -1, 0
-        for _ in range(12):
-            n = _count(driver, sel)
-            if n >= limit:
-                break
-            if n == prev:
-                stale += 1
-                if stale >= 3:
+        if windowed:
+            today = _today()
+            _scroll_channel_window(driver, sel, order, since, until, limit, today)
+            raw = (
+                driver.execute_script(
+                    _CHANNEL_WINDOW_JS,
+                    sel,
+                    list(RELATED_TITLE_SELECTORS),
+                    list(CHANNEL_DATE_SELECTORS),
+                )
+                or []
+            )
+            items = []
+            for it in raw:
+                d = _card_date(it.pop("date_text", "") or "", today)
+                it["date"] = d.isoformat() if d else ""
+                if _in_window(d, since, until):
+                    items.append(it)
+        else:
+            # The grid hydrates/re-sorts lazily; nudge-scroll until enough items are
+            # present or the count stops growing (mirrors collect_related's loop).
+            prev, stale = -1, 0
+            for _ in range(12):
+                n = _count(driver, sel)
+                if n >= limit:
                     break
-            else:
-                stale = 0
-            prev = n
-            driver.execute_script("window.scrollBy(0, 1200);")
-            _sleep_jitter(0.35)
+                if n == prev:
+                    stale += 1
+                    if stale >= 3:
+                        break
+                else:
+                    stale = 0
+                prev = n
+                driver.execute_script("window.scrollBy(0, 1200);")
+                _sleep_jitter(0.35)
 
-        items = driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
+            items = (
+                driver.execute_script(_RELATED_JS, sel, list(RELATED_TITLE_SELECTORS), limit) or []
+            )
         # The grid only ever renders an abbreviated count ("1.2M views"), so the
         # exact int is available only when YouTube happened to print it in full.
         # parse_view_count returns None for abbreviations rather than inventing
@@ -1063,7 +1297,7 @@ def collect_channel_videos(
             it["views_int"] = parse_view_count(it.get("views") or "")
         if progress:
             log.info("collected %d channel videos", len(items))
-        return name, items[:limit]
+        return name, items[:limit] if limit > 0 else items
     except WebDriverException as exc:
         log.warning("channel video collection failed for %s: %s", ref, exc)
         return "", []
