@@ -911,6 +911,292 @@ def test_scan_detected_lone_outlier_always_costs_a_constant_number_of_extra_prob
     assert flagged >= 30  # the property isn't vacuous
 
 
+# --- ONE out-of-place entry anywhere never loses an in-window video ---------------------
+#
+# Review finding: a single old entry at the end of a batch stopped the gallop there, and
+# nothing was left to contradict it, so every in-window video beyond it silently went
+# missing (`--dates` can't recover them: it only re-filters what was returned).
+
+
+def _monotone(rng: random.Random, n: int) -> list[date | None]:
+    """``n`` newest-first dates, 0-2 days apart (ties allowed)."""
+    dates: list[date | None] = []
+    d = NEWEST
+    for _ in range(n):
+        dates.append(d)
+        d -= timedelta(days=rng.randint(0, 2))
+    return dates
+
+
+def _in_order_truth(dates: list[date | None], k: int, since: date, until: date) -> set[int]:
+    """The in-window entries other than the outlier ``k``: what must never go missing."""
+    return {i for i, d in enumerate(dates) if i != k and d is not None and since <= d <= until}
+
+
+def test_scan_old_entry_at_a_batch_boundary_no_longer_hides_the_window() -> None:
+    # Repro A from the review: 400 daily videos, entry 63 (the end of the first batch)
+    # dated 200 days ago, window = the last 120 days. Used to return 63 of the 120.
+    dates: list[date | None] = list(daily(400))
+    dates[63] = day(200)
+    since, until = day(120), NEWEST
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(since, until)
+    assert got == brute(dates, since, until) and len(got) == 120
+    assert meta["non_monotonic"] is True  # the outlier was identified, not just survived
+    assert meta["flat_requests"] == 2  # 63 alone was not accepted as the end of the window
+    assert meta["probes"] <= 16
+    assert len(ch.probed) == len(set(ch.probed))
+
+
+def test_scan_two_outliers_around_a_batch_boundary_lose_no_in_order_entry() -> None:
+    # Repro B from the review (two out-of-place entries): 127 dated far too old, 123
+    # too new. The in-order in-window videos must all be there; the only extras that may
+    # appear are the outliers themselves (judged by position when no probe exposes them).
+    dates: list[date | None] = list(daily(400))
+    dates[127] = day(380)
+    dates[123] = day(60)
+    since, until = day(200), day(100)
+    got, _, _ = FakeChannel(dates).scan(since, until)
+    truth = set(brute(dates, since, until))
+    assert truth <= set(got)  # used to return 26 of 99
+    assert set(got) - truth <= {123, 127}
+
+
+@pytest.mark.parametrize("first_batch", [16, 64])
+@pytest.mark.parametrize("kind", ["older", "newer"])
+def test_scan_outlier_at_every_batch_boundary_loses_nothing(first_batch: int, kind: str) -> None:
+    n = 1000
+    since, until = day(900), NEWEST
+    boundaries = [first_batch * 2**j - 1 for j in range(8) if first_batch * 2**j - 1 < n]
+    assert len(boundaries) >= 4
+    for k in boundaries:
+        dates: list[date | None] = list(daily(n))
+        dates[k] = day(k + 1500) if kind == "older" else NEWEST + timedelta(days=500)
+        ch = FakeChannel(dates)
+        got, meta, _ = ch.scan(since, until, first_batch=first_batch)
+        assert _in_order_truth(dates, k, since, until) <= set(got), (k, kind)
+        if meta["non_monotonic"]:
+            assert got == brute(dates, since, until), (k, kind)
+        assert len(ch.probed) == len(set(ch.probed))
+
+
+def test_scan_gallop_needs_two_old_entries_in_a_row_before_it_stops() -> None:
+    dates = daily(1000)
+    # The window ends in the middle of the second batch: 127 and 126 are both old.
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(day(100), NEWEST)
+    assert got == list(range(101)) and meta["flat_requests"] == 2
+    # The window ends exactly where the first batch does: 63 is the FIRST old entry,
+    # its predecessor is in the window, so one old date is not accepted as the end —
+    # one more batch is fetched (a rare, cheap miss) and the answer is the same.
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(day(62), NEWEST)
+    assert got == list(range(63)) and meta["flat_requests"] == 2
+    # Both old inside the first batch: it stops there.
+    ch = FakeChannel(dates)
+    got, meta, _ = ch.scan(day(30), NEWEST)
+    assert got == list(range(31)) and meta["flat_requests"] == 1
+
+
+def test_scan_gallop_stop_is_proved_again_when_the_entries_it_rested_on_are_distrusted() -> None:
+    dates = daily(1000)
+    ch = FakeChannel(dates)
+    scan = ytdl._WindowScan(
+        ch.fetch_flat,
+        ch.probe_date,
+        day(100),
+        NEWEST,
+        cap=5000,
+        first_batch=64,
+        max_probes=200,
+        max_undatable_run=24,
+        skip=None,
+    )
+    assert scan.gallop() is True and ch.requests == [64, 128]  # stopped: 127 and 126 are old
+    assert scan.gallop() is False and ch.requests == [64, 128]  # nothing changed: free re-check
+    # Everything old that the stop could lean on becomes bad (as `_resolve` would do):
+    scan.bad.update(scan.ids[101:])
+    assert scan.gallop() is True  # the stop no longer holds: it fetches more
+    assert ch.requests[2] == 256
+
+
+def test_scan_run_resumes_the_gallop_once_the_search_has_settled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # White-box: no natural input I could build (6000 random multi-outlier trials found
+    # none) reaches this, so the first `bounds()` is made to distrust the old tail the way
+    # `_resolve` would. `run` must then notice that its stop is gone and fetch more.
+    dates = daily(1000)
+    ch = FakeChannel(dates)
+    real_bounds = ytdl._WindowScan.bounds
+    calls: list[int] = []
+
+    def bounds(self: ytdl._WindowScan) -> tuple[int, int]:
+        if not calls:
+            calls.append(1)
+            for i in range(101, len(self.ids)):  # every old entry the stop leaned on
+                self.date_at(i, check=False)  # ... dated, as `_resolve`'s bad entries always are
+            self.bad.update(self.ids[101:])
+        return real_bounds(self)
+
+    monkeypatch.setattr(ytdl._WindowScan, "bounds", bounds)
+    got, meta, _ = ch.scan(day(100), NEWEST)
+    assert ch.requests == [64, 128, 256]  # without the resume it would stop at [64, 128]
+    assert got == list(range(101))  # the distrusted entries are judged by their own date
+    assert meta["truncated_by_cap"] is False
+
+
+def test_scan_gallop_clears_truncated_when_a_later_check_proves_the_stop() -> None:
+    dates = daily(1000)
+    ch = FakeChannel(dates)
+    scan = ytdl._WindowScan(
+        ch.fetch_flat,
+        ch.probe_date,
+        day(100),
+        NEWEST,
+        cap=64,
+        first_batch=64,
+        max_probes=200,
+        max_undatable_run=24,
+        skip=None,
+    )
+    scan.gallop()
+    assert scan.truncated is True  # at the cap with the window still open
+    scan.since = day(10)  # (white-box) the window now ends inside the list
+    assert scan.gallop() is False and scan.truncated is False  # no stale warning
+
+
+def test_scan_a_lone_outlier_is_distrusted_alone() -> None:
+    # Its neighbours vouch for the far-away entry it contradicts, so only the outlier —
+    # not the legitimate probe on the other side of the contradiction — loses its place.
+    dates: list[date | None] = list(daily(400))
+    dates[63] = day(200)
+    ch = FakeChannel(dates)
+    scan = ytdl._WindowScan(
+        ch.fetch_flat,
+        ch.probe_date,
+        day(120),
+        NEWEST,
+        cap=5000,
+        first_batch=64,
+        max_probes=200,
+        max_undatable_run=24,
+        skip=None,
+    )
+    scan.run()
+    assert scan.bad == {"v63"}
+
+
+def test_scan_single_outlier_anywhere_never_loses_an_in_window_entry() -> None:
+    # Property, 1000 seeded trials over channels of 50..3000 entries, ONE outlier (newer or
+    # older, at a random place, at a batch boundary, or next to a border of the window):
+    #  * nothing in-order that is inside the window may be missing from the result;
+    #  * once the scan flags the inversion, the result equals the filter by actual date;
+    #  * a lone outlier costs only a few extra probes over the same scan of the clean channel.
+    rng = random.Random(20260717)
+    flagged = boundary = border = costly = 0
+    for trial in range(1000):
+        n = rng.randint(50, 3000)
+        dates = _monotone(rng, n)
+        oldest = dates[-1]
+        assert oldest is not None
+        span = (NEWEST - oldest).days
+        since = NEWEST - timedelta(days=rng.randint(0, span))
+        until = since + timedelta(days=rng.randint(0, span))
+        first_batch = rng.choice([16, 32, 64, 64, 100])
+        _, clean, _ = FakeChannel(dates).scan(since, until, first_batch=first_batch)
+        truth = brute(dates, since, until)
+        mode = rng.choice(["random", "boundary", "border", "random"])
+        if mode == "boundary":
+            ends = [first_batch * 2**j - 1 for j in range(8) if first_batch * 2**j - 1 < n]
+            k = rng.choice(ends or [n - 1])
+            boundary += 1
+        elif mode == "border" and truth:
+            k = max(0, min(n - 1, rng.choice([truth[0] - 1, truth[0], truth[-1], truth[-1] + 1])))
+            border += 1
+        else:
+            k = rng.randrange(n)
+        if rng.random() < 0.3:  # a date from inside the channel's own span, in or out of the window
+            outlier = NEWEST - timedelta(days=rng.randint(-30, span + 30))
+        elif rng.random() < 0.5:
+            outlier = NEWEST + timedelta(days=rng.randint(1, 400))  # far too new
+        else:
+            outlier = oldest - timedelta(days=rng.randint(1, 400))  # far too old
+        bad = list(dates)
+        bad[k] = outlier
+        ch = FakeChannel(bad)
+        got, meta, _ = ch.scan(since, until, first_batch=first_batch)
+        where = (trial, n, k, mode, first_batch, since, until, outlier)
+        assert _in_order_truth(bad, k, since, until) <= set(got), where
+        if meta["non_monotonic"]:
+            flagged += 1
+            assert got == brute(bad, since, until), where
+        extra = meta["probes"] - clean["probes"]
+        assert extra <= 12, (extra, where)
+        costly += extra > 3
+        assert len(ch.probed) == len(set(ch.probed)), where
+    assert flagged >= 200 and boundary >= 200 and border >= 100  # the property isn't vacuous
+    # 3 extra probes or fewer in 97%+ of the trials (measured ~98.8%). Dating the
+    # neighbours of a contradicting probe is what keeps this low: without it the
+    # share above 3 is ~10%.
+    assert costly <= 30
+
+
+def test_scan_single_outlier_family_on_a_3000_entry_channel_stays_cheap_and_complete() -> None:
+    # Every batch boundary and both borders of five windows, four kinds of wrong date.
+    # Cost lock: a lone outlier adds few probes (<= 4 in 95% of the cases, never > 12).
+    base = daily(3000)
+    windows = [
+        (day(2500), NEWEST),
+        (day(1500), day(700)),
+        (day(300), day(100)),
+        (day(2999), day(0)),
+        (day(1000), day(1000)),
+    ]
+    extras: list[int] = []
+    for since, until in windows:
+        _, clean, _ = FakeChannel(base).scan(since, until)
+        inside = [i for i, d in enumerate(base) if since <= d <= until]
+        hi_t, lo_t = inside[0], inside[-1] + 1
+        spots = {63, 127, 255, 511, 1023, 2047, 0, 1, 2999}
+        spots |= {lo_t - 2, lo_t - 1, lo_t, lo_t + 1, hi_t - 2, hi_t - 1, hi_t, hi_t + 1}
+        for k in sorted(s for s in spots if 0 <= s < 3000):
+            for outlier in (
+                NEWEST + timedelta(days=400),  # far newer than anything
+                day(3400),  # far older than anything
+                day(max(0, k - 400)),  # newer than its place, within the channel's span
+                day(k + 400),  # older than its place, within the channel's span
+            ):
+                dates: list[date | None] = list(base)
+                dates[k] = outlier
+                got, meta, _ = FakeChannel(dates).scan(since, until)
+                assert _in_order_truth(dates, k, since, until) <= set(got), (since, until, k)
+                if meta["non_monotonic"]:
+                    assert got == brute(dates, since, until), (since, until, k, outlier)
+                extras.append(meta["probes"] - clean["probes"])
+    assert len(extras) >= 250
+    assert max(extras) <= 12
+    assert sum(e > 4 for e in extras) <= 0.05 * len(extras)
+
+
+def test_scan_clean_3000_entry_channel_stays_within_30_probes_for_every_kind_of_window() -> None:
+    # Includes `until = today`-style windows (the CLI default), where the border
+    # confirmations are the new cost.
+    dates = daily(3000)
+    rng = random.Random(3)
+    windows = []
+    for _ in range(150):
+        a, b = sorted(rng.sample(range(3000), 2))
+        windows.append((day(b), day(a)))
+        windows.append((day(b), NEWEST + timedelta(days=rng.randint(0, 5))))
+    worst = 0
+    for since, until in windows:
+        got, meta, _ = FakeChannel(dates).scan(since, until)
+        assert got == brute(dates, since, until)
+        worst = max(worst, meta["probes"])
+    assert worst <= 30
+
+
 def _two_sections() -> list[date | None]:
     """1500 OLD videos listed first, then 1500 newer ones: a long stretch out of order."""
     return [day(i + 1500) for i in range(1500)] + [day(i) for i in range(1500)]
@@ -1179,11 +1465,31 @@ def test_channel_entries_window_empty_window_is_distinguishable_from_an_empty_ta
     assert meta["scanned"] == 100
 
 
-def test_channel_entries_window_since_after_until_does_no_io(fake_yt) -> None:
+def test_channel_entries_window_since_after_until_is_a_value_error_before_any_io(fake_yt) -> None:
+    # REWRITTEN (was: returns ("", [], meta) with scanned == 0 and no I/O). `scanned == 0`
+    # is this function's "the tab was empty, fall back" signal, so a caller bug must not
+    # be able to produce it: an inverted range is refused instead.
     yt = fake_yt(FakeYt(make_uploads(50)))
-    name, items, meta = channel_entries_window("@chan", day(10), day(30))
-    assert (name, items) == ("", [])
-    assert yt.calls == [] and meta["scanned"] == 0
+    with pytest.raises(ValueError, match="after until"):
+        channel_entries_window("@chan", day(10), day(30))
+    assert yt.calls == []
+    # An order error still comes first, and both are raised before any network call.
+    with pytest.raises(ValueError, match="unknown order"):
+        channel_entries_window("@chan", day(10), day(30), order="nope")
+    # A one-day window (since == until) is fine, and the pure scan still reads an
+    # inverted range as an empty window.
+    _, items, _ = channel_entries_window("@chan", day(10), day(10))
+    assert [it["video_id"] for it in items] == ["vid010"]
+    assert scan_window(lambda n: [], lambda e: None, day(10), day(30)) == (
+        [],
+        {
+            "probes": 0,
+            "flat_requests": 0,
+            "scanned": 0,
+            "truncated_by_cap": False,
+            "non_monotonic": False,
+        },
+    )
 
 
 def test_channel_entries_window_name_falls_back_to_uploader(
@@ -1563,14 +1869,20 @@ def _viewlyt_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecor
 def test_fill_dates_warns_once_with_the_count_when_everything_fails(
     fake_yt, caplog: pytest.LogCaptureFixture
 ) -> None:
+    # REWRITTEN: the failures used to be plain RuntimeErrors. Those are now network-level
+    # (unrecognised) and trip the new breaker after 3, so "every request failed" is asserted
+    # with per-video verdicts here (a removed/private video never trips it); the outage
+    # case has its own tests below.
     uploads = make_uploads(10)
-    fake_yt(FakeYt(uploads, broken={vid for vid, _ in uploads}))
+    errors = {vid: per_video_error("This video is unavailable") for vid, _ in uploads}
+    fake_yt(FakeYt(uploads, errors=errors))
     items = [{"video_id": f"vid{i:03d}"} for i in range(5)]
     with caplog.at_level(logging.WARNING, logger="viewlyt"):
         assert fill_dates(items) == 0
     (rec,) = _viewlyt_warnings(caplog)  # exactly one record, not one per video
     msg = rec.getMessage()
-    assert "5 of 5" in msg and "5 request(s) failed" in msg and "extraction failed" in msg
+    assert "5 of 5" in msg and "5 request(s) failed" in msg and "unavailable" in msg
+    assert "not attempted" not in msg  # per-video verdicts never stop the batch
 
 
 def test_fill_dates_warning_counts_only_what_stayed_undated(
@@ -1613,6 +1925,102 @@ def test_fill_dates_warning_message_is_bounded(fake_yt, caplog: pytest.LogCaptur
         fill_dates([{"video_id": "vid000"}])
     (rec,) = _viewlyt_warnings(caplog)
     assert len(rec.getMessage()) < 400
+
+
+# --- fill_dates: an outage stops the batch instead of costing every timeout -----------
+
+
+def _dated_items(n: int) -> list[dict]:
+    return [{"video_id": f"vid{i:03d}"} for i in range(n)]
+
+
+def test_fill_dates_stops_starting_requests_after_three_network_errors_in_a_row(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `--dates` on a 200-video window used to cost ~200/4 socket timeouts during an outage.
+    yt = fake_yt(FakeYt(make_uploads(40), fail_pattern=lambda n: network_error()))
+    items = _dated_items(40)
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(items, workers=1) == 0
+    assert len(yt.watch_calls) == 3  # the breaker trips on the third, nothing is sent after
+    assert all("date" not in it for it in items)
+    (rec,) = _viewlyt_warnings(caplog)
+    msg = rec.getMessage()
+    assert "40 of 40" in msg and "3 request(s) failed" in msg
+    assert "stopped after 3 network-level errors in a row" in msg
+    assert "37 video(s) not attempted" in msg
+
+
+def test_fill_dates_outage_with_several_workers_lets_only_the_running_requests_finish(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    yt = fake_yt(FakeYt(make_uploads(60), fail_pattern=lambda n: network_error()))
+    items = _dated_items(60)
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(items, workers=4) == 0
+    sent = len(yt.watch_calls)
+    assert 3 <= sent <= 3 + 3  # at most the other workers' requests already in flight
+    (rec,) = _viewlyt_warnings(caplog)
+    msg = rec.getMessage()
+    assert f"{sent} request(s) failed" in msg and f"{60 - sent} video(s) not attempted" in msg
+
+
+def test_fill_dates_unrecognised_errors_count_as_network_level(fake_yt) -> None:
+    # Same convention as the window probe: only a verdict about the video is exempt.
+    yt = fake_yt(FakeYt(make_uploads(20), fail_pattern=lambda n: RuntimeError("boom")))
+    assert fill_dates(_dated_items(20), workers=1) == 0
+    assert len(yt.watch_calls) == 3
+
+
+def test_fill_dates_keeps_what_it_dated_before_the_outage(fake_yt) -> None:
+    yt = fake_yt(
+        FakeYt(make_uploads(20), fail_pattern=lambda n: network_error() if n >= 5 else None)
+    )
+    items = _dated_items(20)
+    assert fill_dates(items, workers=1) == 5
+    assert len(yt.watch_calls) == 5 + 3
+    assert [it.get("date") for it in items[:5]] == [day(i).isoformat() for i in range(5)]
+    assert all("date" not in it for it in items[5:])
+
+
+def test_fill_dates_two_network_errors_then_a_success_never_trip_the_breaker(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    # fail, fail, ok, fail, fail, ok, ...: never three in a row, so every video is tried.
+    yt = fake_yt(
+        FakeYt(make_uploads(12), fail_pattern=lambda n: network_error() if n % 3 != 2 else None)
+    )
+    items = _dated_items(12)
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(items, workers=1) == 4
+    assert len(yt.watch_calls) == 12
+    (rec,) = _viewlyt_warnings(caplog)
+    assert "8 of 12" in rec.getMessage() and "not attempted" not in rec.getMessage()
+
+
+def test_fill_dates_a_per_video_verdict_resets_the_network_error_count(fake_yt) -> None:
+    script = {
+        0: network_error(),
+        1: network_error(),
+        2: per_video_error(),  # YouTube answered: the next two are separate blips
+        3: network_error(),
+        4: network_error(),
+    }
+    yt = fake_yt(FakeYt(make_uploads(10), fail_pattern=lambda n: script.get(n)))
+    assert fill_dates(_dated_items(10), workers=1) == 5  # calls 5..9 succeed
+    assert len(yt.watch_calls) == 10
+
+
+def test_fill_dates_per_video_verdicts_alone_never_stop_the_batch(
+    fake_yt, caplog: pytest.LogCaptureFixture
+) -> None:
+    yt = fake_yt(FakeYt(make_uploads(30), fail_pattern=lambda n: per_video_error()))
+    with caplog.at_level(logging.WARNING, logger="viewlyt"):
+        assert fill_dates(_dated_items(30), workers=2) == 0
+    assert len(yt.watch_calls) == 30  # every video was tried: each one is its own verdict
+    (rec,) = _viewlyt_warnings(caplog)
+    assert "30 request(s) failed" in rec.getMessage()
+    assert "not attempted" not in rec.getMessage()
 
 
 # ---------------------------------------------------------------------------

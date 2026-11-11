@@ -1,7 +1,10 @@
 """Thin wrapper around ``yt-dlp`` for fast, Selenium-free metadata harvesting.
 
-Used by two features: the channel-listing product (``vl -C``, primary engine —
-see ``cli.run_channel_batch``) and the ``vl snap`` metadata snapshot. ``yt-dlp``
+Used by four features: the default transcript product (captions without a
+browser — :func:`video_transcript`), the channel-listing product (``vl -C``,
+primary engine — see ``cli.run_channel_batch``), its date-window mode
+(``--since``/``--until`` — :func:`channel_entries_window`, :func:`fill_dates`)
+and the ``vl snap`` metadata snapshot. ``yt-dlp``
 is a **base** dependency, but importing it costs about a second, so it is never
 imported at module load time — only lazily, inside :func:`_extract`, the single
 boundary every public function in this module funnels through. That keeps
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -91,12 +95,14 @@ def _entry_to_item(e: dict) -> dict:
     Pure (no I/O): the shape matches what ``htmltext.format_related`` expects,
     so channel listings can reuse it verbatim.
 
-    ``views_int`` is yt-dlp's EXACT ``view_count`` and is the source of truth
-    (``None`` when the payload omits it, e.g. most ``old``-order entries).
-    ``views`` is the rendered form kept only so the dict stays drop-in
-    compatible with the Selenium fallback's shape; ``format_related`` prefers
-    the int. Library callers wanting a number must read ``views_int`` — never
-    re-parse the string.
+    ``views_int`` is yt-dlp's ``view_count`` and is the source of truth for the
+    number (``None`` when the payload omits it, e.g. most ``old``-order
+    entries) — but on a channel TAB it is the tab's own ROUNDED count (live
+    check: 17,000,000 where the watch page says 17,320,592), exact only from a
+    watch-page extraction (``video_transcript``, ``video_info``). ``views`` is
+    the rendered form kept only so the dict stays drop-in compatible with the
+    Selenium fallback's shape; ``format_related`` prefers the int. Library
+    callers wanting a number must read ``views_int`` — never re-parse the string.
     """
     from .htmltext import format_view_count
 
@@ -274,6 +280,7 @@ class _WindowScan:
         self.skip = skip
         self.entries: list[dict] = []
         self.ids: list[str] = []
+        self.requested = 0  # size of the last flat request (0 = nothing fetched yet)
         self.raw_count = 0  # flat entries in the last fetch, BEFORE `skip`
         self.known: dict[str, date | None] = {}
         self.bad: set[str] = set()
@@ -374,16 +381,17 @@ class _WindowScan:
     def _resolve(self, k: int, partners: list[int]) -> None:
         """Classify the inversion exposed by the probe at ``k``.
 
-        Date the immediate neighbours of ``k`` and of the entries it contradicts —
-        a handful of probes — so that a LONE outlier is identifiable (whichever of
-        the pair is out of line with its own neighbours), mark the smallest
-        inconsistent set bad, then grow each bad entry into the run it belongs to.
+        Date the two neighbours of ``k`` — a couple of probes — so that a LONE
+        outlier is identifiable whichever of the contradicting pair it is: if ``k``
+        is the odd one its neighbours disagree with it just as ``partners`` do, and
+        if the partner is, ``k`` and its neighbours agree with each other against
+        it. Mark the smallest inconsistent set bad (a tie, e.g. two adjacent
+        entries, marks both), then grow each bad entry into the run it belongs to.
         """
         self.dirty = True
-        for x in (k, *partners):
-            for y in (x - 1, x + 1):
-                if 0 <= y < len(self.ids) and not self.is_bad(y):
-                    self.date_at(y, check=False)
+        for y in (k - 1, k + 1):
+            if 0 <= y < len(self.ids) and not self.is_bad(y):
+                self.date_at(y, check=False)
         pts = self.trusted()
         for pos in _out_of_order([d for _, d in pts]):
             self.bad.add(self.ids[pts[pos][0]])
@@ -425,32 +433,69 @@ class _WindowScan:
 
     # -- phases --------------------------------------------------------------
 
-    def oldest_trusted(self) -> date | None:
-        """Date of the oldest datable, trusted entry fetched so far (``None`` if none)."""
-        for i in range(len(self.entries) - 1, -1, -1):
-            if not self.is_bad(i):
-                d = self.date_at(i)
-                if d is not None and not self.is_bad(i):
-                    return d
+    def trusted_near(self, i: int, step: int) -> tuple[int, date] | None:
+        """Nearest datable, trusted entry from ``i`` (excluded) in direction ``step``.
+
+        Dates entries on the way if need be (bad ones are skipped, undatable ones
+        stepped over — the streak guard bounds that), so it is also how a
+        neighbour gets compared against its own neighbours by ``date_at``.
+        """
+        stop = len(self.entries) if step > 0 else -1
+        for j in range(i + step, stop, step):
+            if not self.is_bad(j):
+                d = self.date_at(j)
+                if d is not None and not self.is_bad(j):
+                    return j, d
         return None
 
-    def gallop(self) -> None:
-        """Grow the flat scan (x2) until its oldest entry predates ``since``.
+    def stop_confirmed(self) -> bool:
+        """Whether the list provably reaches past ``since``, so the gallop may stop.
+
+        The oldest trusted entry must predate ``since`` AND so must the trusted
+        entry before it. One old date at the end of a batch is not proof on its
+        own: a single out-of-place entry dated long ago would stop the gallop
+        there and hide every in-window video beyond it, with no probe left to
+        contradict it. Two old entries in a row mean the list really ran past
+        ``since`` (a lone outlier has in-window neighbours). When the end of a
+        batch happens to be exactly where the window ends the check fails and the
+        gallop just fetches one more batch — a rare, cheap miss.
+        """
+        bad_before = len(self.bad)
+        confirmed = False
+        last = self.trusted_near(len(self.entries), -1)
+        if last is not None and last[1] < self.since:
+            before = self.trusted_near(last[0], -1)
+            confirmed = before is not None and before[1] < self.since
+        if len(self.bad) != bad_before:  # a probe exposed an inversion: judge again
+            return self.stop_confirmed()
+        return confirmed
+
+    def gallop(self) -> bool:
+        """Grow the flat scan (x2) until it provably reaches past ``since``.
 
         A reply shorter than asked means the channel is exhausted. Stops at
-        ``cap`` with ``truncated`` set when the window was still open.
+        ``cap`` with ``truncated`` set when the window was still open. Resumable:
+        ``run`` calls it again once the search has settled, because an entry the
+        stop relied on may have been marked bad meanwhile. Returns whether it
+        fetched anything (the list changed).
         """
-        requested = self.first_batch if not self.cap else min(self.first_batch, self.cap)
-        self.fetch(requested)
-        while self.raw_count >= requested:
-            oldest = self.oldest_trusted()
-            if oldest is not None and oldest < self.since:
-                return
-            if self.cap and requested >= self.cap:
+        fetched = False
+        self.truncated = False
+        if not self.requested:
+            self.requested = self.first_batch if not self.cap else min(self.first_batch, self.cap)
+            self.fetch(self.requested)
+            fetched = True
+        while self.raw_count >= self.requested:
+            if self.stop_confirmed():
+                break
+            if self.cap and self.requested >= self.cap:
                 self.truncated = True
-                return
-            requested = requested * 2 if not self.cap else min(requested * 2, self.cap)
-            self.fetch(requested)
+                break
+            double = self.requested * 2
+            self.requested = double if not self.cap else min(double, self.cap)
+            self.fetch(self.requested)
+            fetched = True
+        return fetched
 
     def first(self, pred: Callable[[date], bool], *, blind_at_end: bool, edge: bool = False) -> int:
         """Smallest index whose trusted date satisfies ``pred`` (``len`` if none).
@@ -489,11 +534,26 @@ class _WindowScan:
         return a
 
     def bounds(self) -> tuple[int, int]:
-        """``(hi, lo)``: the window is ``entries[hi:lo]`` (newest first)."""
+        """``(hi, lo)``: the window is ``entries[hi:lo]`` (newest first).
+
+        Each border is confirmed with ONE probe just outside it, because that is
+        where a lone out-of-place entry does its damage without any probe to
+        contradict it: an old date AT ``lo`` makes the search end there and drops
+        the in-window entries after it (the entry after ``lo`` would be newer:
+        caught), and a new date at ``hi - 1`` pushes the start past in-window
+        entries before it (the entry before it would be older: caught). Both
+        probes are free when the entry was dated already.
+        """
         lo = self.first(lambda d: d < self.since, blind_at_end=True)
+        if not self.dirty and lo < len(self.entries):
+            self.trusted_near(lo, +1)
+        if self.dirty:
+            return 0, 0
         if lo == 0:  # even the newest entry is older than `since`: no need to find hi
             return 0, 0
         hi = self.first(lambda d: d <= self.until, blind_at_end=False, edge=True)
+        if not self.dirty and hi > 0:
+            self.trusted_near(hi - 1, -1)
         return min(hi, lo), lo
 
     def run(self) -> tuple[int, int]:
@@ -501,8 +561,13 @@ class _WindowScan:
         while True:
             self.dirty = False
             hi, lo = self.bounds()
-            if not self.dirty:  # else an inversion was resolved mid-search: redo it without it
-                return hi, lo
+            if self.dirty:  # an inversion was resolved mid-search: redo it without it
+                continue
+            # The gallop's stop may rest on an entry that has just been marked bad,
+            # or the borders may have moved: re-prove it, fetching more if it fails.
+            if self.gallop() or self.dirty:
+                continue
+            return hi, lo
 
     def window(self, hi: int, lo: int) -> list[dict]:
         """Entries inside the window, newest first, each carrying its known ``_date``."""
@@ -560,24 +625,48 @@ def scan_window(
       well under both and keep working as documented below.
 
     Method: **gallop** — fetch ``first_batch``, date its LAST entry, and double
-    the request while that entry is still ``>= since`` (the channel's size is
-    unknown up front and the tab has no cursor); then **bisect** the in-memory
-    list for the window's two borders. A monotonic channel costs O(log N)
-    probes (~28 for 3000 videos), never one per video. Probes are memoised by
-    video id, so a list that shifts between fetches (a video published or
-    removed meanwhile) costs nothing extra and can't misattribute a date.
+    the request while the list doesn't provably reach past ``since`` (the
+    channel's size is unknown up front and the tab has no cursor): the last
+    trusted entry AND the one before it must both be older than ``since``; then
+    **bisect** the in-memory list for the window's two borders, confirming each
+    with one probe just outside it. A monotonic channel costs O(log N) probes
+    (<= 30 for 3000 videos, ~19 on average), never one per video. Probes are
+    memoised by video id, so a list that shifts between fetches (a video
+    published or removed meanwhile) costs nothing extra and can't misattribute a
+    date.
 
     Newest-first order is an assumption, not a guarantee (premieres and VODs
     can be listed out of place). A probe that contradicts the order is detected
     and classified locally: its neighbours are dated, and the smallest set of
     entries that breaks the order — normally ONE — is judged by its own date
-    instead of its position, at the price of a handful of extra probes.
-    ``meta["non_monotonic"]`` is set and the result is correct for everything
-    dated. LIMIT: only inversions between PROBED entries are visible — an
-    out-of-place entry that no other probe contradicts can shift a border or
-    slip through unnoticed, so callers that date the returned items anyway
-    should re-filter them by date. A long stretch of out-of-order entries is
-    dated one by one, which the ``max_probes`` budget turns into an error.
+    instead of its position, and ``meta["non_monotonic"]`` is set. A stretch of
+    out-of-order entries is dated one by one, which the ``max_probes`` budget
+    turns into an error.
+
+    What is guaranteed about ONE out-of-place entry, wherever it sits (a batch
+    boundary, a border, the middle):
+
+    * it can no longer make in-window entries go MISSING. Its two dangerous
+      spots are covered because a lone entry has ordinary neighbours: an old
+      date at the end of a batch can't stop the gallop alone (the entry before
+      it must be old too), and an old date at the lower border or a new one at
+      the upper border is contradicted by the probe just outside the border.
+    * it costs a few extra probes: at most 3 in 97%+ of 3000 random trials,
+      and 12 at the worst seen (on a 3000-entry channel, when the search had
+      already followed the outlier before it was caught).
+    * once it is flagged (``non_monotonic``) the result equals a filter by
+      actual date.
+
+    What is NOT guaranteed: (1) an outlier no probe contradicts is judged by its
+    position, so it can slip IN as an extra (or be absent when its own date says
+    it belongs) — callers that date the returned items anyway should re-filter
+    them by date, as ``cli`` does with ``--dates``; (2) an outlier that was
+    probed but agrees with the probes around it can still push a border
+    outward, adding in-order extras — never removing any; (3) with SEVERAL
+    outliers the guarantee above holds only when they are not each other's
+    confirmation: two adjacent old entries at a batch boundary, or an outlier at
+    a border with a second one at its confirming neighbour, still look like a
+    real end and can hide in-window entries.
 
     Undatable entries are routed around (nearest datable neighbour); a region
     with no datable entry at all is kept INSIDE the window, never dropped. An
@@ -720,7 +809,14 @@ def channel_entries_window(
     * ``"popular"`` — ``NotImplementedError``: a date window can't be combined
       with a popularity sort (yt-dlp can't list popular uploads at all, see the
       module docstring); the caller routes it elsewhere.
-    * anything else — ``ValueError``. Both are raised before any network call.
+    * anything else — ``ValueError``.
+
+    ``since > until`` is a ``ValueError`` too: the pure :func:`scan_window` reads
+    it as an empty window and does no I/O, which would come back here as
+    ``scanned == 0`` — the signal defined below as "the tab itself was empty,
+    fall back to Selenium". A caller bug must not look like an engine failure
+    (``cli`` already rejects the inverted range before it gets here). All three
+    are raised before any network call.
 
     Videos that are scheduled but not out yet (flat ``live_status`` is
     ``"is_upcoming"``) are dropped from the scan: not published, so in no window,
@@ -747,6 +843,8 @@ def channel_entries_window(
         )
     if order not in ("recent", "old"):
         raise ValueError(f"unknown order: {order!r} (expected recent|old)")
+    if since > until:
+        raise ValueError(f"since ({since}) is after until ({until}): the window is empty")
 
     name = ""
     failures = 0  # consecutive probes that failed for a reason that isn't the video's
@@ -798,38 +896,70 @@ def fill_dates(items: list[dict], *, workers: int = 4) -> int:
     against YouTube rate-limiting rather than for CPU. One failing video
     (private, removed, transient error) is left undated instead of failing the
     batch, but never silently: a single warning (logger ``viewlyt``) gives how
-    many items stayed undated and, when requests failed, the first error — so a
-    total outage reads as one. Items without a ``video_id`` are skipped.
-    ``items`` keeps its order; ``"date"`` is written from the calling thread,
-    never from a worker.
+    many items stayed undated and, when requests failed, the first error.
+
+    A network outage would otherwise cost every remaining video its full
+    timeout (``--dates`` on a 200-video window is ~50 timeouts of wall time
+    before the one warning). So the same classification as the window probe
+    applies (:func:`_is_per_video_error`): after ``_PROBE_BREAKER`` network-level
+    (or unrecognised) errors IN A ROW — a per-video verdict or a success resets
+    the count — no new request is started. Requests already running finish; the
+    rest stay undated and the warning says how many were not attempted.
+    Items without a ``video_id`` are skipped. ``items`` keeps its order;
+    ``"date"`` is written from the calling thread, never from a worker.
     """
     todo = [it for it in items if not it.get("date") and it.get("video_id")]
     if not todo:
         return 0
 
-    def one(item: dict) -> tuple[date | None, Exception | None]:
+    lock = threading.Lock()
+    stop = threading.Event()
+    in_a_row = 0  # consecutive network-level failures, across all workers
+
+    def one(item: dict) -> tuple[date | None, Exception | None, bool]:
+        """``(date, error, attempted)``; ``attempted`` is False once the breaker tripped."""
+        nonlocal in_a_row
+        if stop.is_set():
+            return None, None, False
         try:
-            return video_upload_date(item["video_id"]), None
+            d = video_upload_date(item["video_id"])
         except Exception as exc:  # one bad video must not sink the rest
-            return None, exc
+            with lock:
+                in_a_row = 0 if _is_per_video_error(exc) else in_a_row + 1
+                if in_a_row >= _PROBE_BREAKER:
+                    stop.set()
+            return None, exc, True
+        with lock:
+            in_a_row = 0
+        return d, None, True
 
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(todo)))) as pool:
         results = list(pool.map(one, todo))
     filled = 0
     errors: list[Exception] = []
-    for item, (d, err) in zip(todo, results, strict=True):
+    not_attempted = 0
+    for item, (d, err, attempted) in zip(todo, results, strict=True):
         if err is not None:
             errors.append(err)
+        if not attempted:
+            not_attempted += 1
         if d is not None:
             item["date"] = d.isoformat()
             filled += 1
     if filled < len(todo):
-        why = (
-            f"{len(errors)} request(s) failed, first: {str(errors[0])[:150]}"
-            if errors
-            else "yt-dlp returned no publish date"
+        why = []
+        if errors:
+            why.append(f"{len(errors)} request(s) failed, first: {str(errors[0])[:150]}")
+        elif not not_attempted:
+            why.append("yt-dlp returned no publish date")
+        if not_attempted:
+            why.append(
+                f"stopped after {_PROBE_BREAKER} network-level errors in a row, "
+                f"{not_attempted} video(s) not attempted"
+            )
+        log.warning(
+            "could not date %d of %d video(s) (%s)", len(todo) - filled, len(todo), "; ".join(why)
         )
-        log.warning("could not date %d of %d video(s) (%s)", len(todo) - filled, len(todo), why)
     return filled
 
 
