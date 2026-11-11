@@ -807,7 +807,7 @@ def _channel_line(s: dict) -> str:
     return f"{label}  {s['count']} videos ({', '.join(parts)}) {tail}"
 
 
-def _warn_window_caveats(s: dict, *, scan_cap: int, dates: bool) -> None:
+def _warn_window_caveats(s: dict, *, scan_cap: int) -> None:
     """Never let a windowed list look more certain than it is: each caveat is a
     warning (visible even under ``-q``), not a silent property of the result."""
     label = s["channel"] or s["ref"]
@@ -819,10 +819,13 @@ def _warn_window_caveats(s: dict, *, scan_cap: int, dates: bool) -> None:
             scan_cap,
         )
     if s["non_monotonic"]:
+        # --dates re-filters what the search RETURNED, so it can drop extras but can't bring
+        # back a video the search skipped: only a wider window catches those.
         log.warning(
-            "%s: out-of-order uploads found in the channel list, so the window edges may be off%s",
+            "%s: out-of-order uploads found in the channel list, so the window edges may be "
+            "off — --dates drops extras but can't recover a video the search skipped; widen "
+            "the window to catch those",
             label,
-            "" if dates else " — rerun with --dates for exact edges",
         )
     if s["approx_dates"]:
         log.warning(
@@ -892,6 +895,7 @@ def run_channel_batch(
             meta: dict = {}
             engine = "yt-dlp"
             error: str | None = None
+            yt_error: str | None = None  # why yt-dlp lost this listing, when it raised
             try:
                 if window is None:
                     name, items = ytdl.channel_entries(ref, n, order=order)
@@ -900,8 +904,15 @@ def run_channel_batch(
                         ref, *window, order=order, cap=scan_cap
                     )
             except Exception as exc:
-                log.info(
-                    "yt-dlp channel listing failed for %s (%s) — falling back to Selenium", ref, exc
+                yt_error = str(exc) or type(exc).__name__
+                # Plain -C falls back routinely (popular always does), so INFO. In a window the
+                # switch changes the answer (approximate dates, fuzzy edges, e.g. after a
+                # WindowScanError), and the reason must survive -q: WARNING.
+                (log.info if window is None else log.warning)(
+                    "yt-dlp channel listing failed for %s (%s)%s",
+                    ref,
+                    yt_error,
+                    " — falling back to Selenium" if fallback else "",
                 )
                 items = []
                 meta = {}
@@ -920,7 +931,11 @@ def run_channel_batch(
             if not answered:
                 meta = {}
                 if not fallback:
-                    error = "yt-dlp returned no videos and the Selenium fallback is disabled"
+                    error = (
+                        f"yt-dlp failed ({yt_error}) and the Selenium fallback is disabled"
+                        if yt_error
+                        else "yt-dlp returned no videos and the Selenium fallback is disabled"
+                    )
                 else:
                     engine = "selenium"
                     try:
@@ -983,7 +998,7 @@ def run_channel_batch(
                     approx_dates=engine == "selenium",
                 )
                 if not error:
-                    _warn_window_caveats(summary, scan_cap=scan_cap, dates=dates)
+                    _warn_window_caveats(summary, scan_cap=scan_cap)
             summaries.append(summary)
             bar.update(1)
             if announce:
@@ -1410,6 +1425,13 @@ def _run_video_batch(args: argparse.Namespace, targets: list[tuple[str, str]]) -
     ):
         with_comments = with_transcript = with_related = True
         related_limit = args.related if args.related > 0 else _UNIFY_DEFAULT_RELATED
+    if not with_transcript and args.transcript_engine != "auto":
+        # One place for the plain and the pipeline path (a listing-only run never gets
+        # here; main warns about that one).
+        log.warning(
+            "--transcript-engine has no effect: no transcript is being collected "
+            "(add -t, or -u/--unify-all)"
+        )
 
     jobs = args.jobs if args.jobs and args.jobs > 0 else min(4, len(targets))
     jobs = max(1, min(jobs, len(targets)))

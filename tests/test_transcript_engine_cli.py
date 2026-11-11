@@ -373,11 +373,12 @@ def test_the_default_engine_on_a_listing_only_run_does_not_warn(monkeypatch, tmp
     assert _engine_warnings(caplog) == []
 
 
-@pytest.mark.parametrize(
-    "listing", [["-C", "30"], ["--since", "90d"], ["-C", "5", "--since", "1y"]]
-)
-@pytest.mark.parametrize("selector", [["-t"], ["-c"], ["-r", "3"], ["-u"], ["--unify-all"]])
-def test_in_a_pipeline_the_engine_is_honoured_and_not_warned_about(
+_LISTINGS = [["-C", "30"], ["--since", "90d"], ["-C", "5", "--since", "1y"]]
+
+
+@pytest.mark.parametrize("listing", _LISTINGS)
+@pytest.mark.parametrize("selector", [["-t"], ["-u"], ["--unify-all"]])
+def test_in_a_pipeline_that_collects_a_transcript_the_engine_is_honoured_and_not_warned_about(
     monkeypatch, tmp_path, caplog, listing, selector
 ):
     _listing(monkeypatch)
@@ -387,6 +388,28 @@ def test_in_a_pipeline_the_engine_is_honoured_and_not_warned_about(
     assert cli.main([*argv, "@veritasium"]) == 0
     assert [c["transcript_engine"] for c in calls] == ["selenium"]
     assert _engine_warnings(caplog) == []
+
+
+@pytest.mark.parametrize("listing", _LISTINGS)
+@pytest.mark.parametrize("selector", [["-c"], ["-r", "3"], ["-c", "-r", "3"]])
+def test_in_a_pipeline_without_a_transcript_the_engine_is_a_warned_no_op(
+    monkeypatch, tmp_path, caplog, listing, selector
+):
+    """Was silent: the value still reaches ``run_batch`` (harmless), but nothing will read it,
+    and the user typed it expecting an effect. ONE warning, from the per-video flow (the
+    listing-only warning in ``main`` is for runs with no selector at all)."""
+    _listing(monkeypatch)
+    calls: list[dict] = []
+    monkeypatch.setattr(cli, "run_batch", lambda targets, **kw: calls.append(kw) or [])
+    argv = ["-o", str(tmp_path), *listing, *selector, "--transcript-engine", "ytdlp"]
+    assert cli.main([*argv, "@veritasium"]) == 0
+    assert [c["transcript_engine"] for c in calls] == ["ytdlp"]
+    (record,) = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "--transcript-engine" in r.getMessage()
+    ]
+    assert "no transcript is being collected" in record.getMessage()
 
 
 def test_the_pipeline_default_engine_is_auto(monkeypatch, tmp_path):
@@ -403,6 +426,55 @@ def test_a_plain_video_run_never_warns_about_the_engine(monkeypatch, tmp_path, c
     argv = ["-o", str(tmp_path), "-t", "--transcript-engine", "selenium", vid(1)]
     assert cli.main(argv) == 0
     assert calls[0]["transcript_engine"] == "selenium" and _engine_warnings(caplog) == []
+
+
+@pytest.mark.parametrize("engine", ["ytdlp", "selenium"])
+@pytest.mark.parametrize("selector", [["-c"], ["-r", "3"], ["-c", "-r", "2"]])
+def test_a_plain_run_without_a_transcript_warns_that_the_engine_does_nothing(
+    monkeypatch, tmp_path, caplog, selector, engine
+):
+    calls: list[dict] = []
+    monkeypatch.setattr(cli, "run_batch", lambda targets, **kw: calls.append(kw) or [])
+    argv = ["-o", str(tmp_path), *selector, "--transcript-engine", engine, vid(1)]
+    assert cli.main(argv) == 0
+    assert [c["transcript_engine"] for c in calls] == [engine]
+    (record,) = [r for r in caplog.records if "--transcript-engine" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert "no effect" in record.getMessage() and "no transcript" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--transcript-engine", "ytdlp"],  # no selector: the transcript is the default
+        ["-t", "--transcript-engine", "selenium"],
+        ["--transcript-only", "--transcript-engine", "ytdlp"],
+        ["-c", "-t", "--transcript-engine", "selenium"],
+        ["-u", "--transcript-engine", "selenium"],  # collect-everything includes it
+        ["--unify-all", "--transcript-engine", "ytdlp"],
+        ["-c", "--transcript-engine", "auto"],  # the default engine: nothing to explain
+        ["-c"],
+    ],
+)
+def test_no_engine_warning_when_a_transcript_is_collected_or_the_engine_is_auto(
+    monkeypatch, tmp_path, caplog, argv
+):
+    monkeypatch.setattr(cli, "run_batch", lambda targets, **kw: [])
+    assert cli.main(["-o", str(tmp_path), *argv, vid(1)]) == 0
+    assert _engine_warnings(caplog) == []
+
+
+def test_a_listing_only_run_gets_exactly_one_engine_warning(monkeypatch, tmp_path, caplog):
+    _listing(monkeypatch)
+
+    def boom(*a, **k):
+        raise AssertionError("a listing-only run must not scrape")
+
+    monkeypatch.setattr(cli, "run_batch", boom)
+    argv = ["-o", str(tmp_path), "-C", "3", "--transcript-engine", "selenium", "@veritasium"]
+    assert cli.main(argv) == 0
+    (msg,) = _engine_warnings(caplog)
+    assert "listing-only" in msg  # main's warning, not the per-video one (never reached)
 
 
 # --------------------------------------------------------------------------- #

@@ -573,6 +573,81 @@ def test_no_fallback_with_an_engine_failure_is_an_error_without_a_driver(eng, tm
     assert "Selenium fallback is disabled" in capsys.readouterr().err
 
 
+def test_no_fallback_error_names_the_ytdlp_exception_when_there_was_one(eng, tmp_path):
+    eng.window = RuntimeError("gave up after 200 date probes (limit 200)")
+    s = _batch(tmp_path, fallback=False)[0]
+    assert s["error"] == (
+        "yt-dlp failed (gave up after 200 date probes (limit 200)) "
+        "and the Selenium fallback is disabled"
+    )
+    assert s["channel_file"] is None and eng.built == []
+
+
+def test_no_fallback_error_for_an_empty_tab_keeps_the_original_text(eng, tmp_path):
+    eng.window = ("", [], _meta(scanned=0))  # yt-dlp answered, with nothing: no exception
+    s = _batch(tmp_path, fallback=False)[0]
+    assert s["error"] == "yt-dlp returned no videos and the Selenium fallback is disabled"
+
+
+def test_plain_no_fallback_error_names_the_ytdlp_exception_too(eng, tmp_path):
+    eng.plain = RuntimeError("HTTP Error 404")
+    s = cli.run_channel_batch(
+        ["@veritasium"],
+        n=3,
+        order="recent",
+        out_dir=str(tmp_path),
+        headless=True,
+        fallback=False,
+        user_data_dir=None,
+        quiet=True,
+    )[0]
+    assert s["error"] == "yt-dlp failed (HTTP Error 404) and the Selenium fallback is disabled"
+
+
+def _lost_listing(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "yt-dlp channel listing failed" in r.getMessage()]
+
+
+def test_window_listing_failure_is_a_warning_that_survives_quiet(eng, tmp_path, caplog):
+    # No caplog.set_level: the root logger stays at its default WARNING, which is exactly
+    # what `-q` configures. An INFO record would be dropped here; a WARNING is kept.
+    eng.window = RuntimeError("gave up after 200 date probes (limit 200)")
+    rc = cli.main(["-q", "--since", "90d", "-o", str(tmp_path), "@veritasium"])
+    assert rc == 0
+    (record,) = _lost_listing(caplog)
+    assert record.levelno == logging.WARNING
+    msg = record.getMessage()
+    assert "@veritasium" in msg and "gave up after 200 date probes" in msg
+    assert msg.endswith("falling back to Selenium")
+
+
+def test_window_listing_failure_warning_without_the_fallback_does_not_promise_one(
+    eng, tmp_path, caplog
+):
+    eng.window = RuntimeError("boom")
+    _batch(tmp_path, fallback=False)
+    (record,) = _lost_listing(caplog)
+    assert record.levelno == logging.WARNING
+    assert "falling back" not in record.getMessage() and "boom" in record.getMessage()
+
+
+def test_plain_listing_failure_stays_at_info(eng, tmp_path, caplog):
+    # Plain -C falls back routinely (`popular` always does): INFO, so -q hides it.
+    eng.plain = RuntimeError("HTTP Error 404")
+    caplog.set_level(logging.INFO)
+    cli.main(["-C", "3", "-o", str(tmp_path), "@veritasium"])
+    (record,) = _lost_listing(caplog)
+    assert record.levelno == logging.INFO
+    assert "HTTP Error 404" in record.getMessage()
+    assert record.getMessage().endswith("falling back to Selenium")
+
+
+def test_plain_listing_failure_is_invisible_under_quiet(eng, tmp_path, caplog):
+    eng.plain = RuntimeError("HTTP Error 404")
+    cli.main(["-q", "-C", "3", "-o", str(tmp_path), "@veritasium"])  # default WARNING level
+    assert _lost_listing(caplog) == []
+
+
 def test_selenium_raising_is_isolated_and_recycles_the_driver(eng, tmp_path):
     eng.window = ("", [], _meta(scanned=0))
 
@@ -731,20 +806,21 @@ def test_truncated_by_cap_warns_with_channel_cap_and_flag(eng, tmp_path, caplog)
     assert "Veritasium" in msgs[0] and "1234" in msgs[0] and "--scan-cap" in msgs[0]
 
 
-def test_non_monotonic_warns_and_suggests_dates(eng, tmp_path, caplog):
-    eng.window = ("Veritasium", _items(2), _meta(non_monotonic=True))
-    s = _batch(tmp_path)[0]
-    assert s["non_monotonic"] is True
-    msgs = [w for w in _warnings(caplog) if "out-of-order" in w]
-    assert len(msgs) == 1 and "Veritasium" in msgs[0] and "--dates" in msgs[0]
-
-
-def test_non_monotonic_does_not_suggest_dates_when_already_used(eng, tmp_path, caplog):
+@pytest.mark.parametrize("dates", [False, True])
+def test_non_monotonic_warns_without_overselling_dates(eng, tmp_path, caplog, dates):
+    """The old text promised "rerun with --dates for exact edges". --dates only re-filters what
+    the search RETURNED: it drops extras, it can't bring back a video the search skipped. The
+    message says so, the same way whether or not --dates was already used."""
     eng.window = ("Veritasium", _items(2), _meta(non_monotonic=True))
     eng.known_dates = {"v1": "2026-02-01", "v2": "2026-02-02"}
-    _batch(tmp_path, dates=True)
+    s = _batch(tmp_path, dates=dates)[0]
+    assert s["non_monotonic"] is True
     msgs = [w for w in _warnings(caplog) if "out-of-order" in w]
-    assert len(msgs) == 1 and "--dates" not in msgs[0]
+    assert len(msgs) == 1
+    msg = msgs[0]
+    assert "Veritasium" in msg and "edges may be off" in msg
+    assert "drops extras" in msg and "can't recover" in msg and "widen the window" in msg
+    assert "rerun" not in msg and "exact edges" not in msg
 
 
 def test_selenium_engine_warns_that_dates_are_approximate(eng, tmp_path, caplog):

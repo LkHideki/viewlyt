@@ -210,7 +210,7 @@ uv run vl videos.csv -j 4          # 4 workers in parallel
 | `-t, --transcript` | off | Collects the transcript → `out/<title-slug>-<video_id>.transcript.md`. This is also the **default** when no selector is given; add `-c` for comments too. See [Transcript](#transcript). |
 | `--transcript-only` | off | Collects the transcript only (alias of `-t` without `-c`) |
 | `--ts, --timestamps` | off | Keeps the `[m:ss]`/`[mm:ss]` timestamps on transcript lines (default: stripped; `h:mm:ss` on long videos is always kept). `--no-ts` is a deprecated no-op. |
-| `--transcript-engine {auto,ytdlp,selenium}` | `auto` | Where the transcript comes from. `auto` = yt-dlp captions first, the Selenium panel as fallback (three yt-dlp failures in a row switch the rest of the run to the panel); `ytdlp` = never open a browser for the transcript; `selenium` = the panel only, as before the yt-dlp engine existed. See [Transcript engines](#transcript-engines). No-op (warns) on a listing-only `-C`/`--since` run. |
+| `--transcript-engine {auto,ytdlp,selenium}` | `auto` | Where the transcript comes from. `auto` = yt-dlp captions first, the Selenium panel as fallback (three yt-dlp failures in a row switch the rest of the run to the panel); `ytdlp` = never open a browser for the transcript; `selenium` = the panel only, as before the yt-dlp engine existed. See [Transcript engines](#transcript-engines). No-op (warns) when no transcript is collected, e.g. with `-c` alone or on a listing-only `-C`/`--since` run. |
 | `-r, --related N` | `0` | Collects the first N related (sidebar) videos → `out/<slug>-<id>.related.md` (`0` = off). Selects related; combine with `-c`/`-t`. The sidebar exposes **views**, not likes. |
 | `-C, --channel N` | `0` | Treats every input as a **channel** (bare `@handle`, or a channel/`/c/`/`/user/` URL) and lists its first N videos → `out/<channel-slug>.channel.md` (`0` = off). With `--since` it is a ceiling on the windowed list. Alone it only lists; add `-c`/`-t`/`-r`/`-u`/`--unify-all` and every listed video is scraped with those products, see [Scraping the listed videos](#scraping-the-listed-videos). `yt-dlp` is tried first, falling back to Selenium — see [Channel listing](#channel-listing--c). |
 | `--order {recent,popular,old}` | `recent` | Sort order for the `-C`/`--since` video listing. No-op (warns) without them. `popular` is rejected together with `--since`. |
@@ -365,9 +365,12 @@ text comes from:
 
 The track yt-dlp reads is the one the panel shows by default: a human-made
 track in the video's own language, otherwise the original auto-generated track
-of that language. An auto-translated track is never used. When the video's
-language is unknown it takes any original auto-generated track, then the first
-human-made one.
+of that language. Regional variants count as the same language (`pt` matches
+`pt-BR`), the exact tag first. An auto-translated track is never used. When the
+video's language is unknown, or no track matches it, the language is read off
+the original auto-generated track: a human-made track in that language wins
+over the auto-generated one, and only after that does it take any human-made
+track.
 
 The two engines **segment the text differently**, so a transcript is not
 byte-identical between them: for the same video (`dQw4w9WgXcQ`) yt-dlp gave 61
@@ -399,13 +402,16 @@ With `-r`/`--related N` the collector reads the watch page's secondary column
 
 ## Main-video views
 
-Every scrape now also reads the **view count of the main video itself** (not
-just its related sidebar), via `scraper.get_video_views` — a cheap read of the
-same page already open for comments/transcript, no extra request.
+Every scrape also reads the **view count of the main video itself** (not
+just its related sidebar), with no extra request. When `vl` opens the page
+(comments, related videos, or a transcript read from the panel) it comes from
+`scraper.get_video_views`, a cheap read of that page. On a transcript-only run
+served by yt-dlp no page is opened: the count is the `view_count` of the
+watch-page extraction that already fetched the captions.
 
-It is the **exact integer**, not the rounded label the page shows you: the
-count comes from the watch page's `interactionCount` microdata, which carries
-the full number (`12345678`, never `12M`). The integer is the source of truth
+Either way it is the **exact integer**, not the rounded label the page shows
+you: the page's `interactionCount` microdata and yt-dlp's `view_count` carry the
+full number (`12345678`, never `12M`). The integer is the source of truth
 everywhere; the `"12,345,678 views"` text is only rendered when writing.
 
 The count surfaces in three places:
@@ -518,23 +524,27 @@ took about 11 s with 8 probes. The consequence is in what the file shows:
   time) and then every line is re-checked against the window: a video whose
   exact date falls outside it is dropped. A line whose date can't be read is
   kept. The search assumes the tab is newest first, which premieres and VODs
-  can break; when probes contradict that order, `vl` dates the disputed stretch
-  video by video and warns, and `--dates` also catches a misplaced video that
-  no probe contradicted.
+  can break; when probes contradict that order, `vl` warns that the window
+  edges may be off. `--dates` drops any returned video that is dated outside
+  the window, so it removes extras, but it can't bring back a video the search
+  skipped: widening the window is how to catch those.
 - `--scan-cap N` (default `5000`, `0` = unlimited) bounds how many channel
   entries the search may list. The tab has no cursor, so every longer read
   repeats the entries before it. If the cap stops the search while the window is
   still open, the list may be incomplete and `vl` warns.
 
-**Precision by engine.** yt-dlp dates are exact. If yt-dlp fails or returns an
-empty tab, `vl` falls back to Selenium, which only sees the relative age the
-grid renders (`6d ago`, `5mo ago`, `1y ago`). YouTube floors that age, so a
-label is an interval of possible dates: `1y ago` is anything from about 365 to
-730 days. A card is kept when its interval overlaps the window, and its line
-shows the newest date it could have. Expect a few extra videos at either edge;
-for a window that reaches back past roughly 11 months, where the labels turn
-yearly, the list can include whole yearly buckets, every line of a bucket
-carrying the same date. On this engine `--dates` changes nothing, and
+**Precision by engine.** yt-dlp dates are exact. If yt-dlp fails, returns an
+empty tab, or gives up on the date search (it has a probe budget and a limit
+on how many videos in a row may lack a readable date; either one raises an
+error instead of returning a window it can't vouch for), `vl` falls back to
+Selenium and logs the reason as a warning, which stays visible under `-q`.
+Selenium only sees the relative age the grid renders (`6d ago`, `5mo ago`,
+`1y ago`). YouTube floors that age, so a label is an interval of possible
+dates: `1y ago` is anything from about 365 to 730 days. A card is kept when its
+interval overlaps the window, and its line shows the newest date it could have.
+Expect a few extra videos at either edge; for a window that reaches back past
+roughly 11 months, where the labels turn yearly, the list can include whole
+yearly buckets, every line of a bucket carrying the same date. On this engine `--dates` changes nothing, and
 `--order old` reverses the newest-first grid instead of clicking the "Oldest"
 chip. A card whose age can't be read is kept without a date, but if most of
 them can't (a non-English YouTube UI, for example through a `--user-data-dir`
